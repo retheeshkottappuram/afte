@@ -50,11 +50,18 @@
     </style>
 </head>
 <body class="bg-cyber-900 text-slate-200 min-h-screen">
-    <div id="app" class="flex flex-col min-h-screen">
+    @include('layouts.sidebar')
+
+    <div id="app" class="lg:pl-64 flex flex-col min-h-screen">
         <!-- Top Navigation Bar -->
-        <header class="border-b border-cyber-border bg-cyber-800/90 sticky top-0 z-50 backdrop-blur-md px-4 lg:px-8 py-3">
+        <header class="border-b border-cyber-border bg-cyber-800/90 sticky top-0 z-20 backdrop-blur-md px-4 lg:px-8 py-3">
             <div class="flex flex-wrap items-center justify-between gap-4">
                 <div class="flex items-center space-x-3">
+                    <button type="button" onclick="toggleSidebar()" class="lg:hidden p-2 rounded-xl text-slate-300 hover:text-white bg-cyber-700/60 border border-cyber-border focus:outline-none">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                        </svg>
+                    </button>
                     <div class="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold font-mono">
                         ⚡
                     </div>

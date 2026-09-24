@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
 
 /**
  * @property int $id
@@ -46,11 +47,19 @@ class User extends Authenticatable
     }
 
     /**
-     * Check if user is an authorized Trader.
+     * Check if user is a standard User.
+     */
+    public function isUser(): bool
+    {
+        return in_array($this->role, ['user', 'trader', 'viewer'], true);
+    }
+
+    /**
+     * Check if user is authorized to execute trades.
      */
     public function isTrader(): bool
     {
-        return in_array($this->role, ['admin', 'trader'], true);
+        return $this->isAdmin() || $this->hasPermission('manage_trading');
     }
 
     /**
@@ -58,6 +67,21 @@ class User extends Authenticatable
      */
     public function isViewer(): bool
     {
-        return $this->role === 'viewer';
+        return ! $this->isAdmin();
+    }
+
+    /**
+     * Check if user has a specific permission slug.
+     */
+    public function hasPermission(string $permissionSlug): bool
+    {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        return DB::table('role_permissions')
+            ->where('role', $this->role)
+            ->where('permission_slug', $permissionSlug)
+            ->exists();
     }
 }
