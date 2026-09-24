@@ -120,9 +120,11 @@ class BinanceFuturesClient
         $params['recvWindow'] = $this->recvWindow;
         $params['signature'] = $this->sign($params);
 
+        $queryString = http_build_query($params);
+
         $response = Http::timeout(10)
             ->withHeaders(['X-MBX-APIKEY' => $this->apiKey])
-            ->delete("{$this->baseUrl}{$path}", $params);
+            ->delete("{$this->baseUrl}{$path}?{$queryString}");
 
         return $this->handleResponse($response, $path);
     }
