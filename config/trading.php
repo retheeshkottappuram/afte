@@ -27,30 +27,44 @@ return [
     |--------------------------------------------------------------------------
     */
     'stages' => [
-        // Stage 1: Seed ($5 to $25)
+        // Stage 1: Seed ($3 to $25) - Multi-Trade enabled with micro notional ($5.2-$6.5)
         'stage_1' => [
             'max_equity' => 25.0,
-            'max_positions' => 1,
+            'max_positions' => 3,     // Allows up to 3 concurrent positions
+            'max_unprotected' => 2,   // Allows up to 2 unprotected (at-risk) positions concurrently
             'default_leverage' => 10,
-            'max_risk_pct' => 10.0, // Risk ~$0.50-$0.75 on $5-$7 balance
-            'min_score' => 84,     // Only top Grade-A setups
+            'max_risk_pct' => 6.0,    // Risk ~$0.20-$0.40 on micro balances
+            'min_score' => 82,        // High-conviction setups
         ],
         // Stage 2: Acceleration ($25 to $100)
         'stage_2' => [
             'max_equity' => 100.0,
-            'max_positions' => 2,
-            'default_leverage' => 7,
-            'max_risk_pct' => 4.0,  // Risk ~$1.00-$4.00
-            'min_score' => 82,
+            'max_positions' => 3,
+            'max_unprotected' => 2,
+            'default_leverage' => 8,
+            'max_risk_pct' => 4.0,    // Risk ~$1.00-$3.00
+            'min_score' => 80,
         ],
         // Stage 3: Scale ($100 to $500)
         'stage_3' => [
             'max_equity' => 500.0,
-            'max_positions' => 3,
+            'max_positions' => 4,
+            'max_unprotected' => 2,
             'default_leverage' => 5,
-            'max_risk_pct' => 2.0,  // Risk $2.00-$10.00
-            'min_score' => 80,
+            'max_risk_pct' => 2.5,    // Risk $2.50-$12.00
+            'min_score' => 78,
         ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Multi-Trade Fund Utilization Controls
+    |--------------------------------------------------------------------------
+    */
+    'fund_management' => [
+        'min_available_margin' => 0.65,       // Minimum free available margin in USD to open a new trade
+        'exempt_protected_positions' => true, // Breakeven or profit-locked trades do not block new trades
+        'stage1_target_notional' => 5.50,     // Sized for Binance $5 minimum notional at 10x leverage
     ],
 
     /*

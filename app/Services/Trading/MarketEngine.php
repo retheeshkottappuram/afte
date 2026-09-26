@@ -31,23 +31,48 @@ class MarketEngine
             foreach ($tickers as $ticker) {
                 $sym = (string) ($ticker['symbol'] ?? '');
                 $vol = (float) ($ticker['quoteVolume'] ?? 0.0);
+                $high = (float) ($ticker['highPrice'] ?? 0.0);
+                $low = (float) ($ticker['lowPrice'] ?? 0.0);
+                $last = (float) ($ticker['lastPrice'] ?? 0.0);
+                $changePct = abs((float) ($ticker['priceChangePercent'] ?? 0.0));
 
-                if (str_ends_with($sym, 'USDT') && $vol >= $minVol) {
+                if (str_ends_with($sym, 'USDT') && $vol >= $minVol && $last > 0 && $high > 0 && $low > 0) {
+                    // 1. Proximity to 24h High (Bullish breakout) or Low (Bearish breakdown)
+                    $distHighPct = (($high - $last) / $high) * 100.0;
+                    $distLowPct = (($last - $low) / $low) * 100.0;
+                    $minDistPct = min(abs($distHighPct), abs($distLowPct));
+
+                    // Highest score if within 0.2% - 2.5% of the breakout boundary
+                    $proximityScore = max(0.0, 50.0 - ($minDistPct * 12.0));
+
+                    // 2. Active Volatility & Momentum Score (rewards coins actively in motion, 2% to 15%)
+                    $momentumScore = min(30.0, $changePct * 2.5);
+
+                    // 3. Liquidity Weighting
+                    $liquidityScore = min(20.0, log10(max(1.0, $vol / 1000000.0)) * 6.0);
+
+                    // Priority Coin Bonus
+                    $priorityBonus = in_array($sym, $priority, true) ? 10.0 : 0.0;
+
+                    $breakoutReadiness = $proximityScore + $momentumScore + $liquidityScore + $priorityBonus;
+
                     $candidates[] = [
                         'symbol' => $sym,
+                        'score' => $breakoutReadiness,
                         'volume' => $vol,
                     ];
                 }
             }
 
-            usort($candidates, fn (array $a, array $b): int => $b['volume'] <=> $a['volume']);
+            // Sort candidates by Breakout Readiness Score descending
+            usort($candidates, fn (array $a, array $b): int => $b['score'] <=> $a['score']);
 
             $symbols = array_column(array_slice($candidates, 0, $limit), 'symbol');
 
-            // Merge priority symbols ensuring they are present first
-            foreach (array_reverse($priority) as $sym) {
-                if (! in_array($sym, $symbols, true)) {
-                    array_unshift($symbols, $sym);
+            // Ensure top priority symbols are in candidates if not present
+            foreach ($priority as $sym) {
+                if (! in_array($sym, $symbols, true) && count($symbols) < $limit + 5) {
+                    $symbols[] = $sym;
                 }
             }
 

@@ -48,6 +48,35 @@ class RiskManager
     }
 
     /**
+     * Get real-time available margin balance in USD.
+     */
+    public function getAvailableBalance(TradingAccount $account): float
+    {
+        if (in_array($account->mode, ['live', 'testnet'], true) && $this->client->hasCredentials()) {
+            try {
+                $balances = $this->client->forMode($account->mode)->getBalance();
+                foreach ($balances as $b) {
+                    if (($b['asset'] ?? '') === 'USDT') {
+                        $avail = (float) ($b['availableBalance'] ?? $b['crossWalletBalance'] ?? 0.0);
+                        if ($avail > 0) {
+                            return round($avail, 4);
+                        }
+                    }
+                }
+            } catch (\Throwable) {
+                // Fallback to local calculation if Binance API transient error
+            }
+        }
+
+        // Local calculation fallback: account balance minus margin used by currently open trades
+        $openMargin = (float) Trade::where('mode', $account->mode)
+            ->where('status', 'OPEN')
+            ->sum('margin_used');
+
+        return max(0.0, round($account->balance - $openMargin, 4));
+    }
+
+    /**
      * Verify if account is permitted to take a new trade.
      *
      * @return array{allowed: bool, reason: string}
@@ -75,17 +104,7 @@ class RiskManager
             return ['allowed' => false, 'reason' => "Signal score {$signalScore} is below required threshold {$stage['min_score']} for {$stage['stage']}."];
         }
 
-        // Check Open Positions Limit
-        $openTradesCount = Trade::where('mode', $account->mode)
-            ->where('status', 'OPEN')
-            ->count();
-
-        $maxPositions = (int) ($stage['max_positions'] ?? 1);
-        if ($openTradesCount >= $maxPositions) {
-            return ['allowed' => false, 'reason' => "Max open positions limit ({$maxPositions}) reached for {$stage['stage']}."];
-        }
-
-        // Check if there is already an open trade for this symbol
+        // Check if there is already an open trade for this exact symbol
         $existingTrade = Trade::where('mode', $account->mode)
             ->where('symbol', $symbol)
             ->where('status', 'OPEN')
@@ -95,12 +114,54 @@ class RiskManager
             return ['allowed' => false, 'reason' => "An active trade for {$symbol} is already open."];
         }
 
-        // Check available balance
-        if ($account->balance < 2.0) {
-            return ['allowed' => false, 'reason' => "Insufficient account balance (\${$account->balance}). Minimum \$2.00 required."];
+        // Fetch all currently open trades
+        $openTrades = Trade::where('mode', $account->mode)
+            ->where('status', 'OPEN')
+            ->get();
+
+        $maxPositions = (int) ($stage['max_positions'] ?? 2);
+        $maxUnprotected = (int) ($stage['max_unprotected'] ?? 1);
+
+        // Classify trades into Unprotected (at-risk) vs Protected (risk-free runners)
+        $unprotectedTrades = $openTrades->filter(function (Trade $t): bool {
+            if ($t->be_locked || $t->tp1_hit) {
+                return false; // Protected: SL is at or above breakeven / partial profit locked
+            }
+            if ($t->isLong() && $t->current_sl >= $t->entry_price) {
+                return false;
+            }
+            if (! $t->isLong() && $t->current_sl <= $t->entry_price) {
+                return false;
+            }
+
+            return true;
+        });
+
+        // 1. Check total positions limit
+        if ($openTrades->count() >= $maxPositions) {
+            // If all active positions are protected/risk-free, allow up to 1 extra runner slot if available balance allows
+            $hasOnlyProtected = $unprotectedTrades->isEmpty();
+            $maxAllowedWithRunners = $maxPositions + 1;
+
+            if (! $hasOnlyProtected || $openTrades->count() >= $maxAllowedWithRunners) {
+                return ['allowed' => false, 'reason' => "Max open positions limit ({$maxPositions}) reached for {$stage['stage']}."];
+            }
         }
 
-        return ['allowed' => true, 'reason' => 'Risk parameters approved.'];
+        // 2. Check unprotected (at-risk) positions limit (prevents simultaneous risk exposure)
+        if ($unprotectedTrades->count() >= $maxUnprotected) {
+            return ['allowed' => false, 'reason' => "Active risk capacity reached ({$unprotectedTrades->count()}/{$maxUnprotected} unprotected positions). Waiting for current trade to lock breakeven or TP1."];
+        }
+
+        // 3. Check real Available Margin Balance
+        $availMargin = $this->getAvailableBalance($account);
+        $minRequiredMargin = (float) config('trading.fund_management.min_available_margin', 0.65);
+
+        if ($availMargin < $minRequiredMargin) {
+            return ['allowed' => false, 'reason' => "Insufficient available margin (\${$availMargin}). Minimum \${$minRequiredMargin} free balance required to open an additional trade."];
+        }
+
+        return ['allowed' => true, 'reason' => 'Risk parameters and available capital approved.'];
     }
 
     /**
@@ -124,7 +185,7 @@ class RiskManager
     ): array {
         $stage = $this->getCompoundingStage($account);
         $leverage = (int) ($stage['default_leverage'] ?? 10);
-        $maxRiskPct = (float) ($stage['max_risk_pct'] ?? 10.0);
+        $maxRiskPct = (float) ($stage['max_risk_pct'] ?? 6.0);
 
         $slDistance = abs($entryPrice - $slPrice);
         if ($slDistance <= 0 || $entryPrice <= 0) {
@@ -133,29 +194,32 @@ class RiskManager
 
         $slPct = $slDistance / $entryPrice;
 
-        // Dollar amount risked on this trade
-        $riskUsd = $account->balance * ($maxRiskPct / 100.0);
-
-        // Desired position notional based on risk amount
-        $targetNotional = $riskUsd / $slPct;
+        // Determine Available Free Margin
+        $availMargin = $this->getAvailableBalance($account);
 
         // Binance Minimum Notional enforcement ($5.00 minimum)
-        $minNotional = max(5.2, $this->client->getMinNotional($symbol));
+        $minNotional = max(5.20, $this->client->getMinNotional($symbol));
 
-        // If target notional is smaller than exchange minimum, size up to minimum notional
-        $notional = max($minNotional, $targetNotional);
+        // In Stage 1 ($3 - $25), size position close to minimum notional so multiple trades can run safely
+        if ($account->balance < 25.0) {
+            $targetNotional = (float) config('trading.fund_management.stage1_target_notional', 5.50);
+            $targetNotional = max($minNotional, $targetNotional);
+        } else {
+            // For larger accounts, scale notional based on risk % and SL distance
+            $riskUsd = $account->balance * ($maxRiskPct / 100.0);
+            $targetNotional = max($minNotional, $riskUsd / $slPct);
+        }
 
-        // Calculate margin required
-        $marginRequired = $notional / $leverage;
+        $marginRequired = $targetNotional / $leverage;
 
-        // In Stage 1 ($5-$25), ensure margin does not exceed available balance
-        if ($marginRequired > $account->balance * 0.90) {
-            // Adjust leverage or margin if possible
-            $marginRequired = $account->balance * 0.85;
-            $notional = $marginRequired * $leverage;
+        // Ensure margin does not exceed available free margin (keep at least 15% buffer)
+        $maxAffordableMargin = $availMargin * 0.85;
 
-            if ($notional < $minNotional) {
-                // Notional would fall below Binance minimum
+        if ($marginRequired > $maxAffordableMargin) {
+            $targetNotional = $maxAffordableMargin * $leverage;
+            $marginRequired = $targetNotional / $leverage;
+
+            if ($targetNotional < $minNotional) {
                 return [
                     'allowed' => false,
                     'quantity' => 0,
@@ -163,13 +227,23 @@ class RiskManager
                     'leverage' => $leverage,
                     'risk_usd' => 0,
                     'notional' => 0,
-                    'reason' => "Account balance (\${$account->balance}) insufficient to meet Binance minimum notional (\${$minNotional}) at {$leverage}x leverage.",
+                    'reason' => "Available margin (\${$availMargin}) insufficient to fund Binance minimum notional (\${$minNotional}) at {$leverage}x leverage.",
                 ];
             }
         }
 
-        $rawQuantity = $notional / $entryPrice;
+        $rawQuantity = $targetNotional / $entryPrice;
         $formattedQuantity = $this->client->formatQuantity($symbol, $rawQuantity);
+
+        // Ensure floor rounding never drops below exchange minNotional
+        if ($formattedQuantity > 0 && ($formattedQuantity * $entryPrice) < $minNotional) {
+            $info = $this->client->getExchangeInfo()[$symbol] ?? null;
+            $step = (float) ($info['stepSize'] ?? 0.001);
+            $precision = (int) ($info['quantityPrecision'] ?? 3);
+            if ($step > 0) {
+                $formattedQuantity = round($formattedQuantity + $step, $precision);
+            }
+        }
 
         if ($formattedQuantity <= 0) {
             return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => 'Calculated lot size resulted in 0 after precision rounding.'];
@@ -185,7 +259,7 @@ class RiskManager
             'leverage' => $leverage,
             'risk_usd' => round($slDistance * $formattedQuantity, 4),
             'notional' => round($finalNotional, 2),
-            'reason' => 'Calculated successfully within compounding risk limits.',
+            'reason' => 'Calculated successfully within compounding risk and available fund limits.',
         ];
     }
 

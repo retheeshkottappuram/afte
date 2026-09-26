@@ -22,17 +22,17 @@ class RiskManagerTest extends TestCase
             'initial_balance' => 5.0,
         ]);
         $stage1 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(1, $stage1['max_positions']);
+        $this->assertEquals(3, $stage1['max_positions']);
         $this->assertEquals(10, $stage1['default_leverage']);
 
         $seedAccount->balance = 50.0;
         $stage2 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(2, $stage2['max_positions']);
-        $this->assertEquals(7, $stage2['default_leverage']);
+        $this->assertEquals(3, $stage2['max_positions']);
+        $this->assertEquals(8, $stage2['default_leverage']);
 
         $seedAccount->balance = 250.0;
         $stage3 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(3, $stage3['max_positions']);
+        $this->assertEquals(4, $stage3['max_positions']);
         $this->assertEquals(5, $stage3['default_leverage']);
     }
 

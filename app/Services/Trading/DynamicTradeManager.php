@@ -142,6 +142,7 @@ class DynamicTradeManager
 
             $trade->realized_pnl = round($trade->realized_pnl + $pnl, 4);
             $trade->remaining_quantity = round($trade->remaining_quantity - $closeQty, 6);
+            $trade->margin_used = round(($trade->remaining_quantity * $trade->entry_price) / max(1, $trade->leverage), 4);
             $trade->tp1_hit = true;
             $trade->stage = 'TP1_HIT';
 
@@ -203,6 +204,7 @@ class DynamicTradeManager
 
             $trade->realized_pnl = round($trade->realized_pnl + $pnl, 4);
             $trade->remaining_quantity = round($trade->remaining_quantity - $closeQty, 6);
+            $trade->margin_used = round(($trade->remaining_quantity * $trade->entry_price) / max(1, $trade->leverage), 4);
             $trade->tp2_hit = true;
             $trade->stage = 'TRAILING';
 

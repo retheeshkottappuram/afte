@@ -79,54 +79,97 @@ class SignalEngine
 
         $volRatio = $valVolSma > 0 ? round($currentVolume / $valVolSma, 2) : 1.0;
 
-        // 4. Test LONG Setup
+        // 4. Candle Geometry & Price Action Filter
+        $currentOpen = $base['opens'][$i] ?? $currentClose;
+        $candleRange = max(0.0000001, $currentHigh - $currentLow);
+        $body = abs($currentClose - $currentOpen);
+        $bodyRatio = $body / $candleRange;
+        $upperWick = $currentHigh - max($currentOpen, $currentClose);
+        $lowerWick = min($currentOpen, $currentClose) - $currentLow;
+        $upperWickPct = ($upperWick / $candleRange) * 100.0;
+        $lowerWickPct = ($lowerWick / $candleRange) * 100.0;
+
+        $isBullCandle = ($currentClose > $currentOpen) && ($bodyRatio >= 0.38) && ($upperWickPct <= 38.0);
+        $isBearCandle = ($currentClose < $currentOpen) && ($bodyRatio >= 0.38) && ($lowerWickPct <= 38.0);
+
+        // Volatility Squeeze / Expansion Detection
+        $bbExpanding = false;
+        if (isset($bb['upper'][$i], $bb['lower'][$i], $bb['upper'][$i - 2], $bb['lower'][$i - 2])) {
+            $prevWidth = $bb['upper'][$i - 2] - $bb['lower'][$i - 2];
+            $curWidth = $bb['upper'][$i] - $bb['lower'][$i];
+            $bbExpanding = $curWidth > $prevWidth * 1.05;
+        }
+
+        // ==========================================
+        // 5. Test LONG (BUY) Breakout Setup
+        // ==========================================
         $longScore = 0;
+        $isCleanBreakoutLong = ($currentClose > $swingHigh && $isBullCandle);
+        $isRetestLong = ($closes[$i - 1] > $swingHigh && $currentLow <= $swingHigh * 1.004 && $currentClose >= $swingHigh && $currentClose >= $currentOpen);
+
+        if ($isCleanBreakoutLong) {
+            $longScore += 30; // Verified resistance breakout with solid body close
+        } elseif ($isRetestLong) {
+            $longScore += 28; // Breakout retest & support confirmation
+        } elseif ($currentClose > $valEma9 && $closes[$i - 1] <= $valEma9 && $isBullCandle) {
+            $longScore += 18; // Clean momentum cross
+        }
+
         if ($valEma9 > $valEma21) {
             $longScore += 15;
         }
         if ($valEma200 && $currentClose > $valEma200) {
             $longScore += 10;
         }
-        if ($currentClose >= $swingHigh * 0.998) {
-            $longScore += 25; // Breakout of recent swing high
-        } elseif ($currentClose > $valEma9 && $closes[$i - 1] <= $valEma9) {
-            $longScore += 15; // Clean momentum crossover
-        }
-        if ($volRatio >= 1.20) {
-            $longScore += 20; // Volume surge confirmation
-        } elseif ($volRatio >= 1.0) {
-            $longScore += 10;
+        if ($volRatio >= 1.40) {
+            $longScore += 20; // High institutional volume expansion
+        } elseif ($volRatio >= 1.15) {
+            $longScore += 12;
         }
         if ($valRsi >= 52.0 && $valRsi <= 72.0) {
             $longScore += 15; // RSI momentum sweet-spot
         }
         if ($htf1Bullish) {
-            $longScore += 15; // HTF alignment
+            $longScore += 15; // Higher timeframe trend alignment
+        }
+        if ($bbExpanding) {
+            $longScore += 8;  // Volatility expansion out of squeeze
         }
 
-        // 5. Test SHORT Setup
+        // ==========================================
+        // 6. Test SHORT (SELL) Breakdown Setup
+        // ==========================================
         $shortScore = 0;
+        $isCleanBreakdownShort = ($currentClose < $swingLow && $isBearCandle);
+        $isRetestShort = ($closes[$i - 1] < $swingLow && $currentHigh >= $swingLow * 0.996 && $currentClose <= $swingLow && $currentClose <= $currentOpen);
+
+        if ($isCleanBreakdownShort) {
+            $shortScore += 30; // Verified support breakdown with solid body close
+        } elseif ($isRetestShort) {
+            $shortScore += 28; // Breakdown retest & resistance confirmation
+        } elseif ($currentClose < $valEma9 && $closes[$i - 1] >= $valEma9 && $isBearCandle) {
+            $shortScore += 18; // Clean downward momentum cross
+        }
+
         if ($valEma9 < $valEma21) {
             $shortScore += 15;
         }
         if ($valEma200 && $currentClose < $valEma200) {
             $shortScore += 10;
         }
-        if ($currentClose <= $swingLow * 1.002) {
-            $shortScore += 25; // Breakdown of recent swing low
-        } elseif ($currentClose < $valEma9 && $closes[$i - 1] >= $valEma9) {
-            $shortScore += 15; // Clean downward momentum cross
-        }
-        if ($volRatio >= 1.20) {
-            $shortScore += 20; // Volume surge confirmation
-        } elseif ($volRatio >= 1.0) {
-            $shortScore += 10;
+        if ($volRatio >= 1.40) {
+            $shortScore += 20; // High institutional volume expansion
+        } elseif ($volRatio >= 1.15) {
+            $shortScore += 12;
         }
         if ($valRsi <= 48.0 && $valRsi >= 28.0) {
             $shortScore += 15; // RSI downward momentum
         }
         if ($htf1Bearish) {
-            $shortScore += 15; // HTF alignment
+            $shortScore += 15; // Higher timeframe trend alignment
+        }
+        if ($bbExpanding) {
+            $shortScore += 8;  // Volatility expansion out of squeeze
         }
 
         $direction = null;
@@ -147,8 +190,9 @@ class SignalEngine
         // Calculate Dynamic SL & TP Targets
         $entryPrice = $currentClose;
         if ($direction === 'LONG') {
-            // SL placed at structural low or 1.5 * ATR, capped at reasonable risk range
-            $structuralSl = max(array_slice($lows, max(0, $i - 8), 8));
+            // Correct SL: Structural swing LOW (minimum of recent lows) or ATR buffer
+            $recentLowsSlice = array_slice($lows, max(0, $i - 10), 10);
+            $structuralSl = ! empty($recentLowsSlice) ? min($recentLowsSlice) : ($entryPrice - (1.5 * $valAtr));
             $atrSl = $entryPrice - (1.5 * $valAtr);
             $initialSl = min($structuralSl, $atrSl);
 
@@ -162,8 +206,9 @@ class SignalEngine
             $tp1 = round($entryPrice + ($slDist * 1.5), 6); // R:R 1:1.5
             $tp2 = round($entryPrice + ($slDist * 3.0), 6); // R:R 1:3.0
         } else {
-            // SHORT SL
-            $structuralSl = min(array_slice($highs, max(0, $i - 8), 8));
+            // Correct SHORT SL: Structural swing HIGH (maximum of recent highs) or ATR buffer
+            $recentHighsSlice = array_slice($highs, max(0, $i - 10), 10);
+            $structuralSl = ! empty($recentHighsSlice) ? max($recentHighsSlice) : ($entryPrice + (1.5 * $valAtr));
             $atrSl = $entryPrice + (1.5 * $valAtr);
             $initialSl = max($structuralSl, $atrSl);
 

@@ -174,7 +174,7 @@ class DashboardController extends Controller
                     $entryPrice = (float) $bp['entryPrice'];
                     $leverage = (int) ($bp['leverage'] ?? 10);
                     $qty = abs($amt);
-                    $notional = (float) ($bp['notional'] ?? ($qty * $entryPrice));
+                    $notional = abs((float) ($bp['notional'] ?? ($qty * $entryPrice)));
                     $margin = $leverage > 0 ? round($notional / $leverage, 4) : $notional;
 
                     $trade = Trade::where('mode', $mode)
@@ -205,6 +205,7 @@ class DashboardController extends Controller
                         ]);
                     } else {
                         $trade->remaining_quantity = $qty;
+                        $trade->margin_used = $margin;
                         $trade->save();
                     }
                 }
@@ -218,6 +219,13 @@ class DashboardController extends Controller
                         $localTrade->closed_at = now();
                         $localTrade->exit_reason = 'EXCHANGE_OR_MANUAL_CLOSE';
                         $localTrade->save();
+
+                        // Clean up any remaining exchange-side algo orders so no orphaned orders remain
+                        try {
+                            $client->cancelAllAlgoOrders($localTrade->symbol);
+                            $client->cancelAllOrders($localTrade->symbol);
+                        } catch (\Throwable) {
+                        }
                     }
                 }
             } catch (\Exception) {

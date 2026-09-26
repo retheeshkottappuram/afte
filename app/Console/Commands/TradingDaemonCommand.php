@@ -111,7 +111,7 @@ class TradingDaemonCommand extends Command
 
                                     if ($execResult['status'] === 'opened') {
                                         $this->info("✅ Order Executed: {$execResult['message']}");
-                                        break; // In Stage 1 ($5-$25), 1 position at a time is enforced
+                                        break; // Executed 1 trade for this scanning cycle; multi-trade capacity will continue on subsequent cycles based on available free margin
                                     } else {
                                         $this->line("Execution Notice: {$execResult['message']}");
                                     }
