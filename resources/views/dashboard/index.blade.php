@@ -148,7 +148,7 @@
                             <span id="stat-equity" class="text-3xl font-bold font-mono text-white">$5.00</span>
                             <span id="stat-unrealized-pnl" class="text-xs font-mono font-medium text-emerald-400">+0.00 (0.00%)</span>
                         </div>
-                        <div class="text-xs text-slate-400">Balance: <span id="stat-balance" class="font-mono text-slate-200">$5.00</span></div>
+                        <div class="text-xs text-slate-400">Wallet: <span id="stat-balance" class="font-mono text-slate-200">$5.00</span> | Avail: <span id="stat-available-margin" class="font-mono text-cyan-300 font-semibold">$0.00</span></div>
                     </div>
 
                     <!-- Progress to $500 -->
@@ -195,7 +195,7 @@
                             </div>
                         </div>
                         <div class="text-[11px] text-slate-400 pt-2 border-t border-cyber-border/40 flex items-center justify-between">
-                            <span>Max Risk: <strong class="text-slate-300 font-mono">10% ($0.50)</strong></span>
+                            <span>Added/Trade: <strong id="stat-amount-per-trade" class="text-cyan-300 font-mono">~$0.55</strong></span>
                             <span id="terminal-sync-indicator" class="text-cyan-400 font-mono text-[10px]">● SYNCED</span>
                         </div>
                     </div>
@@ -220,7 +220,7 @@
                                 <th class="px-5 py-3">Symbol / Side</th>
                                 <th class="px-4 py-3">Stage & Status</th>
                                 <th class="px-4 py-3">Entry / Mark Price</th>
-                                <th class="px-4 py-3">Margin (Lev)</th>
+                                <th class="px-4 py-3">Amount Added (Margin / Size)</th>
                                 <th class="px-4 py-3">Current SL</th>
                                 <th class="px-4 py-3">Targets (TP1 / TP2)</th>
                                 <th class="px-4 py-3">Unrealized PnL (ROE)</th>
@@ -367,6 +367,7 @@
                         <thead class="bg-cyber-800/80 text-slate-400 font-mono uppercase border-b border-cyber-border">
                             <tr>
                                 <th class="px-5 py-3">Symbol / Side</th>
+                                <th class="px-4 py-3">Amount Added</th>
                                 <th class="px-4 py-3">Entry Price</th>
                                 <th class="px-4 py-3">Exit Price</th>
                                 <th class="px-4 py-3">Realized PnL</th>
@@ -377,7 +378,7 @@
                         </thead>
                         <tbody id="history-tbody" class="divide-y divide-cyber-border/40 font-mono">
                             <tr>
-                                <td colspan="7" class="px-5 py-6 text-center text-slate-400">
+                                <td colspan="8" class="px-5 py-6 text-center text-slate-400">
                                     No closed trades yet in this session.
                                 </td>
                             </tr>
@@ -481,6 +482,14 @@
                 if (statBal) {
                     statBal.textContent = `$${data.balance.toFixed(2)}`;
                     statBal.style.opacity = '1';
+                }
+                const availMarginEl = document.getElementById('stat-available-margin');
+                if (availMarginEl && data.available_margin !== undefined) {
+                    availMarginEl.textContent = `$${Number(data.available_margin).toFixed(2)}`;
+                }
+                const amountPerTradeEl = document.getElementById('stat-amount-per-trade');
+                if (amountPerTradeEl && data.amount_per_trade !== undefined) {
+                    amountPerTradeEl.textContent = `~$${Number(data.amount_per_trade).toFixed(2)}`;
                 }
                 
                 if (unPnl) {
@@ -644,8 +653,14 @@
                                 <span id="pos-mark-${pos.id}" class="text-[11px] text-cyan-400 font-mono">Mark: $${pos.mark_price}</span>
                             </td>
                             <td class="px-4 py-3">
-                                <span class="text-slate-200 block">$${pos.margin_used}</span>
-                                <span class="text-[10px] text-slate-400">${pos.leverage}x ISOLATED</span>
+                                <div class="flex items-center space-x-1">
+                                    <span class="text-white font-bold text-xs">$${Number(pos.amount_added || pos.margin_used).toFixed(2)}</span>
+                                    <span class="text-[10px] text-cyan-400">USDT</span>
+                                </div>
+                                <span class="text-[10px] text-slate-400 block">Size: <strong class="text-slate-300 font-mono">$${Number(pos.position_size_usd || (pos.quantity * pos.mark_price)).toFixed(2)}</strong> (${pos.leverage}x)</span>
+                                ${pos.initial_amount_added && Math.abs(pos.initial_amount_added - (pos.amount_added || pos.margin_used)) > 0.05 
+                                    ? `<span class="text-[9px] text-amber-400/90 block font-mono">Init: $${Number(pos.initial_amount_added).toFixed(2)}</span>` 
+                                    : ''}
                             </td>
                             <td class="px-4 py-3">
                                 <span class="text-rose-300 font-bold">$${pos.current_sl}</span>
@@ -687,7 +702,7 @@
                 const tbody = document.getElementById('history-tbody');
 
                 if (data.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-6 text-center text-slate-400">No closed trades yet in ${currentMode.toUpperCase()} mode.</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-6 text-center text-slate-400">No closed trades yet in ${currentMode.toUpperCase()} mode.</td></tr>`;
                     return;
                 }
 
@@ -703,6 +718,10 @@
                             <td class="px-5 py-2.5">
                                 <span class="font-bold text-white">${t.symbol}</span>
                                 <span class="ml-1 text-[10px] ${sideColor}">${t.side}</span>
+                            </td>
+                            <td class="px-4 py-2.5 text-slate-300">
+                                <div class="font-bold text-white text-xs">$${Number(t.amount_added || t.margin_used || 0).toFixed(2)}</div>
+                                <span class="text-[10px] text-slate-400">Size: $${Number(t.position_size_usd || 0).toFixed(2)}</span>
                             </td>
                             <td class="px-4 py-2.5 text-slate-300">$${t.entry_price}</td>
                             <td class="px-4 py-2.5 text-slate-300">$${t.exit_price || '-'}</td>

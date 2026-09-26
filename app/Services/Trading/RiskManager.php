@@ -200,8 +200,14 @@ class RiskManager
         // Binance Minimum Notional enforcement ($5.00 minimum)
         $minNotional = max(5.20, $this->client->getMinNotional($symbol));
 
-        // In Stage 1 ($3 - $25), size position close to minimum notional so multiple trades can run safely
-        if ($account->balance < 25.0) {
+        // Check if an explicit amount added per trade (in USD) is configured
+        $configuredAmount = config('trading.fund_management.amount_per_trade');
+
+        if ($configuredAmount !== null && (float) $configuredAmount > 0) {
+            // User-configured exact margin amount added per trade
+            $targetNotional = max($minNotional, ((float) $configuredAmount) * $leverage);
+        } elseif ($account->balance < 25.0) {
+            // In Stage 1 ($3 - $25), size position close to minimum notional so multiple trades can run safely
             $targetNotional = (float) config('trading.fund_management.stage1_target_notional', 5.50);
             $targetNotional = max($minNotional, $targetNotional);
         } else {
@@ -224,6 +230,7 @@ class RiskManager
                     'allowed' => false,
                     'quantity' => 0,
                     'margin' => 0,
+                    'amount_added' => 0,
                     'leverage' => $leverage,
                     'risk_usd' => 0,
                     'notional' => 0,
@@ -246,7 +253,7 @@ class RiskManager
         }
 
         if ($formattedQuantity <= 0) {
-            return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => 'Calculated lot size resulted in 0 after precision rounding.'];
+            return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'amount_added' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => 'Calculated lot size resulted in 0 after precision rounding.'];
         }
 
         $finalNotional = $formattedQuantity * $entryPrice;
@@ -256,6 +263,7 @@ class RiskManager
             'allowed' => true,
             'quantity' => $formattedQuantity,
             'margin' => $finalMargin,
+            'amount_added' => $finalMargin,
             'leverage' => $leverage,
             'risk_usd' => round($slDistance * $formattedQuantity, 4),
             'notional' => round($finalNotional, 2),

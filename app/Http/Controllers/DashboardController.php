@@ -145,6 +145,8 @@ class DashboardController extends Controller
             'stage' => $stageInfo['stage'],
             'max_positions' => $stageInfo['max_positions'],
             'default_leverage' => $stageInfo['default_leverage'],
+            'amount_per_trade' => config('trading.fund_management.amount_per_trade') ?? round(5.50 / ($stageInfo['default_leverage'] ?? 10), 2),
+            'available_margin' => $this->riskManager->getAvailableBalance($account),
             'live_synced' => $liveSynced,
         ]);
     }
@@ -280,6 +282,9 @@ class DashboardController extends Controller
                 'quantity' => $pos->remaining_quantity,
                 'initial_quantity' => $pos->quantity,
                 'margin_used' => $pos->margin_used,
+                'amount_added' => $pos->amount_added,
+                'initial_amount_added' => $pos->initial_amount_added,
+                'position_size_usd' => $pos->position_size_usd,
                 'leverage' => $pos->leverage,
                 'current_sl' => $pos->current_sl,
                 'tp1_price' => $pos->tp1_price,

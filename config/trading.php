@@ -62,9 +62,10 @@ return [
     |--------------------------------------------------------------------------
     */
     'fund_management' => [
-        'min_available_margin' => 0.65,       // Minimum free available margin in USD to open a new trade
+        'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.65),       // Minimum free available margin in USD to open a new trade
         'exempt_protected_positions' => true, // Breakeven or profit-locked trades do not block new trades
-        'stage1_target_notional' => 5.50,     // Sized for Binance $5 minimum notional at 10x leverage
+        'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.50),     // Sized for Binance $5 minimum notional at 10x leverage
+        'amount_per_trade' => env('TRADING_AMOUNT_PER_TRADE') !== null ? (float) env('TRADING_AMOUNT_PER_TRADE') : null, // Fixed margin amount in USD added per trade (e.g. 0.60, 1.00), null for dynamic
     ],
 
     /*

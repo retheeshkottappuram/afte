@@ -163,7 +163,7 @@ class OrderExecutor
         return [
             'status' => 'opened',
             'trade' => $trade,
-            'message' => "{$side} trade on {$symbol} opened successfully. Margin: \${$margin} ({$leverage}x).",
+            'message' => "{$side} trade on {$symbol} opened successfully. Amount Added: \${$margin} USDT margin ({$leverage}x leverage, \${$sizing['notional']} position size).",
         ];
     }
 }

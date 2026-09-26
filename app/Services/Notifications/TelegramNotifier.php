@@ -55,10 +55,12 @@ class TelegramNotifier
         $icon = $trade->isLong() ? '🟢' : '🔴';
         $modeTag = strtoupper($trade->mode);
 
+        $notional = round($trade->quantity * $trade->entry_price, 2);
         $msg = "⚡ *TRADE EXECUTED [{$modeTag}]*\n\n"
             ."{$icon} *{$trade->symbol} {$trade->side}*\n"
-            ."• *Entry:* \${$trade->entry_price}\n"
-            ."• *Margin:* \${$trade->margin_used} ({$trade->leverage}x)\n"
+            ."• *Amount Added (Margin):* \${$trade->margin_used} USDT\n"
+            ."• *Position Size:* \${$notional} USDT ({$trade->leverage}x Leverage)\n"
+            ."• *Entry Price:* \${$trade->entry_price}\n"
             ."• *Stop Loss:* \${$trade->initial_sl}\n"
             ."• *TP1 (33%):* \${$trade->tp1_price}\n"
             ."• *TP2 (33%):* \${$trade->tp2_price}\n"

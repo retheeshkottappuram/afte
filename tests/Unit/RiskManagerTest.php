@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Trading\RiskManager;
 use Carbon\Carbon;
@@ -85,5 +86,43 @@ class RiskManagerTest extends TestCase
         $canOpen = $riskManager->canOpenTrade($account, 'SOLUSDT', 95);
         $this->assertFalse($canOpen['allowed']);
         $this->assertStringContainsString('Kill Switch', $canOpen['reason']);
+    }
+
+    public function test_sizing_returns_amount_added_and_trade_accessor(): void
+    {
+        $riskManager = app(RiskManager::class);
+
+        $account = TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+        ]);
+
+        $sizing = $riskManager->calculatePositionSize($account, 'SOLUSDT', 150.0, 147.0);
+
+        $this->assertArrayHasKey('amount_added', $sizing);
+        $this->assertGreaterThan(0, $sizing['amount_added']);
+        $this->assertEquals($sizing['margin'], $sizing['amount_added']);
+
+        $trade = Trade::create([
+            'symbol' => 'SOLUSDT',
+            'side' => 'LONG',
+            'mode' => 'paper',
+            'status' => 'OPEN',
+            'stage' => 'ENTRY',
+            'entry_price' => 150.0,
+            'quantity' => 0.04,
+            'remaining_quantity' => 0.04,
+            'margin_used' => 0.60,
+            'leverage' => 10,
+            'initial_sl' => 147.0,
+            'current_sl' => 147.0,
+            'tp1_price' => 153.0,
+            'tp2_price' => 156.0,
+            'opened_at' => now(),
+        ]);
+
+        $this->assertEquals(0.60, $trade->amount_added);
+        $this->assertEquals(6.00, $trade->position_size_usd);
     }
 }

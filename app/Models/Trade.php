@@ -103,6 +103,15 @@ class Trade extends Model
         'closed_at' => 'datetime',
     ];
 
+    /**
+     * @var array<int, string>
+     */
+    protected $appends = [
+        'amount_added',
+        'initial_amount_added',
+        'position_size_usd',
+    ];
+
     public function isLong(): bool
     {
         return strtoupper($this->side) === 'LONG';
@@ -151,6 +160,32 @@ class Trade extends Model
         $pnl = $this->calculateUnrealizedPnl($currentPrice);
 
         return round(($pnl / $this->margin_used) * 100, 2);
+    }
+
+    /**
+     * Amount added / invested as margin for this trade.
+     */
+    public function getAmountAddedAttribute(): float
+    {
+        return round($this->margin_used, 4);
+    }
+
+    /**
+     * Initial margin invested when trade was opened.
+     */
+    public function getInitialAmountAddedAttribute(): float
+    {
+        return $this->leverage > 0
+            ? round(($this->quantity * $this->entry_price) / $this->leverage, 4)
+            : round($this->margin_used, 4);
+    }
+
+    /**
+     * Total position notional value in USD.
+     */
+    public function getPositionSizeUsdAttribute(): float
+    {
+        return round($this->remaining_quantity * $this->entry_price, 2);
     }
 
     /**

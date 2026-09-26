@@ -230,7 +230,7 @@
                         <thead class="bg-cyber-800/80 text-slate-400 font-mono uppercase border-b border-cyber-border">
                             <tr>
                                 <th class="px-5 py-3">Coin / Symbol</th>
-                                <th class="px-4 py-3">Side & Margin</th>
+                                <th class="px-4 py-3">Amount Added (Margin / Size)</th>
                                 <th class="px-4 py-3">Entry $\to$ Exit Price</th>
                                 <th class="px-4 py-3">Profit / Loss (USD)</th>
                                 <th class="px-4 py-3">ROE %</th>
@@ -261,10 +261,16 @@
                                         <span class="text-[10px] text-slate-500">Trade #{{ $trade->id }}</span>
                                     </td>
 
-                                    <!-- Margin & Leverage -->
+                                    <!-- Amount Added (Margin & Size) -->
                                     <td class="px-4 py-3.5 text-slate-300">
-                                        <div>${{ number_format($trade->margin_used, 2) }}</div>
-                                        <span class="text-[10px] text-slate-400">{{ $trade->leverage }}x ISOLATED</span>
+                                        <div class="flex items-center space-x-1">
+                                            <span class="text-white font-bold">${{ number_format($trade->amount_added, 2) }}</span>
+                                            <span class="text-[10px] text-cyan-400">USDT</span>
+                                        </div>
+                                        <span class="text-[10px] text-slate-400 block">Size: ${{ number_format($trade->position_size_usd, 2) }} ({{ $trade->leverage }}x)</span>
+                                        @if(abs($trade->initial_amount_added - $trade->amount_added) > 0.05)
+                                            <span class="text-[9px] text-amber-400/90 block">Init: ${{ number_format($trade->initial_amount_added, 2) }}</span>
+                                        @endif
                                     </td>
 
                                     <!-- Entry & Exit Prices -->
