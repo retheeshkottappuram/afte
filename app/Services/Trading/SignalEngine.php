@@ -92,84 +92,161 @@ class SignalEngine
         $isBullCandle = ($currentClose > $currentOpen) && ($bodyRatio >= 0.38) && ($upperWickPct <= 38.0);
         $isBearCandle = ($currentClose < $currentOpen) && ($bodyRatio >= 0.38) && ($lowerWickPct <= 38.0);
 
+        $ema50 = Indicators::ema($closes, 50);
+        $valEma50 = $ema50[$i] ?? ($ema21[$i] ?? null);
+
         // Volatility Squeeze / Expansion Detection
         $bbExpanding = false;
         if (isset($bb['upper'][$i], $bb['lower'][$i], $bb['upper'][$i - 2], $bb['lower'][$i - 2])) {
             $prevWidth = $bb['upper'][$i - 2] - $bb['lower'][$i - 2];
-            $curWidth = $bb['upper'][$i] - $bb['lower'][$i];
+            $curWidth = $bb['upper'][$i - 2] ? ($bb['upper'][$i] - $bb['lower'][$i]) : 0;
             $bbExpanding = $curWidth > $prevWidth * 1.05;
         }
 
         // ==========================================
-        // 5. Test LONG (BUY) Breakout Setup
+        // 5. Test LONG (BUY) Setup
         // ==========================================
         $longScore = 0;
-        $isCleanBreakoutLong = ($currentClose > $swingHigh && $isBullCandle);
-        $isRetestLong = ($closes[$i - 1] > $swingHigh && $currentLow <= $swingHigh * 1.004 && $currentClose >= $swingHigh && $currentClose >= $currentOpen);
+
+        // Pattern 1: Pure Structure Breakout (New 20-period High with solid body)
+        $isCleanBreakoutLong = ($currentClose > $swingHigh && $isBullCandle && $bodyRatio >= 0.45 && $upperWickPct <= 30.0);
+
+        // Pattern 2: Breakout Retest (Prior bar broke out, current bar tested former resistance as support)
+        $isRetestLong = ($closes[$i - 1] > $swingHigh && $currentLow <= $swingHigh * 1.003 && $currentClose >= $swingHigh && $isBullCandle);
+
+        // Pattern 3: Trend Continuation Pullback into Value Zone (Dip to 21 EMA in established uptrend with rejection hammer)
+        $isPullbackBounceLong = ($valEma9 > $valEma21
+            && ($valEma50 === null || $valEma21 >= $valEma50)
+            && $currentLow <= ($valEma21 * 1.003)
+            && $currentClose > $valEma9
+            && $isBullCandle
+            && $lowerWickPct >= 28.0);
 
         if ($isCleanBreakoutLong) {
-            $longScore += 30; // Verified resistance breakout with solid body close
+            $longScore += 35; // Major structure breakout
         } elseif ($isRetestLong) {
-            $longScore += 28; // Breakout retest & support confirmation
-        } elseif ($currentClose > $valEma9 && $closes[$i - 1] <= $valEma9 && $isBullCandle) {
-            $longScore += 18; // Clean momentum cross
+            $longScore += 32; // Verified breakout retest
+        } elseif ($isPullbackBounceLong) {
+            $longScore += 30; // Institutional value pullback bounce
         }
 
-        if ($valEma9 > $valEma21) {
-            $longScore += 15;
-        }
-        if ($valEma200 && $currentClose > $valEma200) {
-            $longScore += 10;
-        }
-        if ($volRatio >= 1.40) {
-            $longScore += 20; // High institutional volume expansion
-        } elseif ($volRatio >= 1.15) {
-            $longScore += 12;
-        }
-        if ($valRsi >= 52.0 && $valRsi <= 72.0) {
-            $longScore += 15; // RSI momentum sweet-spot
-        }
-        if ($htf1Bullish) {
-            $longScore += 15; // Higher timeframe trend alignment
-        }
-        if ($bbExpanding) {
-            $longScore += 8;  // Volatility expansion out of squeeze
+        // Only proceed if one of the 3 validated institutional patterns occurred
+        if ($longScore > 0) {
+            // Trend alignment on base timeframe
+            if ($valEma9 > $valEma21 && ($valEma50 === null || $valEma21 > $valEma50)) {
+                $longScore += 15;
+            }
+            if ($valEma200 && $currentClose > $valEma200) {
+                $longScore += 10;
+            } elseif ($valEma200 && $currentClose < $valEma200) {
+                $longScore -= 20; // Severe penalty: Counter-trend below 200 EMA
+            }
+
+            // Volume validation
+            if ($volRatio >= 1.35) {
+                $longScore += 20; // Institutional surge
+            } elseif ($volRatio >= 1.05) {
+                $longScore += 10;
+            } elseif ($volRatio < 0.85) {
+                $longScore -= 20; // Low volume trap penalty
+            }
+
+            // Momentum & ADX
+            if ($valRsi >= 50.0 && $valRsi <= 68.0) {
+                $longScore += 15; // Optimal momentum
+            } elseif ($valRsi > 72.0) {
+                $longScore -= 20; // Overbought exhaustion penalty
+            }
+
+            if ($valAdx >= 22.0) {
+                $longScore += 10;
+            } elseif ($valAdx < 17.0) {
+                $longScore -= 15; // Choppy market penalty
+            }
+
+            // Higher timeframe gate
+            if ($htf1Bullish) {
+                $longScore += 15;
+            } else {
+                $longScore -= 30; // Severe penalty: Fighting HTF trend
+            }
+
+            if ($bbExpanding) {
+                $longScore += 5;
+            }
         }
 
         // ==========================================
-        // 6. Test SHORT (SELL) Breakdown Setup
+        // 6. Test SHORT (SELL) Setup
         // ==========================================
         $shortScore = 0;
-        $isCleanBreakdownShort = ($currentClose < $swingLow && $isBearCandle);
-        $isRetestShort = ($closes[$i - 1] < $swingLow && $currentHigh >= $swingLow * 0.996 && $currentClose <= $swingLow && $currentClose <= $currentOpen);
+
+        // Pattern 1: Pure Structure Breakdown (New 20-period Low with solid body)
+        $isCleanBreakdownShort = ($currentClose < $swingLow && $isBearCandle && $bodyRatio >= 0.45 && $lowerWickPct <= 30.0);
+
+        // Pattern 2: Breakdown Retest (Prior bar broke down, current bar tested former support as resistance)
+        $isRetestShort = ($closes[$i - 1] < $swingLow && $currentHigh >= $swingLow * 0.997 && $currentClose <= $swingLow && $isBearCandle);
+
+        // Pattern 3: Trend Continuation Pullback into Value Zone (Rally to 21 EMA in established downtrend with rejection star)
+        $isPullbackRejectionShort = ($valEma9 < $valEma21
+            && ($valEma50 === null || $valEma21 <= $valEma50)
+            && $currentHigh >= ($valEma21 * 0.997)
+            && $currentClose < $valEma9
+            && $isBearCandle
+            && $upperWickPct >= 28.0);
 
         if ($isCleanBreakdownShort) {
-            $shortScore += 30; // Verified support breakdown with solid body close
+            $shortScore += 35; // Major structure breakdown
         } elseif ($isRetestShort) {
-            $shortScore += 28; // Breakdown retest & resistance confirmation
-        } elseif ($currentClose < $valEma9 && $closes[$i - 1] >= $valEma9 && $isBearCandle) {
-            $shortScore += 18; // Clean downward momentum cross
+            $shortScore += 32; // Verified breakdown retest
+        } elseif ($isPullbackRejectionShort) {
+            $shortScore += 30; // Institutional value pullback rejection
         }
 
-        if ($valEma9 < $valEma21) {
-            $shortScore += 15;
-        }
-        if ($valEma200 && $currentClose < $valEma200) {
-            $shortScore += 10;
-        }
-        if ($volRatio >= 1.40) {
-            $shortScore += 20; // High institutional volume expansion
-        } elseif ($volRatio >= 1.15) {
-            $shortScore += 12;
-        }
-        if ($valRsi <= 48.0 && $valRsi >= 28.0) {
-            $shortScore += 15; // RSI downward momentum
-        }
-        if ($htf1Bearish) {
-            $shortScore += 15; // Higher timeframe trend alignment
-        }
-        if ($bbExpanding) {
-            $shortScore += 8;  // Volatility expansion out of squeeze
+        // Only proceed if one of the 3 validated institutional patterns occurred
+        if ($shortScore > 0) {
+            // Trend alignment on base timeframe
+            if ($valEma9 < $valEma21 && ($valEma50 === null || $valEma21 < $valEma50)) {
+                $shortScore += 15;
+            }
+            if ($valEma200 && $currentClose < $valEma200) {
+                $shortScore += 10;
+            } elseif ($valEma200 && $currentClose > $valEma200) {
+                $shortScore -= 20; // Severe penalty: Counter-trend above 200 EMA
+            }
+
+            // Volume validation
+            if ($volRatio >= 1.35) {
+                $shortScore += 20; // Institutional surge
+            } elseif ($volRatio >= 1.05) {
+                $shortScore += 10;
+            } elseif ($volRatio < 0.85) {
+                $shortScore -= 20; // Low volume trap penalty
+            }
+
+            // Momentum & ADX
+            if ($valRsi <= 50.0 && $valRsi >= 32.0) {
+                $shortScore += 15; // Optimal downward momentum
+            } elseif ($valRsi < 28.0) {
+                $shortScore -= 20; // Oversold exhaustion penalty
+            }
+
+            if ($valAdx >= 22.0) {
+                $shortScore += 10;
+            } elseif ($valAdx < 17.0) {
+                $shortScore -= 15; // Choppy market penalty
+            }
+
+            // Higher timeframe gate
+            if ($htf1Bearish) {
+                $shortScore += 15;
+            } else {
+                $shortScore -= 30; // Severe penalty: Fighting HTF trend
+            }
+
+            if ($bbExpanding) {
+                $shortScore += 5;
+            }
         }
 
         $direction = null;
@@ -187,39 +264,28 @@ class SignalEngine
             return null;
         }
 
-        // Calculate Dynamic SL & TP Targets
+        // Calculate Dynamic Structure SL & Asymmetric TP Targets
         $entryPrice = $currentClose;
         if ($direction === 'LONG') {
-            // Correct SL: Structural swing LOW (minimum of recent lows) or ATR buffer
+            // Structural SL: Lowest low of the last 10 candles minus 0.15% cushion, bounded by 1.0% to 2.2%
             $recentLowsSlice = array_slice($lows, max(0, $i - 10), 10);
-            $structuralSl = ! empty($recentLowsSlice) ? min($recentLowsSlice) : ($entryPrice - (1.5 * $valAtr));
-            $atrSl = $entryPrice - (1.5 * $valAtr);
-            $initialSl = min($structuralSl, $atrSl);
+            $structuralLow = ! empty($recentLowsSlice) ? min($recentLowsSlice) : ($entryPrice - (1.5 * $valAtr));
+            $rawSl = $structuralLow * 0.9985;
 
-            // Safety bounds: SL distance between 0.8% and 2.5%
-            $slDist = $entryPrice - $initialSl;
-            $minDist = $entryPrice * 0.008;
-            $maxDist = $entryPrice * 0.025;
-            $slDist = max($minDist, min($maxDist, $slDist));
-
+            $slDist = max($entryPrice * 0.010, min($entryPrice * 0.022, $entryPrice - $rawSl));
             $initialSl = round($entryPrice - $slDist, 6);
-            $tp1 = round($entryPrice + ($slDist * 1.5), 6); // R:R 1:1.5
-            $tp2 = round($entryPrice + ($slDist * 3.0), 6); // R:R 1:3.0
+            $tp1 = round($entryPrice + ($slDist * 1.5), 6); // 1:1.5 R:R
+            $tp2 = round($entryPrice + ($slDist * 3.0), 6); // 1:3.0 R:R
         } else {
-            // Correct SHORT SL: Structural swing HIGH (maximum of recent highs) or ATR buffer
+            // Structural SL: Highest high of the last 10 candles plus 0.15% cushion, bounded by 1.0% to 2.2%
             $recentHighsSlice = array_slice($highs, max(0, $i - 10), 10);
-            $structuralSl = ! empty($recentHighsSlice) ? max($recentHighsSlice) : ($entryPrice + (1.5 * $valAtr));
-            $atrSl = $entryPrice + (1.5 * $valAtr);
-            $initialSl = max($structuralSl, $atrSl);
+            $structuralHigh = ! empty($recentHighsSlice) ? max($recentHighsSlice) : ($entryPrice + (1.5 * $valAtr));
+            $rawSl = $structuralHigh * 1.0015;
 
-            $slDist = $initialSl - $entryPrice;
-            $minDist = $entryPrice * 0.008;
-            $maxDist = $entryPrice * 0.025;
-            $slDist = max($minDist, min($maxDist, $slDist));
-
+            $slDist = max($entryPrice * 0.010, min($entryPrice * 0.022, $rawSl - $entryPrice));
             $initialSl = round($entryPrice + $slDist, 6);
-            $tp1 = round($entryPrice - ($slDist * 1.5), 6);
-            $tp2 = round($entryPrice - ($slDist * 3.0), 6);
+            $tp1 = round($entryPrice - ($slDist * 1.5), 6); // 1:1.5 R:R
+            $tp2 = round($entryPrice - ($slDist * 3.0), 6); // 1:3.0 R:R
         }
 
         $grade = $score >= 88 ? 'A+' : ($score >= 84 ? 'A' : 'B');

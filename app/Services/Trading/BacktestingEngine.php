@@ -119,25 +119,25 @@ class BacktestingEngine
                     continue;
                 }
 
-                // Check Breakeven Protection Trigger (+1.0%)
+                // Check Breakeven Protection Trigger (+0.80%)
                 $gainPct = $isLong
                     ? (($currentHigh - $activeTrade['entry_price']) / $activeTrade['entry_price']) * 100.0
                     : (($activeTrade['entry_price'] - $currentLow) / $activeTrade['entry_price']) * 100.0;
 
-                if (! $activeTrade['be_locked'] && $gainPct >= 1.0) {
+                if (! $activeTrade['be_locked'] && $gainPct >= 0.80) {
                     $activeTrade['be_locked'] = true;
                     $activeTrade['current_sl'] = $isLong
                         ? $activeTrade['entry_price'] * 1.0012
                         : $activeTrade['entry_price'] * 0.9988;
                 }
 
-                // Check TP1 (+2.0%)
+                // Check TP1 (+1.5% to +1.8%)
                 $tp1Hit = $isLong
                     ? ($currentHigh >= $activeTrade['tp1_price'])
                     : ($currentLow <= $activeTrade['tp1_price']);
 
                 if (! $activeTrade['tp1_hit'] && $tp1Hit) {
-                    $closeQty = $activeTrade['total_qty'] * 0.33;
+                    $closeQty = $activeTrade['total_qty'] * 0.50; // Bank 50% profits
                     $partialPnl = $isLong
                         ? ($activeTrade['tp1_price'] - $activeTrade['entry_price']) * $closeQty
                         : ($activeTrade['entry_price'] - $activeTrade['tp1_price']) * $closeQty;
@@ -146,15 +146,19 @@ class BacktestingEngine
                     $activeTrade['remaining_qty'] -= $closeQty;
                     $activeTrade['tp1_hit'] = true;
                     $activeTrade['be_locked'] = true;
+                    // Move SL to Breakeven (+0.12% fee buffer) immediately
+                    $activeTrade['current_sl'] = $isLong
+                        ? $activeTrade['entry_price'] * 1.0012
+                        : $activeTrade['entry_price'] * 0.9988;
                 }
 
-                // Check TP2 (+4.0%)
+                // Check TP2 (+3.0% to +3.6%)
                 $tp2Hit = $isLong
                     ? ($currentHigh >= $activeTrade['tp2_price'])
                     : ($currentLow <= $activeTrade['tp2_price']);
 
                 if ($activeTrade['tp1_hit'] && ! $activeTrade['tp2_hit'] && $tp2Hit) {
-                    $closeQty = $activeTrade['total_qty'] * 0.33;
+                    $closeQty = $activeTrade['total_qty'] * 0.25; // Bank 25% at TP2
                     $partialPnl = $isLong
                         ? ($activeTrade['tp2_price'] - $activeTrade['entry_price']) * $closeQty
                         : ($activeTrade['entry_price'] - $activeTrade['tp2_price']) * $closeQty;
@@ -162,7 +166,7 @@ class BacktestingEngine
                     $activeTrade['realized_pnl'] += $partialPnl;
                     $activeTrade['remaining_qty'] -= $closeQty;
                     $activeTrade['tp2_hit'] = true;
-                    // Move SL to TP1
+                    // Move SL to TP1 level
                     $activeTrade['current_sl'] = $activeTrade['tp1_price'];
                 }
 

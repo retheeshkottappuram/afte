@@ -189,4 +189,45 @@ class MarketEngine
             'closeTimes' => $closeTimes,
         ];
     }
+
+    /**
+     * Get BTC Macro Market Trend direction to prevent counter-trend altcoin executions.
+     *
+     * @return array{trend: string, allow_long: bool, allow_short: bool, btc_price: float}
+     */
+    public function getBtcMarketTrend(): array
+    {
+        return Cache::remember('binance:btc:macro_trend', 45, function (): array {
+            try {
+                $klines = $this->client->klines('BTCUSDT', '1h', 60);
+                $closes = $klines['closes'] ?? [];
+                $count = count($closes);
+                if ($count < 30) {
+                    return ['trend' => 'NEUTRAL', 'allow_long' => true, 'allow_short' => true, 'btc_price' => 0.0];
+                }
+
+                $i = $count - 2;
+                $lastClose = (float) ($closes[$i] ?? 0.0);
+                $ema21 = Indicators::ema($closes, 21);
+                $ema50 = Indicators::ema($closes, 50);
+
+                $vEma21 = $ema21[$i] ?? $lastClose;
+                $vEma50 = $ema50[$i] ?? $lastClose;
+
+                // Strong Bullish: BTC above 21 and 50 EMA, 21 EMA >= 50 EMA
+                if ($lastClose > $vEma21 && $vEma21 >= $vEma50) {
+                    return ['trend' => 'BULLISH', 'allow_long' => true, 'allow_short' => false, 'btc_price' => $lastClose];
+                }
+
+                // Strong Bearish: BTC below 21 and 50 EMA, 21 EMA <= 50 EMA
+                if ($lastClose < $vEma21 && $vEma21 <= $vEma50) {
+                    return ['trend' => 'BEARISH', 'allow_long' => false, 'allow_short' => true, 'btc_price' => $lastClose];
+                }
+
+                return ['trend' => 'RANGING', 'allow_long' => true, 'allow_short' => true, 'btc_price' => $lastClose];
+            } catch (\Throwable) {
+                return ['trend' => 'NEUTRAL', 'allow_long' => true, 'allow_short' => true, 'btc_price' => 0.0];
+            }
+        });
+    }
 }

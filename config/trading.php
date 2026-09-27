@@ -86,20 +86,20 @@ return [
     |--------------------------------------------------------------------------
     */
     'management' => [
-        // Breakeven lock: Triggered when price moves favorably by +0.9% (+9% ROE at 10x)
-        'be_gain_pct' => 0.90,
+        // Breakeven lock: Triggered when price moves favorably by +0.80% (+8% ROE at 10x)
+        'be_gain_pct' => 0.80,
         'be_fee_buffer_pct' => 0.12, // Entry + 0.12% to cover maker/taker round-trip fees
 
         // Partial Profit Booking:
-        'tp1_pct' => 1.80,           // TP1 at +1.8% price gain (+18% ROE at 10x)
-        'tp1_close_ratio' => 0.33,   // Close 33% at TP1
+        'tp1_pct' => 1.60,           // TP1 at +1.6% price gain (+16% ROE at 10x)
+        'tp1_close_ratio' => 0.50,   // Close 50% at TP1 to secure guaranteed profit
 
-        'tp2_pct' => 3.60,           // TP2 at +3.6% price gain (+36% ROE at 10x)
-        'tp2_close_ratio' => 0.33,   // Close 33% at TP2
+        'tp2_pct' => 3.20,           // TP2 at +3.2% price gain (+32% ROE at 10x)
+        'tp2_close_ratio' => 0.25,   // Close 25% at TP2
 
-        // Remaining 34% runs on Trailing SL:
+        // Remaining 25% runs on Trailing SL:
         'trailing_sl_atr_mult' => 2.0,
-        'trailing_sl_trigger_pct' => 2.20, // Start trailing after +2.2% gain
+        'trailing_sl_trigger_pct' => 2.0, // Start trailing after +2.0% gain
     ],
 
     /*

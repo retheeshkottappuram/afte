@@ -155,6 +155,9 @@ class DynamicTradeManager
                 $trade->be_locked = true;
             }
 
+            // Immediately elevate native Stop Loss order on Binance exchange to Breakeven
+            $this->updateExchangeStopLoss($trade, $trade->current_sl);
+
             $this->notifier->notifyTp1Hit($trade, $closeQty, round($pnl, 2));
 
             if (in_array($trade->mode, ['live', 'testnet'], true)) {
@@ -178,7 +181,7 @@ class DynamicTradeManager
     }
 
     /**
-     * TP2 Logic: Book second 33% profit and trail SL to TP1 level.
+     * TP2 Logic: Book second profit and trail SL to TP1 level.
      */
     protected function checkTp2(Trade $trade, float $currentPrice): void
     {
@@ -194,7 +197,7 @@ class DynamicTradeManager
             return;
         }
 
-        $ratio = (float) config('trading.management.tp2_close_ratio', 0.33);
+        $ratio = (float) config('trading.management.tp2_close_ratio', 0.25);
         $closeQty = $this->client->formatQuantity($trade->symbol, $trade->quantity * $ratio);
 
         if ($closeQty > 0 && $closeQty < $trade->remaining_quantity) {
@@ -214,6 +217,9 @@ class DynamicTradeManager
             } else {
                 $trade->current_sl = min($trade->current_sl, $trade->tp1_price);
             }
+
+            // Immediately elevate native Stop Loss order on Binance exchange to TP1 level
+            $this->updateExchangeStopLoss($trade, $trade->current_sl);
 
             $this->notifier->notifyTp2Hit($trade, $closeQty, round($pnl, 2));
 

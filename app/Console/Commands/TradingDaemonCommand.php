@@ -164,7 +164,8 @@ class TradingDaemonCommand extends Command
                 $lastScanTime = $now;
 
                 if ($account->canTrade()) {
-                    $this->logLine('['.date('H:i:s').'] Scanning liquid pairs for high-confluence breakout setups...');
+                    $btcTrend = $marketEngine->getBtcMarketTrend();
+                    $this->logLine('['.date('H:i:s')."] Macro BTC Trend: {$btcTrend['trend']} (\${$btcTrend['btc_price']}) | Scanning setups...");
                     try {
                         $symbols = $marketEngine->getScannableSymbols();
                         $candidates = array_slice($symbols, 0, 15);
@@ -175,7 +176,19 @@ class TradingDaemonCommand extends Command
                                 $klines = $marketEngine->getMultiTimeframeKlines($sym);
                                 $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
 
-                                if ($eval !== null && $eval['score'] >= 82) {
+                                if ($eval !== null && $eval['score'] >= 80) {
+                                    // Macro Market Trend Filter Gate
+                                    if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long']) {
+                                        $this->logLine("Skipped {$sym} LONG: Counter-trend to Bearish BTC macro.");
+
+                                        continue;
+                                    }
+                                    if ($eval['direction'] === 'SHORT' && ! $btcTrend['allow_short']) {
+                                        $this->logLine("Skipped {$sym} SHORT: Counter-trend to Bullish BTC macro.");
+
+                                        continue;
+                                    }
+
                                     $ai = $validator->validate($eval, $klines['base']);
 
                                     if ($ai['approved']) {
