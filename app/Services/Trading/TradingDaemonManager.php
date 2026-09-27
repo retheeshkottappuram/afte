@@ -159,7 +159,7 @@ class TradingDaemonManager
                 }
             } else {
                 $cmd = sprintf(
-                    'nohup %s %s trade:daemon --mode=%s >> %s 2>&1 & echo $!',
+                    '(%s %s trade:daemon --mode=%s >> %s 2>&1 &) && echo $!',
                     escapeshellarg($phpCli),
                     escapeshellarg($artisanPath),
                     escapeshellarg($mode),
@@ -175,11 +175,11 @@ class TradingDaemonManager
                     }
                 } elseif (function_exists('proc_open')) {
                     $descriptorspec = [
-                        0 => ['pipe', 'r'],
+                        0 => ['file', '/dev/null', 'r'],
                         1 => ['file', $logPath, 'a'],
                         2 => ['file', $logPath, 'a'],
                     ];
-                    $proc = proc_open("{$phpCli} {$artisanPath} trade:daemon --mode={$mode} &", $descriptorspec, $pipes);
+                    $proc = proc_open("({$phpCli} {$artisanPath} trade:daemon --mode={$mode} &)", $descriptorspec, $pipes);
                     if (is_resource($proc)) {
                         $st = proc_get_status($proc);
                         $capturedPid = $st['pid'] ?? null;

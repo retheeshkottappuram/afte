@@ -14,11 +14,6 @@ Schedule::command('trade:daemon --mode=live --once')
     ->withoutOverlapping(2)
     ->runInBackground();
 
-Schedule::command('trade:daemon --mode=paper --once')
-    ->everyMinute()
-    ->withoutOverlapping(2)
-    ->runInBackground();
-
 // 2. Crypto Sentinel Signal Watcher: Candle close monitor & Telegram alerts
 Schedule::command('crypto:watch-signals --once')
     ->everyMinute()
