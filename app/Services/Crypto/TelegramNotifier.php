@@ -9,9 +9,16 @@ use Throwable;
 class TelegramNotifier
 {
     public function __construct(
-        protected string $botToken,
-        protected string $chatId
-    ) {}
+        ?string $botToken = null,
+        ?string $chatId = null
+    ) {
+        $this->botToken = (string) ($botToken ?? config('crypto.telegram.bot_token', ''));
+        $this->chatId = (string) ($chatId ?? config('crypto.telegram.chat_id', ''));
+    }
+
+    protected string $botToken;
+
+    protected string $chatId;
 
     /**
      * Check if the bot token and chat ID are configured.

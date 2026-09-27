@@ -457,6 +457,10 @@
                         <span>Contract: <strong id="hud-contract" class="text-slate-200">SOLUSDT.P</strong></span>
                         <span id="hud-score-label" class="text-emerald-400 font-bold">Score: --/100</span>
                     </div>
+                    <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
+                        <span id="hud-btc-macro" class="text-slate-400 font-mono">BTC Macro: <strong class="text-slate-300">Checking...</strong></span>
+                        <span id="hud-setup-type" class="text-slate-400">Setup: <strong class="text-slate-300">--</strong></span>
+                    </div>
                 </div>
 
                 <!-- 2. Perpetual Trade Options -->
@@ -932,6 +936,7 @@
     let tp3Line = null;
     let chartMode = 'algo'; // 'algo' or 'tv'
     let historicalMarkers = [];
+    let activeInstitutionalSignal = null;
     let currentWidget = null;
     let currentAbortController = null;
     let activeSymbol = '{{ $cryptoConfig['symbols'][0] ?? 'BTCUSDT' }}';
@@ -1135,12 +1140,28 @@
             updateTooltip(param);
         });
 
-        // Click to inspect historical signal levels on chart
+        // Click to inspect historical signal levels on chart or restore verified active signal
         chart.subscribeClick(param => {
-            if (!param || !param.time || !historicalMarkers.length) return;
-            const marker = historicalMarkers.find(m => m.time === param.time);
-            if (marker) {
-                renderTradeLevels(marker);
+            if (!param || !param.time) {
+                if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
+                    renderTradeLevels(activeInstitutionalSignal);
+                } else {
+                    clearTradeLevels();
+                }
+                return;
+            }
+            if (historicalMarkers && historicalMarkers.length) {
+                const marker = historicalMarkers.find(m => m.time === param.time);
+                if (marker) {
+                    renderTradeLevels(marker);
+                    return;
+                }
+            }
+            // Clicked empty bar / whitespace - restore verified active signal or clear
+            if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
+                renderTradeLevels(activeInstitutionalSignal);
+            } else {
+                clearTradeLevels();
             }
         });
 
@@ -1373,10 +1394,11 @@
 
                     chart.timeScale().fitContent();
 
-                    // Render active or latest trade setup levels directly on the chart!
-                    const latestSetup = data.signal || (historicalMarkers.length > 0 ? historicalMarkers[historicalMarkers.length - 1] : null);
-                    if (latestSetup && (latestSetup.entry || latestSetup.sl)) {
-                        renderTradeLevels(latestSetup);
+                    // Render trade levels ONLY if an institutional setup is genuinely active and verified.
+                    // Never render artificial or expired setup lines on the chart!
+                    activeInstitutionalSignal = data.signal;
+                    if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
+                        renderTradeLevels(activeInstitutionalSignal);
                     } else {
                         clearTradeLevels();
                     }
@@ -1390,59 +1412,103 @@
                 const sig = data.signal;
                 const diag = data.diagnostics || {};
                 const perp = data.perpetual_options || {};
+                const btcMacro = data.btc_macro || {};
+
+                // Update BTC Macro Indicator
+                const btcMacroEl = document.getElementById('hud-btc-macro');
+                if (btcMacroEl) {
+                    const btcTrendStr = btcMacro.trend || 'UNKNOWN';
+                    const btcColor = btcTrendStr === 'BULLISH' ? 'text-emerald-400' : (btcTrendStr === 'BEARISH' ? 'text-rose-400' : 'text-amber-400');
+                    const btcDot = btcTrendStr === 'BULLISH' ? '🟢' : (btcTrendStr === 'BEARISH' ? '🔴' : '🟡');
+                    const btcPriceFormatted = btcMacro.btc_price ? ' ($' + Number(btcMacro.btc_price).toLocaleString(undefined, { maximumFractionDigits: 0 }) + ')' : '';
+                    btcMacroEl.innerHTML = `${btcDot} BTC Macro: <strong class="${btcColor}">${btcTrendStr}</strong>${btcPriceFormatted}`;
+                }
+
+                // Update Setup Type
+                const setupTypeEl = document.getElementById('hud-setup-type');
+                if (setupTypeEl) {
+                    if (sig && sig.setup_type) {
+                        setupTypeEl.innerHTML = `Setup: <strong class="text-emerald-400 font-bold">${sig.setup_type}</strong>`;
+                    } else {
+                        setupTypeEl.innerHTML = 'Setup: <strong class="text-slate-500">STANDBY</strong>';
+                    }
+                }
 
                 // Update Signal Badge
                 if (sig && sig.side === 'BUY') {
                     const activeTag = sig.is_active_trade ? ' (ACTIVE SETUP)' : '';
                     badge.className = 'px-2.5 py-1 rounded-lg text-xs font-black tracking-wide bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/20 flex items-center space-x-1.5';
-                    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span><span>🟢 STRONG BUY / LONG${activeTag}</span>`;
+                    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span><span>🟢 STRONG BUY / LONG${activeTag} (SCORE ${sig.score})</span>`;
                 } else if (sig && sig.side === 'SELL') {
                     const activeTag = sig.is_active_trade ? ' (ACTIVE SETUP)' : '';
                     badge.className = 'px-2.5 py-1 rounded-lg text-xs font-black tracking-wide bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm shadow-rose-500/20 flex items-center space-x-1.5';
-                    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span><span>🔴 STRONG SELL / SHORT${activeTag}</span>`;
+                    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span><span>🔴 STRONG SELL / SHORT${activeTag} (SCORE ${sig.score})</span>`;
                 } else {
                     const buyScore = diag.buy_score || 0;
                     const sellScore = diag.sell_score || 0;
-                    badge.className = 'px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide bg-slate-800 text-slate-300 border border-slate-700 flex items-center space-x-1.5';
-                    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span><span>⚪ SCANNING (${buyScore > sellScore ? 'BULL' : 'BEAR'} BIAS)</span>`;
+                    const isBtcBlocked = (buyScore >= sellScore && btcMacro.allow_long === false) || (sellScore > buyScore && btcMacro.allow_short === false);
+
+                    if (isBtcBlocked) {
+                        badge.className = 'px-2.5 py-1 rounded-lg text-xs font-black tracking-wide bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1.5';
+                        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400"></span><span>🛡️ BLOCKED (COUNTER BTC ${btcMacro.trend || 'MACRO'})</span>`;
+                    } else {
+                        badge.className = 'px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide bg-slate-800 text-slate-300 border border-slate-700 flex items-center space-x-1.5';
+                        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span><span>⚪ STANDBY (NO INSTITUTIONAL SETUP)</span>`;
+                    }
                 }
 
                 // Update Score Label
                 const scoreLabel = document.getElementById('hud-score-label');
                 if (scoreLabel) {
-                    const scoreVal = sig ? sig.score : Math.max(diag.buy_score || 0, diag.sell_score || 0);
-                    scoreLabel.textContent = `Score: ${scoreVal}/100`;
-                    scoreLabel.className = scoreVal >= 70 ? 'text-emerald-400 font-bold' : (scoreVal >= 50 ? 'text-amber-400 font-bold' : 'text-slate-400 font-bold');
+                    if (sig) {
+                        scoreLabel.textContent = `Score: ${sig.score}/100 [Grade ${sig.grade || 'A'}]`;
+                        scoreLabel.className = 'text-emerald-400 font-bold';
+                    } else {
+                        const rawScore = Math.max(diag.buy_score || 0, diag.sell_score || 0);
+                        scoreLabel.textContent = `Score: ${rawScore}/100 (Threshold: 82)`;
+                        scoreLabel.className = rawScore >= 82 ? 'text-amber-400 font-bold' : 'text-slate-400 font-bold';
+                    }
                 }
 
                 // Update Perpetual Trade Options
-                if (perp.recommended_leverage) {
-                    document.getElementById('hud-leverage').textContent = perp.recommended_leverage;
-                }
-                if (perp.risk_reward) {
-                    document.getElementById('hud-rr').textContent = perp.risk_reward;
+                const hudLeverage = document.getElementById('hud-leverage');
+                const hudRr = document.getElementById('hud-rr');
+                if (sig && perp && perp.recommended_leverage) {
+                    if (hudLeverage) hudLeverage.textContent = perp.recommended_leverage;
+                    if (hudRr) hudRr.textContent = perp.risk_reward || '1 : 2.0';
+                } else {
+                    if (hudLeverage) hudLeverage.textContent = 'Standby';
+                    if (hudRr) hudRr.textContent = '--';
                 }
 
                 const fmt = (val) => val ? (Number(val) < 1 ? Number(val).toFixed(6) : Number(val).toFixed(4)) : '--';
 
-                const entryVal = sig ? sig.entry : data.price;
-                document.getElementById('hud-entry').textContent = fmt(entryVal);
+                if (sig && sig.entry) {
+                    const entryVal = sig.entry;
+                    document.getElementById('hud-entry').textContent = fmt(entryVal);
 
-                const slVal = sig ? sig.sl : (perp.sl_pct ? (data.price * (1 - (perp.sl_pct / 100))) : null);
-                const slPct = perp.sl_pct ? `(-${perp.sl_pct}%)` : '';
-                document.getElementById('hud-sl').textContent = fmt(slVal) + ' ' + slPct;
+                    const slVal = sig.sl;
+                    const slPct = perp.sl_pct ? `(-${perp.sl_pct}%)` : (entryVal > 0 && slVal > 0 ? `(-${Math.abs((entryVal - slVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-sl').textContent = fmt(slVal) + (slPct ? ' ' + slPct : '');
 
-                const tp1Val = sig ? sig.tp1 : (perp.tp1_pct ? (data.price * (1 + (perp.tp1_pct / 100))) : null);
-                const tp1Pct = perp.tp1_pct ? `(+${perp.tp1_pct}%)` : '';
-                document.getElementById('hud-tp1').textContent = fmt(tp1Val) + ' ' + tp1Pct;
+                    const tp1Val = sig.tp1;
+                    const tp1Pct = perp.tp1_pct ? `(+${perp.tp1_pct}%)` : (entryVal > 0 && tp1Val > 0 ? `(+${Math.abs((tp1Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp1').textContent = fmt(tp1Val) + (tp1Pct ? ' ' + tp1Pct : '');
 
-                const tp2Val = sig ? sig.tp2 : (perp.tp2_pct ? (data.price * (1 + (perp.tp2_pct / 100))) : null);
-                const tp2Pct = perp.tp2_pct ? `(+${perp.tp2_pct}%)` : '';
-                document.getElementById('hud-tp2').textContent = fmt(tp2Val) + ' ' + tp2Pct;
+                    const tp2Val = sig.tp2;
+                    const tp2Pct = perp.tp2_pct ? `(+${perp.tp2_pct}%)` : (entryVal > 0 && tp2Val > 0 ? `(+${Math.abs((tp2Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp2').textContent = fmt(tp2Val) + (tp2Pct ? ' ' + tp2Pct : '');
 
-                const tp3Val = sig ? sig.tp3 : (perp.tp3_pct ? (data.price * (1 + (perp.tp3_pct / 100))) : null);
-                const tp3Pct = perp.tp3_pct ? `(+${perp.tp3_pct}%)` : '';
-                document.getElementById('hud-tp3').textContent = fmt(tp3Val) + ' ' + tp3Pct;
+                    const tp3Val = sig.tp3;
+                    const tp3Pct = perp.tp3_pct ? `(+${perp.tp3_pct}%)` : (entryVal > 0 && tp3Val > 0 ? `(+${Math.abs((tp3Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp3').textContent = fmt(tp3Val) + (tp3Pct ? ' ' + tp3Pct : '');
+                } else {
+                    document.getElementById('hud-entry').textContent = '--';
+                    document.getElementById('hud-sl').textContent = '--';
+                    document.getElementById('hud-tp1').textContent = '--';
+                    document.getElementById('hud-tp2').textContent = '--';
+                    document.getElementById('hud-tp3').textContent = '--';
+                }
 
                 // Ticker stats
                 document.getElementById('hud-rsi').textContent = diag.rsi !== undefined ? diag.rsi : '--';

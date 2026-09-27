@@ -94,109 +94,107 @@ class CryptoSignalController extends Controller
                 dispatchTelegram: true
             );
 
+            // Condition 1: Check Bitcoin Macro Trend
+            $btcTrend = $binanceClient->getBtcMarketTrend();
+
             $signal = $evaluation['signal'];
             $diagnostics = $evaluation['diagnostics'];
 
-            // Retain active trade setup from the latest marker if the trade is still in progress (SL not breached)
+            // Gate newly generated signal by Bitcoin Macro Trend & Minimum Institutional Score (82)
+            if ($signal) {
+                $side = strtoupper((string) ($signal['side'] ?? 'BUY'));
+                if ($side === 'BUY' && ! $btcTrend['allow_long']) {
+                    $diagnostics['rejection'] = "Blocked: BUY setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend";
+                    $signal = null;
+                } elseif ($side === 'SELL' && ! $btcTrend['allow_short']) {
+                    $diagnostics['rejection'] = "Blocked: SELL setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend";
+                    $signal = null;
+                } elseif (($signal['score'] ?? 0) < 82) {
+                    $diagnostics['rejection'] = "Setup score ({$signal['score']}) is below institutional minimum conviction (82)";
+                    $signal = null;
+                }
+            }
+
+            // Retain active trade setup from the latest marker ONLY if aligned with BTC macro, score >= 82, and SL not breached
             $lastMarker = ! empty($history['markers']) ? end($history['markers']) : null;
             if (! $signal && $lastMarker) {
-                $markerTime = (int) ($lastMarker['time'] ?? 0);
-                $candleAgeSeconds = now()->timestamp - $markerTime;
-                $maxActiveSeconds = match ($interval) {
-                    '1m' => 900,
-                    '3m' => 1800,
-                    '5m' => 3600,
-                    '15m' => 14400, // 4 hours
-                    '30m' => 28800, // 8 hours
-                    '1h' => 43200,  // 12 hours
-                    '4h' => 172800, // 48 hours
-                    default => 14400,
-                };
+                $markerScore = (int) ($lastMarker['score'] ?? 0);
+                $side = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
+                $isBtcAligned = ($side === 'BUY' && $btcTrend['allow_long']) || ($side === 'SELL' && $btcTrend['allow_short']);
 
-                if ($candleAgeSeconds <= $maxActiveSeconds) {
-                    $side = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
-                    $sl = (float) ($lastMarker['sl'] ?? 0);
-                    $entry = (float) ($lastMarker['entry'] ?? 0);
-                    $invalidated = ($side === 'BUY' && $lastClose < $sl) || ($side === 'SELL' && $lastClose > $sl);
+                if ($markerScore >= 82 && $isBtcAligned) {
+                    $markerTime = (int) ($lastMarker['time'] ?? 0);
+                    $candleAgeSeconds = now()->timestamp - $markerTime;
+                    $maxActiveSeconds = match ($interval) {
+                        '1m' => 900,
+                        '3m' => 1800,
+                        '5m' => 3600,
+                        '15m' => 14400, // 4 hours
+                        '30m' => 28800, // 8 hours
+                        '1h' => 43200,  // 12 hours
+                        '4h' => 172800, // 48 hours
+                        default => 14400,
+                    };
 
-                    if (! $invalidated && $entry > 0) {
-                        $atrPct = (float) ($lastMarker['atr_pct'] ?? 1.5);
-                        $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
-                        $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
-                        $slPct = round(abs($entry - $sl) / $entry * 100, 2);
-                        $tp1Pct = round(abs(($lastMarker['tp1'] ?? $entry) - $entry) / $entry * 100, 2);
-                        $tp2Pct = round(abs(($lastMarker['tp2'] ?? $entry) - $entry) / $entry * 100, 2);
-                        $tp3Pct = round(abs(($lastMarker['tp3'] ?? $entry) - $entry) / $entry * 100, 2);
-                        $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.0';
+                    if ($candleAgeSeconds <= $maxActiveSeconds) {
+                        $sl = (float) ($lastMarker['sl'] ?? 0);
+                        $entry = (float) ($lastMarker['entry'] ?? 0);
+                        $invalidated = ($side === 'BUY' && $lastClose < $sl) || ($side === 'SELL' && $lastClose > $sl);
 
-                        $activePerpOptions = [
-                            'recommended_leverage' => $recLeverage,
-                            'margin_mode' => 'Isolated Margin',
-                            'order_type' => 'Limit / Market Entry',
-                            'risk_per_trade' => '1% - 2% Account Balance',
-                            'risk_reward' => $rrRatio,
-                            'sl_pct' => $slPct,
-                            'tp1_pct' => $tp1Pct,
-                            'tp2_pct' => $tp2Pct,
-                            'tp3_pct' => $tp3Pct,
-                            'sl_leveraged_pct' => round($slPct * $levMult, 1),
-                            'tp1_leveraged_pct' => round($tp1Pct * $levMult, 1),
-                            'tp2_leveraged_pct' => round($tp2Pct * $levMult, 1),
-                            'tp3_leveraged_pct' => round($tp3Pct * $levMult, 1),
-                            'leverage_multiplier' => $levMult,
-                            'liquidation_buffer' => '> 15% safety cushion',
-                        ];
+                        if (! $invalidated && $entry > 0) {
+                            $atrPct = (float) ($lastMarker['atr_pct'] ?? 1.5);
+                            $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
+                            $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
+                            $slPct = round(abs($entry - $sl) / $entry * 100, 2);
+                            $tp1Pct = round(abs(($lastMarker['tp1'] ?? $entry) - $entry) / $entry * 100, 2);
+                            $tp2Pct = round(abs(($lastMarker['tp2'] ?? $entry) - $entry) / $entry * 100, 2);
+                            $tp3Pct = round(abs(($lastMarker['tp3'] ?? $entry) - $entry) / $entry * 100, 2);
+                            $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.0';
 
-                        $signal = [
-                            'side' => $side,
-                            'is_active_trade' => true,
-                            'setup_type' => $lastMarker['setup_type'] ?? 'TREND',
-                            'score' => (int) ($lastMarker['score'] ?? 80),
-                            'grade' => (string) ($lastMarker['grade'] ?? 'B'),
-                            'entry' => $entry,
-                            'sl' => $sl,
-                            'tp1' => (float) ($lastMarker['tp1'] ?? 0),
-                            'tp2' => (float) ($lastMarker['tp2'] ?? 0),
-                            'tp3' => (float) ($lastMarker['tp3'] ?? 0),
-                            'rsi' => $lastMarker['rsi'] ?? null,
-                            'adx' => $lastMarker['adx'] ?? null,
-                            'atr_pct' => $atrPct,
-                            'volume_ratio' => $lastMarker['volume_ratio'] ?? null,
-                            'candle_close_time' => $markerTime * 1000,
-                            'perpetual_options' => $activePerpOptions,
-                        ];
+                            $activePerpOptions = [
+                                'recommended_leverage' => $recLeverage,
+                                'margin_mode' => 'Isolated Margin',
+                                'order_type' => 'Limit / Market Entry',
+                                'risk_per_trade' => '1% - 2% Account Balance',
+                                'risk_reward' => $rrRatio,
+                                'sl_pct' => $slPct,
+                                'tp1_pct' => $tp1Pct,
+                                'tp2_pct' => $tp2Pct,
+                                'tp3_pct' => $tp3Pct,
+                                'sl_leveraged_pct' => round($slPct * $levMult, 1),
+                                'tp1_leveraged_pct' => round($tp1Pct * $levMult, 1),
+                                'tp2_leveraged_pct' => round($tp2Pct * $levMult, 1),
+                                'tp3_leveraged_pct' => round($tp3Pct * $levMult, 1),
+                                'leverage_multiplier' => $levMult,
+                                'liquidation_buffer' => '> 15% safety cushion',
+                            ];
+
+                            $signal = [
+                                'side' => $side,
+                                'is_active_trade' => true,
+                                'setup_type' => $lastMarker['setup_type'] ?? 'STRUCTURE_BREAKOUT',
+                                'score' => $markerScore,
+                                'grade' => (string) ($lastMarker['grade'] ?? 'A'),
+                                'entry' => $entry,
+                                'sl' => $sl,
+                                'tp1' => (float) ($lastMarker['tp1'] ?? 0),
+                                'tp2' => (float) ($lastMarker['tp2'] ?? 0),
+                                'tp3' => (float) ($lastMarker['tp3'] ?? 0),
+                                'rsi' => $lastMarker['rsi'] ?? null,
+                                'adx' => $lastMarker['adx'] ?? null,
+                                'atr_pct' => $atrPct,
+                                'volume_ratio' => $lastMarker['volume_ratio'] ?? null,
+                                'candle_close_time' => $markerTime * 1000,
+                                'perpetual_options' => $activePerpOptions,
+                            ];
+                        }
                     }
                 }
             }
 
+            // Only provide perpetual options if a verified institutional signal is genuinely active.
+            // Do NOT synthesize fake entry/SL/TP levels when the system is waiting on standby.
             $perpetualOptions = $signal['perpetual_options'] ?? null;
-            if (! $perpetualOptions && $lastClose > 0) {
-                $atrPct = (float) ($diagnostics['atr_pct'] ?? 1.5);
-                $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
-                $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
-                $slPct = round(max(1.0, $atrPct * 1.5), 2);
-                $tp1Pct = round($slPct * 1.0, 2);
-                $tp2Pct = round($slPct * 2.0, 2);
-                $tp3Pct = round($slPct * 3.0, 2);
-
-                $perpetualOptions = [
-                    'recommended_leverage' => $recLeverage,
-                    'margin_mode' => 'Isolated Margin',
-                    'order_type' => 'Limit / Market Entry',
-                    'risk_per_trade' => '1% - 2% Account Balance',
-                    'risk_reward' => '1 : 2.0',
-                    'sl_pct' => $slPct,
-                    'tp1_pct' => $tp1Pct,
-                    'tp2_pct' => $tp2Pct,
-                    'tp3_pct' => $tp3Pct,
-                    'sl_leveraged_pct' => round($slPct * $levMult, 1),
-                    'tp1_leveraged_pct' => round($tp1Pct * $levMult, 1),
-                    'tp2_leveraged_pct' => round($tp2Pct * $levMult, 1),
-                    'tp3_leveraged_pct' => round($tp3Pct * $levMult, 1),
-                    'leverage_multiplier' => $levMult,
-                    'liquidation_buffer' => '> 15% safety cushion',
-                ];
-            }
 
             return response()->json([
                 'success' => true,
@@ -210,6 +208,7 @@ class CryptoSignalController extends Controller
                 'signal' => $signal,
                 'diagnostics' => $diagnostics,
                 'perpetual_options' => $perpetualOptions,
+                'btc_macro' => $btcTrend,
                 'candles' => $history['candles'],
                 'markers' => $history['markers'],
                 'ema9' => $history['ema9'],
@@ -251,67 +250,100 @@ class CryptoSignalController extends Controller
             $htf1Candles = ($useHtf && $interval !== $htf1Interval) ? $binanceClient->klines($symbol, $htf1Interval, 260) : null;
             $htf2Candles = ($useHtf && $htf2Interval !== null && $interval !== $htf2Interval) ? $binanceClient->klines($symbol, $htf2Interval, 260) : null;
 
+            $btcTrend = $binanceClient->getBtcMarketTrend();
+
             $evaluation = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles);
             $signal = $evaluation['signal'];
 
-            $closes = $baseCandles['closes'] ?? [];
-            $lastClose = count($closes) >= 2 ? $closes[count($closes) - 2] : ($closes[count($closes) - 1] ?? 0.0);
-            $closeTime = count($baseCandles['closeTimes'] ?? []) >= 2 ? $baseCandles['closeTimes'][count($baseCandles['closeTimes']) - 2] : (now()->timestamp * 1000);
+            // If no fresh signal on current closed candle, check if latest historical marker is an active valid setup
+            if (! $signal) {
+                $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140);
+                $lastMarker = ! empty($history['markers']) ? end($history['markers']) : null;
+                if ($lastMarker && ((int) ($lastMarker['score'] ?? 0)) >= 82) {
+                    $side = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
+                    $isBtcAligned = ($side === 'BUY' && $btcTrend['allow_long']) || ($side === 'SELL' && $btcTrend['allow_short']);
+                    $closes = $baseCandles['closes'] ?? [];
+                    $lastClose = count($closes) >= 2 ? $closes[count($closes) - 2] : ($closes[count($closes) - 1] ?? 0.0);
+                    $sl = (float) ($lastMarker['sl'] ?? 0);
+                    $entry = (float) ($lastMarker['entry'] ?? 0);
+                    $invalidated = ($side === 'BUY' && $lastClose < $sl) || ($side === 'SELL' && $lastClose > $sl);
+                    $candleAgeSeconds = now()->timestamp - ((int) ($lastMarker['time'] ?? 0));
+
+                    if ($isBtcAligned && ! $invalidated && $entry > 0 && $candleAgeSeconds <= 14400) {
+                        $atrPct = (float) ($lastMarker['atr_pct'] ?? 1.5);
+                        $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
+                        $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
+                        $slPct = round(abs($entry - $sl) / $entry * 100, 2);
+                        $tp1Pct = round(abs(($lastMarker['tp1'] ?? $entry) - $entry) / $entry * 100, 2);
+                        $tp2Pct = round(abs(($lastMarker['tp2'] ?? $entry) - $entry) / $entry * 100, 2);
+                        $tp3Pct = round(abs(($lastMarker['tp3'] ?? $entry) - $entry) / $entry * 100, 2);
+                        $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.0';
+
+                        $signal = [
+                            'side' => $side,
+                            'is_active_trade' => true,
+                            'setup_type' => $lastMarker['setup_type'] ?? 'STRUCTURE_BREAKOUT',
+                            'score' => (int) ($lastMarker['score'] ?? 82),
+                            'grade' => (string) ($lastMarker['grade'] ?? 'A'),
+                            'entry' => $entry,
+                            'sl' => $sl,
+                            'tp1' => (float) ($lastMarker['tp1'] ?? 0),
+                            'tp2' => (float) ($lastMarker['tp2'] ?? 0),
+                            'tp3' => (float) ($lastMarker['tp3'] ?? 0),
+                            'rsi' => $lastMarker['rsi'] ?? null,
+                            'adx' => $lastMarker['adx'] ?? null,
+                            'volume_ratio' => $lastMarker['volume_ratio'] ?? null,
+                            'atr_pct' => $atrPct,
+                            'candle_close_time' => ((int) ($lastMarker['time'] ?? 0)) * 1000,
+                            'perpetual_options' => [
+                                'recommended_leverage' => $recLeverage,
+                                'margin_mode' => 'Isolated Margin',
+                                'order_type' => 'Limit / Market Entry',
+                                'risk_per_trade' => '1% - 2% Account Balance',
+                                'risk_reward' => $rrRatio,
+                                'sl_pct' => $slPct,
+                                'tp1_pct' => $tp1Pct,
+                                'tp2_pct' => $tp2Pct,
+                                'tp3_pct' => $tp3Pct,
+                                'sl_leveraged_pct' => round($slPct * $levMult, 1),
+                                'tp1_leveraged_pct' => round($tp1Pct * $levMult, 1),
+                                'tp2_leveraged_pct' => round($tp2Pct * $levMult, 1),
+                                'tp3_leveraged_pct' => round($tp3Pct * $levMult, 1),
+                                'leverage_multiplier' => $levMult,
+                                'liquidation_buffer' => '> 15% safety cushion',
+                            ],
+                        ];
+                    }
+                }
+            }
 
             if (! $signal) {
-                $diagnostics = $evaluation['diagnostics'];
-                $buyScore = (int) ($diagnostics['buy_score'] ?? 50);
-                $sellScore = (int) ($diagnostics['sell_score'] ?? 50);
-                $side = ($buyScore >= $sellScore) ? 'BUY' : 'SELL';
-                $score = max($buyScore, $sellScore);
-                $atrPct = (float) ($diagnostics['atr_pct'] ?? 1.5);
-                $atrVal = ($lastClose * $atrPct) / 100;
-                $slMult = 1.5;
+                return response()->json([
+                    'success' => false,
+                    'message' => "No verified institutional setup detected for {$symbol} ({$interval}). Standby for high-conviction breakout/pullback setup.",
+                ], 422);
+            }
 
-                $sl = $side === 'BUY' ? round($lastClose - ($atrVal * $slMult), 4) : round($lastClose + ($atrVal * $slMult), 4);
-                $risk = abs($lastClose - $sl);
-                $tp1 = $side === 'BUY' ? round($lastClose + ($risk * 1.0), 4) : round($lastClose - ($risk * 1.0), 4);
-                $tp2 = $side === 'BUY' ? round($lastClose + ($risk * 2.0), 4) : round($lastClose - ($risk * 2.0), 4);
-                $tp3 = $side === 'BUY' ? round($lastClose + ($risk * 3.0), 4) : round($lastClose - ($risk * 3.0), 4);
+            // Enforce Bitcoin Macro Trend Filter
+            if ($signal['side'] === 'BUY' && ! $btcTrend['allow_long']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Alert blocked: BUY setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend.",
+                ], 422);
+            }
+            if ($signal['side'] === 'SELL' && ! $btcTrend['allow_short']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Alert blocked: SELL setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend.",
+                ], 422);
+            }
 
-                $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
-                $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
-                $slPct = $lastClose > 0 ? round(abs($lastClose - $sl) / $lastClose * 100, 2) : 1.5;
-                $tp1Pct = $lastClose > 0 ? round(abs($tp1 - $lastClose) / $lastClose * 100, 2) : 1.5;
-                $tp2Pct = $lastClose > 0 ? round(abs($tp2 - $lastClose) / $lastClose * 100, 2) : 3.0;
-                $tp3Pct = $lastClose > 0 ? round(abs($tp3 - $lastClose) / $lastClose * 100, 2) : 4.5;
-
-                $signal = [
-                    'side' => $side,
-                    'score' => $score,
-                    'entry' => round($lastClose, 4),
-                    'sl' => $sl,
-                    'tp1' => $tp1,
-                    'tp2' => $tp2,
-                    'tp3' => $tp3,
-                    'rsi' => (float) ($diagnostics['rsi'] ?? 50.0),
-                    'adx' => (float) ($diagnostics['adx'] ?? 25.0),
-                    'volume_ratio' => (float) ($diagnostics['volume_ratio'] ?? 1.2),
-                    'atr_pct' => $atrPct,
-                    'candle_close_time' => $closeTime,
-                    'perpetual_options' => [
-                        'recommended_leverage' => $recLeverage,
-                        'margin_mode' => 'Isolated Margin',
-                        'order_type' => 'Limit / Market Entry',
-                        'risk_per_trade' => '1% - 2% Account Balance',
-                        'risk_reward' => '1 : 2.0',
-                        'sl_pct' => $slPct,
-                        'tp1_pct' => $tp1Pct,
-                        'tp2_pct' => $tp2Pct,
-                        'tp3_pct' => $tp3Pct,
-                        'sl_leveraged_pct' => round($slPct * $levMult, 1),
-                        'tp1_leveraged_pct' => round($tp1Pct * $levMult, 1),
-                        'tp2_leveraged_pct' => round($tp2Pct * $levMult, 1),
-                        'tp3_leveraged_pct' => round($tp3Pct * $levMult, 1),
-                        'leverage_multiplier' => $levMult,
-                        'liquidation_buffer' => '> 15% safety cushion',
-                    ],
-                ];
+            // Enforce Score >= 82
+            if (($signal['score'] ?? 0) < 82) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Alert blocked: Setup conviction score ({$signal['score']}) is below institutional threshold (82).",
+                ], 422);
             }
 
             $message = CheckCryptoSignals::formatTelegramMessage(
