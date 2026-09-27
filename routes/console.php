@@ -8,8 +8,19 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-// Monitor all managed coin charts continuously every minute
+// 1. 24/7 Autonomous Trading Engine: Continuously executes trades, manages positions & scans markets
+Schedule::command('trade:daemon --mode=live --once')
+    ->everyMinute()
+    ->withoutOverlapping(2)
+    ->runInBackground();
+
+Schedule::command('trade:daemon --mode=paper --once')
+    ->everyMinute()
+    ->withoutOverlapping(2)
+    ->runInBackground();
+
+// 2. Crypto Sentinel Signal Watcher: Candle close monitor & Telegram alerts
 Schedule::command('crypto:watch-signals --once')
     ->everyMinute()
-    ->withoutOverlapping()
+    ->withoutOverlapping(2)
     ->runInBackground();

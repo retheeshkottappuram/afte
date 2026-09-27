@@ -34,7 +34,7 @@ return [
             'max_unprotected' => 2,   // Allows up to 2 unprotected (at-risk) positions concurrently
             'default_leverage' => 10,
             'max_risk_pct' => 6.0,    // Risk ~$0.20-$0.40 on micro balances
-            'min_score' => 82,        // High-conviction setups
+            'min_score' => 80,        // High-conviction setups for short-term opportunities
         ],
         // Stage 2: Acceleration ($25 to $100)
         'stage_2' => [
@@ -62,9 +62,9 @@ return [
     |--------------------------------------------------------------------------
     */
     'fund_management' => [
-        'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.65),       // Minimum free available margin in USD to open a new trade
+        'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.50),       // Minimum free available margin in USD to open a new trade
         'exempt_protected_positions' => true, // Breakeven or profit-locked trades do not block new trades
-        'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.50),     // Sized for Binance $5 minimum notional at 10x leverage
+        'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.20),     // Sized for Binance $5 minimum notional at 10x leverage
         'amount_per_trade' => env('TRADING_AMOUNT_PER_TRADE') !== null ? (float) env('TRADING_AMOUNT_PER_TRADE') : null, // Fixed margin amount in USD added per trade (e.g. 0.60, 1.00), null for dynamic
     ],
 
@@ -86,20 +86,20 @@ return [
     |--------------------------------------------------------------------------
     */
     'management' => [
-        // Breakeven lock: Triggered when price moves favorably by +1.0%
-        'be_gain_pct' => 1.0,
+        // Breakeven lock: Triggered when price moves favorably by +0.9% (+9% ROE at 10x)
+        'be_gain_pct' => 0.90,
         'be_fee_buffer_pct' => 0.12, // Entry + 0.12% to cover maker/taker round-trip fees
 
         // Partial Profit Booking:
-        'tp1_pct' => 2.0,            // TP1 at +2.0% price gain
+        'tp1_pct' => 1.80,           // TP1 at +1.8% price gain (+18% ROE at 10x)
         'tp1_close_ratio' => 0.33,   // Close 33% at TP1
 
-        'tp2_pct' => 4.0,            // TP2 at +4.0% price gain
+        'tp2_pct' => 3.60,           // TP2 at +3.6% price gain (+36% ROE at 10x)
         'tp2_close_ratio' => 0.33,   // Close 33% at TP2
 
         // Remaining 34% runs on Trailing SL:
         'trailing_sl_atr_mult' => 2.0,
-        'trailing_sl_trigger_pct' => 2.5, // Start trailing after +2.5% gain
+        'trailing_sl_trigger_pct' => 2.20, // Start trailing after +2.2% gain
     ],
 
     /*

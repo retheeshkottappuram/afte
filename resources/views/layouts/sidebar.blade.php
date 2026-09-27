@@ -3,8 +3,8 @@
     <!-- Brand / Logo Header -->
     <div class="h-16 flex items-center justify-between px-5 border-b border-cyber-border bg-cyber-900/60">
         <a href="{{ route('dashboard') }}" class="flex items-center space-x-3 group">
-            <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 font-bold font-mono shadow-[0_0_15px_rgba(6,182,212,0.25)] group-hover:scale-105 transition-transform">
-                ⚡
+            <div class="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 p-1.5 flex items-center justify-center shadow-[0_0_15px_rgba(6,182,212,0.25)] group-hover:scale-105 transition-transform">
+                <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
             </div>
             <div>
                 <div class="flex items-center space-x-2">
@@ -138,6 +138,17 @@
                         <span>User Management</span>
                     </div>
                     <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">2 Roles</span>
+                </a>
+
+                <a href="{{ route('register') }}"
+                   class="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition {{ request()->routeIs('register') ? 'bg-gradient-to-r from-purple-500/20 to-indigo-500/10 text-purple-300 border border-purple-500/30 shadow-[0_0_12px_rgba(168,85,247,0.15)]' : 'text-slate-300 hover:text-white hover:bg-cyber-700/50 border border-transparent' }}">
+                    <div class="flex items-center space-x-3">
+                        <svg class="w-4 h-4 {{ request()->routeIs('register') ? 'text-purple-400' : 'text-slate-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path>
+                        </svg>
+                        <span>Register User</span>
+                    </div>
+                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">Admin</span>
                 </a>
                 @endif
 

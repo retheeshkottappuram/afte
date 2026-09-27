@@ -7,8 +7,8 @@ use App\Models\User;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\View\View;
 
@@ -27,23 +27,24 @@ class RegisteredUserController extends Controller
      */
     public function store(Request $request): RedirectResponse
     {
-        $request->validate([
+        $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:'.User::class],
+            'role' => ['nullable', 'string', Rule::in(['admin', 'user'])],
             'password' => ['required', 'confirmed', Password::defaults()],
         ]);
 
+        $role = $validated['role'] ?? 'user';
+
         $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'role' => User::count() === 0 ? 'admin' : 'user',
-            'password' => Hash::make($request->password),
+            'name' => $validated['name'],
+            'email' => $validated['email'],
+            'role' => $role,
+            'password' => Hash::make($validated['password']),
         ]);
 
         event(new Registered($user));
 
-        Auth::login($user);
-
-        return redirect(route('dashboard'))->with('status', 'Account created successfully.');
+        return redirect()->route('admin.users.index')->with('success', "User '{$user->name}' registered successfully as {$role}.");
     }
 }

@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    <title>@yield('title', 'AFTE Trading & Signals Platform') • Binance Futures</title>
+    <title>{{ View::hasSection('title') ? View::getSection('title') . ' • AFTE' : 'AFTE' }}</title>
+    <link rel="icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="shortcut icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="apple-touch-icon" href="{{ asset('asset/logo.png') }}">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -72,7 +75,9 @@
                         </svg>
                     </button>
                     <a href="{{ route('dashboard') }}" class="flex items-center space-x-2">
-                        <span class="w-7 h-7 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 font-bold text-xs">⚡</span>
+                        <div class="w-7 h-7 rounded-lg bg-cyan-500/20 border border-cyan-500/40 p-1 flex items-center justify-center">
+                            <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
+                        </div>
                         <span class="font-extrabold text-sm text-white tracking-wider">AFTE <span class="text-cyan-400">PRO</span></span>
                     </a>
                 </div>

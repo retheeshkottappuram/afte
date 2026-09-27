@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Terminal Login • AFTE Binance Futures</title>
+    <title>AFTE</title>
+    <link rel="icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="shortcut icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="apple-touch-icon" href="{{ asset('asset/logo.png') }}">
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -44,11 +47,11 @@
     <div class="w-full max-w-md space-y-6">
         <!-- Logo & Header -->
         <div class="text-center space-y-2">
-            <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 font-bold font-mono text-xl mb-1">
-                ⚡
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 p-2.5 mb-1 shadow-[0_0_20px_rgba(6,182,212,0.25)]">
+                <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
             </div>
             <h1 class="text-2xl font-bold tracking-wider text-white font-mono">AFTE TERMINAL</h1>
-            <p class="text-xs text-slate-400">Binance Futures AI Engine • Authorized Personnel Access</p>
+            <p class="text-xs text-slate-400">Authorized Personnel Access</p>
         </div>
 
         <!-- Card -->
@@ -107,9 +110,6 @@
                 </button>
             </form>
 
-            <div class="mt-6 pt-4 border-t border-cyber-border/60 text-center text-[11px] text-slate-400 font-mono">
-                Need an account? <a href="{{ route('register') }}" class="text-cyan-400 hover:underline">Register New Trader</a>
-            </div>
         </div>
 
         <div class="text-center text-[11px] text-slate-500 font-mono">

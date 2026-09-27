@@ -14,9 +14,11 @@ use App\Services\Trading\MarketEngine;
 use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SignalEngine;
+use App\Services\Trading\TradingDaemonManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\View\View;
 
 class DashboardController extends Controller
@@ -29,7 +31,8 @@ class DashboardController extends Controller
         protected DynamicTradeManager $tradeManager,
         protected OrderExecutor $executor,
         protected RiskManager $riskManager,
-        protected BacktestingEngine $backtestingEngine
+        protected BacktestingEngine $backtestingEngine,
+        protected TradingDaemonManager $daemonManager
     ) {}
 
     /**
@@ -50,10 +53,11 @@ class DashboardController extends Controller
         cookie()->queue('afte_trading_mode', $mode, 60 * 24 * 30);
 
         $account = TradingAccount::getForMode($mode);
+        $this->syncLiveAccountAndPositions($account, $mode);
 
         return view('dashboard.index', [
             'mode' => $mode,
-            'account' => $account,
+            'account' => $account->fresh(),
         ]);
     }
 
@@ -77,67 +81,58 @@ class DashboardController extends Controller
         $account = TradingAccount::getForMode($mode);
         $client = $this->client->forMode($mode);
 
-        $totalUnrealizedPnl = 0.0;
-        $liveSynced = false;
-
-        // In live or testnet mode with valid API keys, sync real balance & equity from Binance
-        if (in_array($mode, ['live', 'testnet'], true) && $client->hasCredentials()) {
-            try {
-                $balances = $client->getBalance();
-                foreach ($balances as $b) {
-                    if (($b['asset'] ?? '') === 'USDT') {
-                        $liveBalance = (float) ($b['balance'] ?? $b['crossWalletBalance'] ?? $account->balance);
-                        $totalUnrealizedPnl = (float) ($b['crossUnPnl'] ?? 0.0);
-
-                        $account->balance = $liveBalance;
-                        $account->equity = round($liveBalance + $totalUnrealizedPnl, 4);
-                        if ($account->initial_balance <= 0 || $account->initial_balance === 5.0) {
-                            $account->initial_balance = $liveBalance;
-                        }
-                        $account->save();
-                        $liveSynced = true;
-                        break;
-                    }
-                }
-            } catch (\Exception) {
-                // If API/network error, fallback to local database values
-            }
-        }
+        // Sync real balance, equity, and positions from Binance if in live/testnet mode
+        $liveSynced = $this->syncLiveAccountAndPositions($account, $mode);
+        $account->refresh();
 
         $openPositions = Trade::where('mode', $mode)
             ->where('status', 'OPEN')
             ->get();
 
-        if (! $liveSynced) {
-            foreach ($openPositions as $pos) {
-                try {
-                    $markPrice = $client->getMarkPrice($pos->symbol);
-                    $totalUnrealizedPnl += $pos->calculateUnrealizedPnl($markPrice);
-                } catch (\Exception) {
-                    // Ignore individual mark price failure
-                }
+        $totalUnrealizedPnl = 0.0;
+        foreach ($openPositions as $pos) {
+            try {
+                $markPrice = $client->getMarkPrice($pos->symbol);
+                $totalUnrealizedPnl += $pos->calculateUnrealizedPnl($markPrice);
+            } catch (\Throwable) {
+                // Ignore individual mark price failure
             }
-            $currentEquity = round($account->balance + $totalUnrealizedPnl, 4);
-        } else {
-            $currentEquity = round($account->equity, 4);
         }
 
+        $currentEquity = round($account->balance + $totalUnrealizedPnl, 4);
+        $account->equity = $currentEquity;
+        $account->save();
+
         $stageInfo = $this->riskManager->getCompoundingStage($account);
+        $usedMargin = round((float) $openPositions->sum('margin_used'), 2);
+        $availMargin = $this->riskManager->getAvailableBalance($account);
+        $balance = round((float) $account->balance, 2);
+        $marginUtilizationPct = $balance > 0 ? min(100.0, round(($usedMargin / $balance) * 100, 1)) : 0.0;
+        $daemonStatus = $this->daemonManager->status($mode);
+
+        // Stage 1 Seed Milestone Target ($25.00)
+        $stage1Target = 25.0;
+        $stage1Progress = min(100.0, max(0.0, round(($currentEquity / $stage1Target) * 100, 1)));
 
         return response()->json([
             'mode' => $mode,
-            'balance' => round($account->balance, 2),
+            'balance' => $balance,
             'equity' => round($currentEquity, 2),
             'unrealized_pnl' => round($totalUnrealizedPnl, 2),
             'initial_balance' => round($account->initial_balance, 2),
             'target_balance' => (float) config('trading.target_capital', 500.0),
             'progress_pct' => $account->target_progress,
+            'stage_target' => $stage1Target,
+            'stage_progress_pct' => $stage1Progress,
             'win_rate' => $account->win_rate,
             'total_trades' => $account->total_trades,
             'winning_trades' => $account->winning_trades,
             'losing_trades' => $account->losing_trades,
             'consecutive_losses' => $account->consecutive_losses,
             'open_positions_count' => $openPositions->count(),
+            'used_margin' => $usedMargin,
+            'available_margin' => $availMargin,
+            'margin_utilization_pct' => $marginUtilizationPct,
             'kill_switch' => $account->kill_switch,
             'is_running' => (bool) $account->is_running,
             'paused_until' => $account->paused_until?->toIso8601String(),
@@ -145,9 +140,9 @@ class DashboardController extends Controller
             'stage' => $stageInfo['stage'],
             'max_positions' => $stageInfo['max_positions'],
             'default_leverage' => $stageInfo['default_leverage'],
-            'amount_per_trade' => config('trading.fund_management.amount_per_trade') ?? round(5.50 / ($stageInfo['default_leverage'] ?? 10), 2),
-            'available_margin' => $this->riskManager->getAvailableBalance($account),
+            'amount_per_trade' => config('trading.fund_management.amount_per_trade') ?? round(5.20 / ($stageInfo['default_leverage'] ?? 10), 2),
             'live_synced' => $liveSynced,
+            'daemon' => $daemonStatus,
         ]);
     }
 
@@ -158,82 +153,10 @@ class DashboardController extends Controller
     {
         $mode = $request->query('mode', config('trading.mode', 'paper'));
         $client = $this->client->forMode($mode);
+        $account = TradingAccount::getForMode($mode);
 
-        // For live or testnet mode, sync actual open positions directly from Binance
-        if (in_array($mode, ['live', 'testnet'], true) && $client->hasCredentials()) {
-            try {
-                $binancePositions = array_filter(
-                    $client->getPositions(),
-                    fn ($p) => (float) ($p['positionAmt'] ?? 0) != 0
-                );
-
-                $liveSymbols = [];
-                foreach ($binancePositions as $bp) {
-                    $sym = $bp['symbol'];
-                    $liveSymbols[] = $sym;
-                    $amt = (float) $bp['positionAmt'];
-                    $side = $amt > 0 ? 'LONG' : 'SHORT';
-                    $entryPrice = (float) $bp['entryPrice'];
-                    $leverage = (int) ($bp['leverage'] ?? 10);
-                    $qty = abs($amt);
-                    $notional = abs((float) ($bp['notional'] ?? ($qty * $entryPrice)));
-                    $margin = $leverage > 0 ? round($notional / $leverage, 4) : $notional;
-
-                    $trade = Trade::where('mode', $mode)
-                        ->where('symbol', $sym)
-                        ->where('status', 'OPEN')
-                        ->first();
-
-                    if (! $trade) {
-                        Trade::create([
-                            'symbol' => $sym,
-                            'side' => $side,
-                            'mode' => $mode,
-                            'status' => 'OPEN',
-                            'stage' => 'ENTRY',
-                            'entry_price' => $entryPrice,
-                            'quantity' => $qty,
-                            'remaining_quantity' => $qty,
-                            'margin_used' => $margin,
-                            'leverage' => $leverage,
-                            'initial_sl' => $side === 'LONG' ? round($entryPrice * 0.98, 6) : round($entryPrice * 1.02, 6),
-                            'current_sl' => $side === 'LONG' ? round($entryPrice * 0.98, 6) : round($entryPrice * 1.02, 6),
-                            'tp1_price' => $side === 'LONG' ? round($entryPrice * 1.02, 6) : round($entryPrice * 0.98, 6),
-                            'tp2_price' => $side === 'LONG' ? round($entryPrice * 1.04, 6) : round($entryPrice * 0.96, 6),
-                            'be_locked' => false,
-                            'tp1_hit' => false,
-                            'tp2_hit' => false,
-                            'opened_at' => now(),
-                        ]);
-                    } else {
-                        $trade->remaining_quantity = $qty;
-                        $trade->margin_used = $margin;
-                        $trade->save();
-                    }
-                }
-
-                // If a position was closed directly on Binance, reflect it locally (grace period of 60s for new trades)
-                $localOpen = Trade::where('mode', $mode)->where('status', 'OPEN')->get();
-                foreach ($localOpen as $localTrade) {
-                    $isRecent = $localTrade->created_at && $localTrade->created_at->diffInSeconds(now()) < 60;
-                    if (! $isRecent && ! in_array($localTrade->symbol, $liveSymbols, true)) {
-                        $localTrade->status = 'CLOSED';
-                        $localTrade->closed_at = now();
-                        $localTrade->exit_reason = 'EXCHANGE_OR_MANUAL_CLOSE';
-                        $localTrade->save();
-
-                        // Clean up any remaining exchange-side algo orders so no orphaned orders remain
-                        try {
-                            $client->cancelAllAlgoOrders($localTrade->symbol);
-                            $client->cancelAllOrders($localTrade->symbol);
-                        } catch (\Throwable) {
-                        }
-                    }
-                }
-            } catch (\Exception) {
-                // If Binance API error, fallback to local trades
-            }
-        }
+        // Sync actual open positions directly from Binance
+        $this->syncLiveAccountAndPositions($account, $mode);
 
         // Fetch open exchange-side algo orders (Stop Loss / Take Profit)
         $openAlgoMap = [];
@@ -519,18 +442,22 @@ class DashboardController extends Controller
         $mode = $request->input('mode', config('trading.mode', 'paper'));
         $account = TradingAccount::getForMode($mode);
 
-        $account->is_running = ! $account->is_running;
-        $account->save();
+        if ($account->is_running) {
+            $daemonResult = $this->daemonManager->stop($mode);
+            $stateMsg = 'Auto-Trading PAUSED. Autonomous orders stopped.';
+        } else {
+            $daemonResult = $this->daemonManager->start($mode);
+            $stateMsg = 'Auto-Trading STARTED. 24/7 Autonomous background daemon active.';
+        }
 
-        $stateMsg = $account->is_running
-            ? 'Auto-Trading STARTED. Autonomous scanner and order execution active.'
-            : 'Auto-Trading STOPPED. Automated orders paused.';
+        $account->refresh();
 
         return response()->json([
             'success' => true,
-            'is_running' => $account->is_running,
+            'is_running' => (bool) $account->is_running,
             'can_trade' => $account->canTrade(),
             'message' => $stateMsg,
+            'daemon' => $daemonResult,
         ]);
     }
 
@@ -540,59 +467,227 @@ class DashboardController extends Controller
     public function autoTick(Request $request): JsonResponse
     {
         $mode = $request->input('mode', config('trading.mode', 'paper'));
-        $account = TradingAccount::getForMode($mode);
+        $tickResult = $this->daemonManager->tickOnce($mode);
 
-        // 1. Position management always protects existing trades
-        $openTrades = Trade::where('mode', $mode)->where('status', 'OPEN')->get();
-        $managedCount = 0;
-        $closedTrades = [];
+        return response()->json(array_merge(['success' => true], $tickResult));
+    }
 
-        foreach ($openTrades as $trade) {
-            $res = $this->tradeManager->manageTrade($trade);
-            $managedCount++;
-            if ($res['status'] === 'closed') {
-                $closedTrades[] = "{$trade->symbol} closed ({$res['message']})";
-            }
+    /**
+     * Get live status of the 24/7 trading daemon.
+     */
+    public function daemonStatus(Request $request): JsonResponse
+    {
+        $mode = $request->query('mode', config('trading.mode', 'paper'));
+
+        return response()->json($this->daemonManager->status($mode));
+    }
+
+    /**
+     * Start the 24/7 background trading daemon (Admin only).
+     */
+    public function startDaemon(Request $request): JsonResponse
+    {
+        if (! $request->user()?->isAdmin()) {
+            return response()->json(['success' => false, 'message' => 'Administrator access required.'], 403);
         }
 
-        // 2. If auto trading is active, scan and execute qualified setups
-        $scannedCount = 0;
-        $openedTrade = null;
+        $mode = $request->input('mode', config('trading.mode', 'paper'));
 
-        if ($account->canTrade()) {
-            $symbols = $this->marketEngine->getScannableSymbols();
-            $candidates = array_slice($symbols, 0, 10);
+        return response()->json($this->daemonManager->start($mode));
+    }
 
-            foreach ($candidates as $sym) {
-                $scannedCount++;
-                try {
-                    $klines = $this->marketEngine->getMultiTimeframeKlines($sym);
-                    $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
-
-                    if ($eval !== null && $eval['score'] >= 82) {
-                        $ai = $this->validator->validate($eval, $klines['base']);
-
-                        if ($ai['approved']) {
-                            $execResult = $this->executor->executeSignal($eval, $ai, $mode);
-                            if ($execResult['status'] === 'opened') {
-                                $openedTrade = "{$sym} {$eval['direction']} opened!";
-                                break;
-                            }
-                        }
-                    }
-                } catch (\Exception) {
-                    // Ignore transient errors per symbol
-                }
-            }
+    /**
+     * Stop the 24/7 background trading daemon (Admin only).
+     */
+    public function stopDaemon(Request $request): JsonResponse
+    {
+        if (! $request->user()?->isAdmin()) {
+            return response()->json(['success' => false, 'message' => 'Administrator access required.'], 403);
         }
+
+        $mode = $request->input('mode', config('trading.mode', 'paper'));
+
+        return response()->json($this->daemonManager->stop($mode));
+    }
+
+    /**
+     * Read recent daemon execution logs.
+     */
+    public function daemonLogs(Request $request): JsonResponse
+    {
+        $lines = min(100, max(10, (int) $request->query('lines', 40)));
 
         return response()->json([
             'success' => true,
-            'is_running' => (bool) $account->is_running,
-            'managed_positions' => $managedCount,
-            'closed_positions' => $closedTrades,
-            'scanned_symbols' => $scannedCount,
-            'opened_trade' => $openedTrade,
+            'logs' => $this->daemonManager->getRecentLogs($lines),
         ]);
+    }
+
+    /**
+     * Unified real-time live sync endpoint for multi-device instant updates.
+     */
+    public function liveSync(Request $request): JsonResponse
+    {
+        $mode = $request->query('mode', config('trading.mode', 'paper'));
+
+        $statsData = $this->stats($request)->getData(true);
+        $positionsData = $this->positions($request)->getData(true);
+        $signalsData = $this->signals($request)->getData(true);
+        $historyData = $this->history($request)->getData(true);
+
+        return response()->json([
+            'success' => true,
+            'mode' => $mode,
+            'timestamp' => now()->toIso8601String(),
+            'stats' => $statsData,
+            'positions' => $positionsData,
+            'signals' => array_slice($signalsData, 0, 10),
+            'history' => array_slice($historyData, 0, 15),
+            'daemon' => $statsData['daemon'] ?? null,
+        ]);
+    }
+
+    /**
+     * Synchronize actual wallet balance and live open positions from Binance exchange.
+     */
+    protected function syncLiveAccountAndPositions(TradingAccount $account, string $mode): bool
+    {
+        if (! in_array($mode, ['live', 'testnet'], true)) {
+            return false;
+        }
+
+        $client = $this->client->forMode($mode);
+        if (! $client->hasCredentials()) {
+            return false;
+        }
+
+        try {
+            // 1. Fetch real wallet balances
+            $balances = $client->getBalance();
+            $usdtBalance = null;
+            $crossUnPnl = 0.0;
+
+            foreach ($balances as $b) {
+                if (($b['asset'] ?? '') === 'USDT') {
+                    $usdtBalance = (float) ($b['balance'] ?? $b['crossWalletBalance'] ?? 0);
+                    $crossUnPnl = (float) ($b['crossUnPnl'] ?? 0);
+                    break;
+                }
+            }
+
+            if ($usdtBalance !== null) {
+                $account->balance = round($usdtBalance, 4);
+                $account->equity = round($usdtBalance + $crossUnPnl, 4);
+                $account->save();
+            }
+
+            // 2. Fetch real exchange positions
+            $exchangePositions = $client->getPositions();
+            $liveSymbolsFound = [];
+
+            foreach ($exchangePositions as $p) {
+                $amt = (float) ($p['positionAmt'] ?? 0);
+                if ($amt == 0.0) {
+                    continue;
+                }
+
+                $symbol = $p['symbol'] ?? '';
+                if (empty($symbol)) {
+                    continue;
+                }
+
+                $liveSymbolsFound[] = $symbol;
+                $side = $amt > 0 ? 'LONG' : 'SHORT';
+                $absQty = abs($amt);
+                $entryPrice = (float) ($p['entryPrice'] ?? 0);
+                $markPrice = (float) ($p['markPrice'] ?? $entryPrice);
+                $leverage = (int) ($p['leverage'] ?? 10);
+                if ($leverage <= 0) {
+                    $leverage = 10;
+                }
+                $notional = $absQty * $entryPrice;
+                $marginUsed = $leverage > 0 ? round($notional / $leverage, 4) : round($notional, 4);
+
+                $existingTrade = Trade::where('mode', $mode)
+                    ->where('symbol', $symbol)
+                    ->where('status', 'OPEN')
+                    ->first();
+
+                if ($existingTrade) {
+                    $existingTrade->remaining_quantity = $absQty;
+                    $existingTrade->entry_price = $entryPrice;
+                    $existingTrade->leverage = $leverage;
+                    $existingTrade->margin_used = $marginUsed;
+                    $existingTrade->save();
+                } else {
+                    $slPct = 0.02;
+                    $tp1Pct = (float) config('trading.management.tp1_pct', 1.8) / 100.0;
+                    $tp2Pct = (float) config('trading.management.tp2_pct', 3.6) / 100.0;
+
+                    $initialSl = $side === 'LONG'
+                        ? round($entryPrice * (1.0 - $slPct), 6)
+                        : round($entryPrice * (1.0 + $slPct), 6);
+                    $tp1 = $side === 'LONG'
+                        ? round($entryPrice * (1.0 + $tp1Pct), 6)
+                        : round($entryPrice * (1.0 - $tp1Pct), 6);
+                    $tp2 = $side === 'LONG'
+                        ? round($entryPrice * (1.0 + $tp2Pct), 6)
+                        : round($entryPrice * (1.0 - $tp2Pct), 6);
+
+                    Trade::create([
+                        'symbol' => $symbol,
+                        'side' => $side,
+                        'mode' => $mode,
+                        'status' => 'OPEN',
+                        'stage' => 'ENTRY',
+                        'entry_price' => $entryPrice,
+                        'quantity' => $absQty,
+                        'remaining_quantity' => $absQty,
+                        'margin_used' => $marginUsed,
+                        'leverage' => $leverage,
+                        'initial_sl' => $initialSl,
+                        'current_sl' => $initialSl,
+                        'tp1_price' => $tp1,
+                        'tp2_price' => $tp2,
+                        'be_locked' => false,
+                        'tp1_hit' => false,
+                        'tp2_hit' => false,
+                        'realized_pnl' => 0,
+                        'pnl_percent' => 0,
+                        'fee_paid' => 0,
+                        'opened_at' => now(),
+                    ]);
+                }
+            }
+
+            // 3. Close trades in DB that are no longer active on Binance
+            $dbOpenTrades = Trade::where('mode', $mode)
+                ->where('status', 'OPEN')
+                ->get();
+
+            foreach ($dbOpenTrades as $dbTrade) {
+                if (! in_array($dbTrade->symbol, $liveSymbolsFound, true)) {
+                    $closeMark = $dbTrade->entry_price;
+                    try {
+                        $closeMark = $client->getMarkPrice($dbTrade->symbol);
+                    } catch (\Throwable) {
+                        // ignore
+                    }
+                    $pnl = $dbTrade->calculateUnrealizedPnl($closeMark);
+                    $dbTrade->status = 'CLOSED';
+                    $dbTrade->exit_price = $closeMark;
+                    $dbTrade->exit_reason = 'EXCHANGE_CLOSED';
+                    $dbTrade->realized_pnl = $pnl;
+                    $dbTrade->closed_at = now();
+                    $dbTrade->save();
+                }
+            }
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::warning('Live sync error: '.$e->getMessage());
+
+            return false;
+        }
     }
 }

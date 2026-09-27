@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trade Audit Ledger • AFTE Binance Futures</title>
+    <title>Trade Audit Ledger • AFTE</title>
+    <link rel="icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="shortcut icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="apple-touch-icon" href="{{ asset('asset/logo.png') }}">
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -57,8 +60,8 @@
                         </svg>
                     </button>
                     <a href="{{ route('dashboard') }}" class="flex items-center space-x-3 group">
-                        <div class="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold font-mono group-hover:bg-cyan-500/20 transition">
-                            ⚡
+                        <div class="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 p-1 flex items-center justify-center group-hover:bg-cyan-500/20 transition shadow-[0_0_12px_rgba(6,182,212,0.2)]">
+                            <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
                         </div>
                         <div>
                             <div class="flex items-center space-x-2">

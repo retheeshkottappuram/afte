@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trader Registration • AFTE Binance Futures</title>
+    <title>AFTE</title>
+    <link rel="icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="shortcut icon" type="image/png" href="{{ asset('asset/logo.png') }}">
+    <link rel="apple-touch-icon" href="{{ asset('asset/logo.png') }}">
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -44,11 +47,11 @@
     <div class="w-full max-w-md space-y-6">
         <!-- Logo & Header -->
         <div class="text-center space-y-2">
-            <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 font-bold font-mono text-xl mb-1">
-                ⚡
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 p-2.5 mb-1 shadow-[0_0_20px_rgba(6,182,212,0.25)]">
+                <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
             </div>
-            <h1 class="text-2xl font-bold tracking-wider text-white font-mono">NEW TRADER ACCOUNT</h1>
-            <p class="text-xs text-slate-400">Initialize Credentials for Binance Futures AFTE</p>
+            <h1 class="text-2xl font-bold tracking-wider text-white font-mono">REGISTER USER</h1>
+            <p class="text-xs text-slate-400">Admin Console • Provision System User</p>
         </div>
 
         <!-- Card -->
@@ -69,7 +72,7 @@
 
                 <!-- Name -->
                 <div class="space-y-1">
-                    <label for="name" class="text-slate-300 uppercase tracking-wider block">Trader Name</label>
+                    <label for="name" class="text-slate-300 uppercase tracking-wider block">Full Name</label>
                     <input id="name" type="text" name="name" value="{{ old('name') }}" required autofocus autocomplete="name"
                            placeholder="John Doe"
                            class="w-full bg-cyber-900 border border-cyber-border rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition">
@@ -81,6 +84,16 @@
                     <input id="email" type="email" name="email" value="{{ old('email') }}" required autocomplete="username"
                            placeholder="trader@autotrade.io"
                            class="w-full bg-cyber-900 border border-cyber-border rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition">
+                </div>
+
+                <!-- Role Assignment -->
+                <div class="space-y-1">
+                    <label for="role" class="text-slate-300 uppercase tracking-wider block">Role Assignment</label>
+                    <select id="role" name="role" required
+                            class="w-full bg-cyber-900 border border-cyber-border rounded-lg px-3.5 py-2.5 text-slate-100 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition">
+                        <option value="user" {{ old('role', 'user') === 'user' ? 'selected' : '' }}>User (Governed by permissions)</option>
+                        <option value="admin" {{ old('role') === 'admin' ? 'selected' : '' }}>Administrator (Full Access)</option>
+                    </select>
                 </div>
 
                 <!-- Password -->
@@ -101,12 +114,17 @@
 
                 <!-- Submit Button -->
                 <button type="submit" class="w-full py-2.5 px-4 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold tracking-wider uppercase transition duration-200 flex items-center justify-center space-x-2 shadow-lg shadow-cyan-500/10 mt-2">
-                    <span>Create Trader Account</span>
+                    <span>Register Account</span>
                 </button>
             </form>
 
-            <div class="mt-6 pt-4 border-t border-cyber-border/60 text-center text-[11px] text-slate-400 font-mono">
-                Already registered? <a href="{{ route('login') }}" class="text-cyan-400 hover:underline">Log in to Terminal</a>
+            <div class="mt-6 pt-4 border-t border-cyber-border/60 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                <a href="{{ route('admin.users.index') }}" class="text-cyan-400 hover:underline flex items-center space-x-1">
+                    <span>← User Management</span>
+                </a>
+                <a href="{{ route('dashboard') }}" class="text-slate-400 hover:text-slate-200">
+                    Terminal Cockpit →
+                </a>
             </div>
         </div>
     </div>

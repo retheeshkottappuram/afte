@@ -72,4 +72,68 @@ class AuthenticationTest extends TestCase
         $apiResponse = $this->getJson('/api/stats');
         $apiResponse->assertStatus(401);
     }
+
+    public function test_login_screen_does_not_contain_register_option(): void
+    {
+        $response = $this->get('/login');
+
+        $response->assertStatus(200);
+        $response->assertDontSee('Register New Trader');
+        $response->assertDontSee('Need an account?');
+        $response->assertDontSee(route('register'));
+        $response->assertSee('asset/logo.png');
+    }
+
+    public function test_guests_cannot_access_register_page(): void
+    {
+        $response = $this->get('/register');
+
+        $response->assertRedirect('/login');
+    }
+
+    public function test_guests_cannot_post_to_register(): void
+    {
+        $response = $this->post('/register', [
+            'name' => 'Intruder',
+            'email' => 'intruder@test.com',
+            'password' => 'Password123!',
+            'password_confirmation' => 'Password123!',
+        ]);
+
+        $response->assertRedirect('/login');
+        $this->assertDatabaseMissing('users', ['email' => 'intruder@test.com']);
+    }
+
+    public function test_non_admin_cannot_access_register_page(): void
+    {
+        $user = User::factory()->create(['role' => 'user']);
+
+        $response = $this->actingAs($user)->get('/register');
+        $response->assertStatus(403);
+    }
+
+    public function test_admin_can_access_register_page_and_register_new_user(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+
+        $getRegister = $this->actingAs($admin)->get('/register');
+        $getRegister->assertStatus(200);
+        $getRegister->assertSee('REGISTER USER');
+        $getRegister->assertSee('asset/logo.png');
+
+        $postRegister = $this->actingAs($admin)->post('/register', [
+            'name' => 'New Trader',
+            'email' => 'newtrader@example.com',
+            'role' => 'user',
+            'password' => 'SecurePass123!',
+            'password_confirmation' => 'SecurePass123!',
+        ]);
+
+        $postRegister->assertRedirect(route('admin.users.index'));
+        $this->assertAuthenticatedAs($admin);
+        $this->assertDatabaseHas('users', [
+            'email' => 'newtrader@example.com',
+            'role' => 'user',
+        ]);
+    }
 }

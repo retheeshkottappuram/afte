@@ -10,7 +10,13 @@ use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\MarketEngine;
 use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\SignalEngine;
+use App\Services\Trading\TradingDaemonManager;
+use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class TradingDaemonCommand extends Command
 {
@@ -31,7 +37,7 @@ class TradingDaemonCommand extends Command
      *
      * @var string
      */
-    protected $description = 'Autonomous trading daemon: continuous position management & breakout scanner';
+    protected $description = 'Autonomous 24/7 trading daemon: continuous position management & breakout scanner';
 
     /**
      * Execute the console command.
@@ -43,6 +49,20 @@ class TradingDaemonCommand extends Command
         DynamicTradeManager $tradeManager,
         OrderExecutor $executor
     ): int {
+        // Fortify PHP execution environment for continuous 24/7 background operation
+        @set_time_limit(0);
+        @ini_set('max_execution_time', '0');
+        @ini_set('memory_limit', '512M');
+        if (function_exists('ignore_user_abort')) {
+            @ignore_user_abort(true);
+        }
+
+        try {
+            DB::connection()->disableQueryLog();
+        } catch (Throwable) {
+            // Ignore if connection not ready
+        }
+
         $mode = (string) ($this->option('mode') ?: config('trading.mode', 'paper'));
         $interval = max(1, (int) $this->option('interval'));
         $scanInterval = max(10, (int) $this->option('scan-interval'));
@@ -55,19 +75,59 @@ class TradingDaemonCommand extends Command
             $account->refresh();
         }
 
+        $pid = getmypid() ?: 0;
+        $startedAt = now()->toIso8601String();
         $statusStr = $account->is_running ? 'ACTIVE' : 'PAUSED';
-        $this->info('🤖 AFTE Autonomous Daemon started in ['.strtoupper($mode)."] mode. Status: [{$statusStr}]");
-        $this->line("Seed Capital: \${$account->initial_balance} | Current Balance: \${$account->balance} | Target: \$500.00");
-        $this->line("Management loop: {$interval}s | Scan loop: {$scanInterval}s. Press Ctrl+C to stop.");
+
+        $this->logInfo("🤖 AFTE 24/7 Autonomous Daemon online [Mode: {$mode}, PID: {$pid}, Status: {$statusStr}]");
+        $this->logLine("Capital: \${$account->balance} | Target: \$500.00 | Management Loop: {$interval}s | Scanner Loop: {$scanInterval}s");
 
         $lastScanTime = 0;
         $lastSnapshotTime = 0;
+        $loopCount = 0;
+        $totalManagedCount = 0;
+        $totalClosedCount = 0;
+        $totalScannedCount = 0;
+        $totalOpenedCount = 0;
 
         while (true) {
-            $account->refresh();
+            $loopCount++;
+
+            // 0. Check stop signals
+            if (Cache::has(TradingDaemonManager::CACHE_STOP_KEY) || file_exists(storage_path('framework/stop-trading-daemon'))) {
+                $this->logInfo('🛑 Stop signal received. Gracefully exiting 24/7 trading daemon.');
+                Cache::forget(TradingDaemonManager::CACHE_STOP_KEY);
+                @unlink(storage_path('framework/stop-trading-daemon'));
+                Cache::put(TradingDaemonManager::CACHE_STATUS_KEY, 'STOPPED', 120);
+                break;
+            }
+
+            try {
+                $account->refresh();
+            } catch (Throwable) {
+                // Transient DB reconnect
+            }
+
+            // Write live heartbeat and diagnostics to cache for web UI
+            Cache::put(TradingDaemonManager::CACHE_HEARTBEAT_KEY, time(), 120);
+            Cache::put(TradingDaemonManager::CACHE_PID_KEY, $pid, 120);
+            Cache::put(TradingDaemonManager::CACHE_STATUS_KEY, $account->is_running ? 'RUNNING' : 'PAUSED', 120);
+            Cache::put(TradingDaemonManager::CACHE_STATS_KEY, [
+                'pid' => $pid,
+                'mode' => $mode,
+                'started_at' => $startedAt,
+                'last_tick_at' => now()->toIso8601String(),
+                'loop_count' => $loopCount,
+                'managed_positions_count' => $totalManagedCount,
+                'closed_trades_count' => $totalClosedCount,
+                'signals_scanned_count' => $totalScannedCount,
+                'orders_opened_count' => $totalOpenedCount,
+                'last_scan_at' => $lastScanTime > 0 ? Carbon::createFromTimestamp($lastScanTime)->toIso8601String() : null,
+                'memory_mb' => round(memory_get_usage(true) / 1024 / 1024, 2),
+            ], 120);
 
             if ($account->kill_switch) {
-                $this->error('Emergency Kill Switch is ACTIVE. Daemon pausing execution.');
+                $this->logError('Emergency Kill Switch is ACTIVE. Daemon pausing execution.');
                 if ($runOnce) {
                     break;
                 }
@@ -77,55 +137,72 @@ class TradingDaemonCommand extends Command
             }
 
             // 1. High-Frequency Active Position Management Loop
-            $openTrades = Trade::where('mode', $mode)
-                ->where('status', 'OPEN')
-                ->get();
+            try {
+                $openTrades = Trade::where('mode', $mode)
+                    ->where('status', 'OPEN')
+                    ->get();
 
-            foreach ($openTrades as $trade) {
-                $result = $tradeManager->manageTrade($trade);
-                if ($result['status'] === 'closed') {
-                    $this->warn("Trade Closed: {$result['message']}");
+                foreach ($openTrades as $trade) {
+                    try {
+                        $result = $tradeManager->manageTrade($trade);
+                        $totalManagedCount++;
+                        if (($result['status'] ?? '') === 'closed') {
+                            $totalClosedCount++;
+                            $this->logWarn("Position Closed: {$trade->symbol} ({$result['message']})");
+                        }
+                    } catch (Throwable $tradeEx) {
+                        Log::warning("[TradingDaemon] Trade management error on {$trade->symbol}: {$tradeEx->getMessage()}");
+                    }
                 }
+            } catch (Throwable $e) {
+                Log::warning("[TradingDaemon] Position management error: {$e->getMessage()}");
             }
 
             // 2. Scheduled Market Scanner Cycle
             $now = time();
-            if ($now - $lastScanTime >= $scanInterval) {
+            if ($now - $lastScanTime >= $scanInterval || $runOnce) {
                 $lastScanTime = $now;
 
                 if ($account->canTrade()) {
-                    $this->line('['.date('H:i:s').'] Scanning markets for high-conviction breakout setups...');
-                    $symbols = $marketEngine->getScannableSymbols();
+                    $this->logLine('['.date('H:i:s').'] Scanning liquid pairs for high-confluence breakout setups...');
+                    try {
+                        $symbols = $marketEngine->getScannableSymbols();
+                        $candidates = array_slice($symbols, 0, 15);
 
-                    foreach (array_slice($symbols, 0, 15) as $sym) {
-                        try {
-                            $klines = $marketEngine->getMultiTimeframeKlines($sym);
-                            $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
+                        foreach ($candidates as $sym) {
+                            $totalScannedCount++;
+                            try {
+                                $klines = $marketEngine->getMultiTimeframeKlines($sym);
+                                $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
 
-                            if ($eval !== null && $eval['score'] >= 82) {
-                                $ai = $validator->validate($eval, $klines['base']);
+                                if ($eval !== null && $eval['score'] >= 82) {
+                                    $ai = $validator->validate($eval, $klines['base']);
 
-                                if ($ai['approved']) {
-                                    $this->info("⚡ Qualified Setup Found on {$sym} ({$eval['direction']}) - Score: {$eval['score']}/100");
-                                    $execResult = $executor->executeSignal($eval, $ai, $mode);
+                                    if ($ai['approved']) {
+                                        $this->logInfo("⚡ High-Confluence Setup on {$sym} ({$eval['direction']}) - Score: {$eval['score']}/100");
+                                        $execResult = $executor->executeSignal($eval, $ai, $mode);
 
-                                    if ($execResult['status'] === 'opened') {
-                                        $this->info("✅ Order Executed: {$execResult['message']}");
-                                        break; // Executed 1 trade for this scanning cycle; multi-trade capacity will continue on subsequent cycles based on available free margin
-                                    } else {
-                                        $this->line("Execution Notice: {$execResult['message']}");
+                                        if (($execResult['status'] ?? '') === 'opened') {
+                                            $totalOpenedCount++;
+                                            $this->logInfo("✅ Order Executed: {$execResult['message']}");
+                                            break; // Executed 1 trade for this scanning cycle; multi-trade capacity will continue on subsequent cycles based on available free margin
+                                        } else {
+                                            $this->logLine("Execution Notice: {$execResult['message']}");
+                                        }
                                     }
                                 }
+                            } catch (Throwable $symEx) {
+                                // Ignore transient per-symbol errors
                             }
-                        } catch (\Exception $e) {
-                            // Log and continue scanning
                         }
+                    } catch (Throwable $scanEx) {
+                        Log::error("[TradingDaemon] Scanner cycle error: {$scanEx->getMessage()}");
                     }
                 } else {
                     if (! $account->is_running) {
-                        $this->line('['.date('H:i:s').'] Auto-trading is PAUSED via dashboard. Waiting for start command...');
+                        $this->logLine('['.date('H:i:s').'] Auto-trading is PAUSED via terminal. Waiting for start command...');
                     } elseif ($account->paused_until !== null && $account->paused_until->isFuture()) {
-                        $this->warn('['.date('H:i:s')."] Circuit breaker cooldown active until {$account->paused_until->format('H:i:s')}");
+                        $this->logWarn('['.date('H:i:s')."] Circuit breaker cooldown active until {$account->paused_until->format('H:i:s')}");
                     }
                 }
             }
@@ -133,12 +210,22 @@ class TradingDaemonCommand extends Command
             // 3. Periodic Equity Snapshot (every 5 minutes)
             if ($now - $lastSnapshotTime >= 300) {
                 $lastSnapshotTime = $now;
-                EquitySnapshot::create([
-                    'mode' => $mode,
-                    'balance' => $account->balance,
-                    'equity' => $account->balance,
-                    'open_positions' => $openTrades->count(),
-                ]);
+                try {
+                    $openCount = Trade::where('mode', $mode)->where('status', 'OPEN')->count();
+                    EquitySnapshot::create([
+                        'mode' => $mode,
+                        'balance' => $account->balance,
+                        'equity' => $account->balance,
+                        'open_positions' => $openCount,
+                    ]);
+                } catch (Throwable) {
+                    // Ignore snapshot failure
+                }
+            }
+
+            // 4. Memory Cleanup
+            if ($loopCount % 25 === 0) {
+                gc_collect_cycles();
             }
 
             if ($runOnce) {
@@ -149,5 +236,28 @@ class TradingDaemonCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    protected function logInfo(string $message): void
+    {
+        $this->info($message);
+        Log::channel('single')->info("[TradingDaemon] {$message}");
+    }
+
+    protected function logWarn(string $message): void
+    {
+        $this->warn($message);
+        Log::channel('single')->warning("[TradingDaemon] {$message}");
+    }
+
+    protected function logError(string $message): void
+    {
+        $this->error($message);
+        Log::channel('single')->error("[TradingDaemon] {$message}");
+    }
+
+    protected function logLine(string $message): void
+    {
+        $this->line($message);
     }
 }

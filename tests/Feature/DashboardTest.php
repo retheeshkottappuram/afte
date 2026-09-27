@@ -218,4 +218,93 @@ class DashboardTest extends TestCase
 
         $this->assertEquals('OPEN', $trade->fresh()->status);
     }
+
+    public function test_dashboard_renders_daemon_status_banner_and_margin_matrix(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this->actingAs($user)->get('/');
+        $response->assertStatus(200);
+        $response->assertSee('id="daemon-banner"', false);
+        $response->assertSee('id="daemon-status-badge"', false);
+        $response->assertSee('Portfolio Capital & Margin Allocation Matrix', false);
+        $response->assertSee('id="stat-margin-util-badge"', false);
+        $response->assertSee('id="strategy-info-modal"', false);
+        $response->assertSee('id="daemon-logs-modal"', false);
+    }
+
+    public function test_live_sync_endpoint_returns_unified_realtime_payload(): void
+    {
+        $user = User::factory()->create();
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 10.0,
+            'initial_balance' => 10.0,
+            'is_running' => false,
+        ]);
+
+        $response = $this->actingAs($user)->getJson('/api/live-sync?mode=paper');
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'success',
+            'timestamp',
+            'stats' => [
+                'mode',
+                'is_running',
+                'balance',
+                'equity',
+                'used_margin',
+                'available_margin',
+                'margin_utilization_pct',
+                'amount_per_trade',
+            ],
+            'positions',
+            'signals',
+            'history',
+            'daemon',
+        ]);
+    }
+
+    public function test_daemon_status_and_logs_endpoints_work(): void
+    {
+        $user = User::factory()->create();
+
+        $statusResponse = $this->actingAs($user)->getJson('/api/trading-daemon/status?mode=paper');
+        $statusResponse->assertStatus(200);
+        $statusResponse->assertJsonStructure([
+            'is_active',
+            'status',
+            'pid',
+            'heartbeat',
+        ]);
+
+        $logsResponse = $this->actingAs($user)->getJson('/api/trading-daemon/logs?lines=20');
+        $logsResponse->assertStatus(200);
+        $logsResponse->assertJsonStructure([
+            'success',
+            'logs',
+        ]);
+    }
+
+    public function test_admin_can_toggle_auto_trading_which_controls_daemon(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 20.0,
+            'initial_balance' => 20.0,
+            'is_running' => false,
+        ]);
+
+        $response = $this->actingAs($admin)->postJson('/api/toggle-auto-trading', ['mode' => 'paper']);
+        $response->assertStatus(200);
+        $response->assertJsonFragment(['success' => true, 'is_running' => true]);
+
+        // Toggle off
+        $stopResponse = $this->actingAs($admin)->postJson('/api/toggle-auto-trading', ['mode' => 'paper']);
+        $stopResponse->assertStatus(200);
+        $stopResponse->assertJsonFragment(['success' => true, 'is_running' => false]);
+    }
 }
