@@ -172,6 +172,9 @@ class CheckCryptoSignals extends Command
         $watch = (bool) $this->option('watch');
         $watchInterval = max(10, (int) ($this->option('watch-interval') ?: 60));
 
+        $btcTrend = $binanceClient->getBtcMarketTrend();
+        $this->info("⚡ BTC Macro Market Trend: {$btcTrend['trend']} (\${$btcTrend['btc_price']}) [Allow LONG: ".($btcTrend['allow_long'] ? 'YES' : 'NO').' | Allow SHORT: '.($btcTrend['allow_short'] ? 'YES' : 'NO').']');
+
         Cache::put('crypto:manual_scan:status', 'RUNNING', 600);
         Cache::put('crypto:manual_scan:running', true, 600);
         Cache::put('crypto:manual_scan:signals', [], 3600);
@@ -273,6 +276,33 @@ class CheckCryptoSignals extends Command
                                 $adx = $diag['adx'] ?? '-';
                                 $this->line("  -> <fg=gray>No signal for {$symbol} (BUY: {$buy}/100, SELL: {$sell}/100 | Min: {$min} | RSI: {$rsi}, ADX: {$adx})</>");
                             }
+
+                            continue;
+                        }
+
+                        // Condition 1: Bitcoin Macro Trend Filter
+                        if ($signal['side'] === 'BUY' && ! $btcTrend['allow_long']) {
+                            $this->line("  -> <fg=yellow>Filtered out {$symbol} BUY setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+
+                            continue;
+                        }
+                        if ($signal['side'] === 'SELL' && ! $btcTrend['allow_short']) {
+                            $this->line("  -> <fg=yellow>Filtered out {$symbol} SELL setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+
+                            continue;
+                        }
+
+                        // Condition 7: Minimum Institutional Score Gate (>= 82)
+                        if ($signal['score'] < 82) {
+                            $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$signal['score']} below institutional conviction threshold (82)</>");
+
+                            continue;
+                        }
+
+                        // Condition 3: Minimum Volume Surge (>= 1.25x)
+                        $volRatio = (float) ($signal['volume_ratio'] ?? 1.0);
+                        if ($volRatio < 1.25) {
+                            $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Volume ratio {$volRatio}x below minimum threshold (1.25x)</>");
 
                             continue;
                         }

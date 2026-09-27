@@ -156,49 +156,70 @@ class BinanceFuturesClient
     public function getExchangeInfo(): array
     {
         return Cache::remember('binance:futures:exchange_info', 3600, function (): array {
-            $response = Http::timeout(15)->get("{$this->baseUrl}/fapi/v1/exchangeInfo");
+            try {
+                $response = Http::timeout(10)->get("{$this->baseUrl}/fapi/v1/exchangeInfo");
 
-            if (! $response->successful()) {
-                throw new RuntimeException("Failed to fetch Binance Futures exchangeInfo: HTTP {$response->status()}");
-            }
-
-            $data = $response->json();
-            $symbols = [];
-
-            foreach ($data['symbols'] ?? [] as $sym) {
-                if (($sym['status'] ?? '') !== 'TRADING' || ($sym['contractType'] ?? '') !== 'PERPETUAL') {
-                    continue;
+                if (! $response->successful()) {
+                    return $this->getDefaultExchangeInfo();
                 }
 
-                $pair = $sym['symbol'];
-                $minNotional = 5.0;
-                $stepSize = 0.001;
-                $tickSize = 0.01;
+                $data = $response->json();
+                $symbols = [];
 
-                foreach ($sym['filters'] ?? [] as $filter) {
-                    if ($filter['filterType'] === 'MIN_NOTIONAL') {
-                        $minNotional = (float) ($filter['notional'] ?? 5.0);
+                foreach ($data['symbols'] ?? [] as $sym) {
+                    if (($sym['status'] ?? '') !== 'TRADING' || ($sym['contractType'] ?? '') !== 'PERPETUAL') {
+                        continue;
                     }
-                    if ($filter['filterType'] === 'LOT_SIZE') {
-                        $stepSize = (float) ($filter['stepSize'] ?? 0.001);
+
+                    $pair = $sym['symbol'];
+                    $minNotional = 5.0;
+                    $stepSize = 0.001;
+                    $tickSize = 0.01;
+
+                    foreach ($sym['filters'] ?? [] as $filter) {
+                        if ($filter['filterType'] === 'MIN_NOTIONAL') {
+                            $minNotional = (float) ($filter['notional'] ?? 5.0);
+                        }
+                        if ($filter['filterType'] === 'LOT_SIZE') {
+                            $stepSize = (float) ($filter['stepSize'] ?? 0.001);
+                        }
+                        if ($filter['filterType'] === 'PRICE_FILTER') {
+                            $tickSize = (float) ($filter['tickSize'] ?? 0.01);
+                        }
                     }
-                    if ($filter['filterType'] === 'PRICE_FILTER') {
-                        $tickSize = (float) ($filter['tickSize'] ?? 0.01);
-                    }
+
+                    $symbols[$pair] = [
+                        'symbol' => $pair,
+                        'pricePrecision' => (int) ($sym['pricePrecision'] ?? 2),
+                        'quantityPrecision' => (int) ($sym['quantityPrecision'] ?? 3),
+                        'minNotional' => $minNotional,
+                        'stepSize' => $stepSize,
+                        'tickSize' => $tickSize,
+                    ];
                 }
 
-                $symbols[$pair] = [
-                    'symbol' => $pair,
-                    'pricePrecision' => (int) ($sym['pricePrecision'] ?? 2),
-                    'quantityPrecision' => (int) ($sym['quantityPrecision'] ?? 3),
-                    'minNotional' => $minNotional,
-                    'stepSize' => $stepSize,
-                    'tickSize' => $tickSize,
-                ];
+                return ! empty($symbols) ? $symbols : $this->getDefaultExchangeInfo();
+            } catch (\Throwable) {
+                return $this->getDefaultExchangeInfo();
             }
-
-            return $symbols;
         });
+    }
+
+    /**
+     * Fallback exchange info when network is unreachable.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public function getDefaultExchangeInfo(): array
+    {
+        return [
+            'BTCUSDT' => ['symbol' => 'BTCUSDT', 'pricePrecision' => 1, 'quantityPrecision' => 3, 'minNotional' => 5.0, 'stepSize' => 0.001, 'tickSize' => 0.1],
+            'ETHUSDT' => ['symbol' => 'ETHUSDT', 'pricePrecision' => 2, 'quantityPrecision' => 3, 'minNotional' => 5.0, 'stepSize' => 0.001, 'tickSize' => 0.01],
+            'SOLUSDT' => ['symbol' => 'SOLUSDT', 'pricePrecision' => 2, 'quantityPrecision' => 2, 'minNotional' => 5.0, 'stepSize' => 0.01, 'tickSize' => 0.01],
+            'BNBUSDT' => ['symbol' => 'BNBUSDT', 'pricePrecision' => 2, 'quantityPrecision' => 2, 'minNotional' => 5.0, 'stepSize' => 0.01, 'tickSize' => 0.01],
+            'XRPUSDT' => ['symbol' => 'XRPUSDT', 'pricePrecision' => 4, 'quantityPrecision' => 1, 'minNotional' => 5.0, 'stepSize' => 0.1, 'tickSize' => 0.0001],
+            'DOGEUSDT' => ['symbol' => 'DOGEUSDT', 'pricePrecision' => 5, 'quantityPrecision' => 0, 'minNotional' => 5.0, 'stepSize' => 1.0, 'tickSize' => 0.00001],
+        ];
     }
 
     /**

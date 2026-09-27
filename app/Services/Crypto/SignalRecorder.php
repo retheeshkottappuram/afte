@@ -178,8 +178,8 @@ class SignalRecorder
                 }
 
                 // If this is the latest marker on the chart AND is a fresh candle close, evaluate for Telegram dispatch
-                // Professional Institutional Filter: Only dispatch setups meeting minimum score threshold
-                $minScore = (int) (config('crypto.indicators.minimum_score') ?? config('crypto.min_score', 70));
+                // Professional Institutional Filter: Only dispatch setups meeting minimum score threshold (>= 82)
+                $minScore = (int) (config('crypto.indicators.minimum_score') ?? config('crypto.min_score', 82));
                 if ($isLatestMarker && $isFreshCandle && $score >= $minScore && $dispatchTelegram) {
                     $dedupCacheKey = "crypto-signal:telegram-sent:{$cleanSymbol}:{$interval}:{$timeSec}:{$side}";
                     $generalCooldownKey = "crypto-signal:{$cleanSymbol}:{$interval}:{$side}";
@@ -187,6 +187,23 @@ class SignalRecorder
                     $alreadyAlerted = $signalRecord->telegram_sent || Cache::has($dedupCacheKey);
 
                     if (! $alreadyAlerted && $telegramNotifier->isConfigured()) {
+                        // Condition 1: Bitcoin Macro Trend Filter on Telegram Alerts
+                        $binanceClient = new BinanceClient;
+                        $btcTrend = $binanceClient->getBtcMarketTrend();
+
+                        if ($side === 'SELL' && ! $btcTrend['allow_short']) {
+                            Log::info("SignalRecorder: Suppressed {$cleanSymbol} SELL Telegram alert - Counter to BTC {$btcTrend['trend']} macro trend");
+                            Cache::put($dedupCacheKey, true, now()->addDays(7));
+
+                            continue;
+                        }
+                        if ($side === 'BUY' && ! $btcTrend['allow_long']) {
+                            Log::info("SignalRecorder: Suppressed {$cleanSymbol} BUY Telegram alert - Counter to BTC {$btcTrend['trend']} macro trend");
+                            Cache::put($dedupCacheKey, true, now()->addDays(7));
+
+                            continue;
+                        }
+
                         // Real-Time Live Price & Timing Validation (TimingGuard)
                         $timingGuard = new TimingGuard;
                         $timing = $timingGuard->validateEntry(

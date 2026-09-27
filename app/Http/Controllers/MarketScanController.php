@@ -84,7 +84,7 @@ class MarketScanController extends Controller
                 pclose(popen("start \"\" /B \"{$batPath}\" > NUL 2>&1", 'r'));
             } else {
                 $cmd = sprintf(
-                    'nohup %s %s crypto:check-signals --all --dry-run >> %s 2>&1 & echo $!',
+                    '(%s %s crypto:check-signals --all --dry-run >> %s 2>&1 & echo $!)',
                     escapeshellarg($phpCli),
                     escapeshellarg($artisanPath),
                     escapeshellarg($logPath)

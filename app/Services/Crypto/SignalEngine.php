@@ -44,11 +44,11 @@ class SignalEngine
 
             // ADX
             'adx_len' => 14,
-            'adx_min' => 18.0,
+            'adx_min' => 20.0,
 
             // Volume
             'vol_len' => 20,
-            'vol_mult' => 1.15,
+            'vol_mult' => 1.30,
             'obv_lookback' => 5,
 
             // Structure
@@ -71,14 +71,14 @@ class SignalEngine
 
             // Risk
             'sl_mult' => 1.5,
-            'tp1_mult' => 1.5,
-            'tp2_mult' => 3.0,
-            'tp3_mult' => 4.5,
+            'tp1_mult' => 1.8,
+            'tp2_mult' => 3.5,
+            'tp3_mult' => 5.0,
             'use_structure_sl' => true,
-            'min_rr' => 1.5,
+            'min_rr' => 2.0,
 
             // Thresholds (Institutional High-Confluence Tunables)
-            'minimum_score' => 80,
+            'minimum_score' => 82,
             'grade_a' => 90,
             'grade_b' => 82,
             'signal_cooldown_bars' => 4,
@@ -231,30 +231,46 @@ class SignalEngine
         $obvBull = ($i - $obvLb) >= 0 && $obv[$i] > $obv[$i - $obvLb];
         $obvBear = ($i - $obvLb) >= 0 && $obv[$i] < $obv[$i - $obvLb];
 
-        $candleRange = $high - $low;
+        $candleRange = max(0.0000001, $high - $low);
         $body = abs($close - $open);
-        $bodyRatio = $candleRange > 0 ? $body / $candleRange : 0;
-        $strongBull = $close > $open && $bodyRatio >= 0.60;
-        $strongBear = $close < $open && $bodyRatio >= 0.60;
+        $bodyRatio = $body / $candleRange;
+        $upperWick = $high - max($close, $open);
+        $lowerWick = min($close, $open) - $low;
+        $upperWickRatio = $upperWick / $candleRange;
+        $lowerWickRatio = $lowerWick / $candleRange;
+
+        // Condition 5: Rejection Wick & Candle Quality Filter (no long upper wick on longs, no long lower wick on shorts)
+        $strongBull = $close > $open && $bodyRatio >= 0.48 && $upperWickRatio <= 0.30;
+        $strongBear = $close < $open && $bodyRatio >= 0.48 && $lowerWickRatio <= 0.30;
         $bullEngulf = $close > $open && $closes[$i - 1] < $opens[$i - 1]
-            && $close >= $opens[$i - 1] && $open <= $closes[$i - 1];
+            && $close >= $opens[$i - 1] && $open <= $closes[$i - 1]
+            && $upperWickRatio <= 0.30;
         $bearEngulf = $close < $open && $closes[$i - 1] > $opens[$i - 1]
-            && $close <= $opens[$i - 1] && $open >= $closes[$i - 1];
+            && $close <= $opens[$i - 1] && $open >= $closes[$i - 1]
+            && $lowerWickRatio <= 0.30;
         $bullCandle = $strongBull || $bullEngulf;
         $bearCandle = $strongBear || $bearEngulf;
 
+        // Condition 2: Institutional Setup Verification (Donchian Breakout, Breakout Retest, or 21-EMA Value Pullback)
         $structureLen = (int) $c['structure_len'];
         $previousHigh = max(array_slice($highs, $i - $structureLen, $structureLen));
         $previousLow = min(array_slice($lows, $i - $structureLen, $structureLen));
         $breakoutBuffer = (float) $c['breakout_buffer_pct'] / 100.0;
-        $breakoutLong = $close > ($previousHigh * (1.0 + $breakoutBuffer));
-        $breakoutShort = $close < ($previousLow * (1.0 - $breakoutBuffer));
-        $higherHigh = $high > $highs[$i - 1] && $highs[$i - 1] > $highs[$i - 2];
-        $higherLow = $low > $lows[$i - 1];
-        $lowerLow = $low < $lows[$i - 1] && $lows[$i - 1] < $lows[$i - 2];
-        $lowerHigh = $high < $highs[$i - 1];
-        $structureBull = $breakoutLong || ($higherHigh && $higherLow);
-        $structureBear = $breakoutShort || ($lowerLow && $lowerHigh);
+
+        // Pattern 1: Donchian Structure Breakout
+        $breakoutLong = $close > ($previousHigh * (1.0 + $breakoutBuffer)) && $bullCandle;
+        $breakoutShort = $close < ($previousLow * (1.0 - $breakoutBuffer)) && $bearCandle;
+
+        // Pattern 2: Breakout Retest
+        $retestLong = ($i >= 2 && $closes[$i - 1] > $previousHigh && $low <= ($previousHigh * 1.003) && $close >= $previousHigh && $bullCandle);
+        $retestShort = ($i >= 2 && $closes[$i - 1] < $previousLow && $high >= ($previousLow * 0.997) && $close <= $previousLow && $bearCandle);
+
+        // Pattern 3: Trend Pullback Value Bounce into 21 EMA
+        $pullbackLong = ($i >= 2 && $emaFast[$i] > $emaSlow[$i] && $low <= ($emaSlow[$i] * 1.003) && $close > $emaFast[$i] && $bullCandle && $lowerWickRatio >= 0.25);
+        $pullbackShort = ($i >= 2 && $emaFast[$i] < $emaSlow[$i] && $high >= ($emaSlow[$i] * 0.997) && $close < $emaFast[$i] && $bearCandle && $upperWickRatio >= 0.25);
+
+        $structureBull = $breakoutLong || $retestLong || $pullbackLong;
+        $structureBear = $breakoutShort || $retestShort || $pullbackShort;
 
         $atrPct = $close > 0 ? ($atr[$i] / $close * 100.0) : 0.0;
         $volatilityOK = $atrPct >= (float) $c['min_atr_pct'] && $atrPct <= (float) $c['max_atr_pct'];
@@ -270,7 +286,7 @@ class SignalEngine
         [$bearishDivergence, $bullishDivergence] = $this->checkDivergence($highs, $lows, $rsi, $i, (int) $c['divergence_lookback']);
 
         $volRatio = ($volSma[$i] !== null && $volSma[$i] > 0) ? round($volumes[$i] / $volSma[$i], 2) : 1.0;
-        $volumeScore = $volRatio >= (float) $c['vol_mult'] ? 8 : ($volRatio >= 0.85 ? 5 : 0);
+        $volumeScore = $volRatio >= (float) $c['vol_mult'] ? 12 : ($volRatio >= 1.20 ? 8 : 0);
 
         $longScore = 0;
         $longScore += ($trendBull && $htf1OK && $htf2OK) ? 20 : 0;
@@ -279,10 +295,10 @@ class SignalEngine
         $longScore += $volumeScore;
         $longScore += $obvBull ? 7 : 0;
         $longScore += $bullCandle ? 10 : 0;
-        $longScore += $structureBull ? 10 : 0;
+        $longScore += $structureBull ? 15 : 0;
         $longScore += $volatilityOK ? 5 : 0;
         $longScore += $volatilityExpanding ? 5 : 0;
-        $longScore += $persistBull ? 10 : 0;
+        $longScore += $persistBull ? 8 : 0;
 
         $shortScore = 0;
         $shortScore += ($trendBear && $htf1OKBear && $htf2OKBear) ? 20 : 0;
@@ -291,17 +307,42 @@ class SignalEngine
         $shortScore += $volumeScore;
         $shortScore += $obvBear ? 7 : 0;
         $shortScore += $bearCandle ? 10 : 0;
-        $shortScore += $structureBear ? 10 : 0;
+        $shortScore += $structureBear ? 15 : 0;
         $shortScore += $volatilityOK ? 5 : 0;
         $shortScore += $volatilityExpanding ? 5 : 0;
-        $shortScore += $persistBear ? 10 : 0;
+        $shortScore += $persistBear ? 8 : 0;
 
         $minScore = (int) $c['minimum_score'];
-        // Professional Institutional Gate: Must meet min score, follow macro trend, and align with HTF
-        $longQualifies = $longScore >= $minScore && $trendBull && $htf1OK && $notOverextendedLong && ! $bearishDivergence;
-        $shortQualifies = $shortScore >= $minScore && $trendBear && $htf1OKBear && $notOverextendedShort && ! $bullishDivergence;
 
-        $volRatio = ($volSma[$i] !== null && $volSma[$i] > 0) ? round($volumes[$i] / $volSma[$i], 2) : 1.0;
+        // Strict Institutional Filters:
+        $volumeSurgeOK = $volRatio >= 1.25;
+        $adxMomentumOK = $adx[$i] >= (float) $c['adx_min'];
+        $above200Ema = $emaTrend[$i] === null || $close > (float) $emaTrend[$i];
+        $below200Ema = $emaTrend[$i] === null || $close < (float) $emaTrend[$i];
+        $noWickRejectionLong = $upperWickRatio <= 0.30;
+        $noWickRejectionShort = $lowerWickRatio <= 0.30;
+
+        $longQualifies = $longScore >= $minScore
+            && $structureBull
+            && $volumeSurgeOK
+            && $adxMomentumOK
+            && $above200Ema
+            && $noWickRejectionLong
+            && $trendBull
+            && $htf1OK
+            && $notOverextendedLong
+            && ! $bearishDivergence;
+
+        $shortQualifies = $shortScore >= $minScore
+            && $structureBear
+            && $volumeSurgeOK
+            && $adxMomentumOK
+            && $below200Ema
+            && $noWickRejectionShort
+            && $trendBear
+            && $htf1OKBear
+            && $notOverextendedShort
+            && ! $bullishDivergence;
 
         $diagnostics = [
             'buy_score' => $longScore,
@@ -335,14 +376,38 @@ class SignalEngine
                 }
             }
 
-            if ($longScore >= $minScore && ! $notOverextendedLong) {
-                $diagnostics['rejection'] = 'Price overextended from Fast EMA (> 2.5 ATR)';
-            } elseif ($longScore >= $minScore && $bearishDivergence) {
-                $diagnostics['rejection'] = 'Bearish RSI divergence detected';
-            } elseif ($shortScore >= $minScore && ! $notOverextendedShort) {
-                $diagnostics['rejection'] = 'Price overextended from Fast EMA (> 2.5 ATR)';
-            } elseif ($shortScore >= $minScore && $bullishDivergence) {
-                $diagnostics['rejection'] = 'Bullish RSI divergence detected';
+            if ($longScore >= $minScore) {
+                if (! $structureBull) {
+                    $diagnostics['rejection'] = 'Missing institutional structure (Breakout, Retest, or 21-EMA Pullback)';
+                } elseif (! $volumeSurgeOK) {
+                    $diagnostics['rejection'] = "Insufficient volume surge ({$volRatio}x < 1.25x)";
+                } elseif (! $adxMomentumOK) {
+                    $diagnostics['rejection'] = "Weak ADX momentum ({round((float) $adx[$i], 1)} < {$c['adx_min']})";
+                } elseif (! $above200Ema) {
+                    $diagnostics['rejection'] = 'Counter-trend below 200 EMA baseline';
+                } elseif (! $noWickRejectionLong) {
+                    $diagnostics['rejection'] = 'Excessive upper rejection wick (> 30% of candle)';
+                } elseif (! $notOverextendedLong) {
+                    $diagnostics['rejection'] = 'Price overextended from Fast EMA (> 2.5 ATR)';
+                } elseif ($bearishDivergence) {
+                    $diagnostics['rejection'] = 'Bearish RSI divergence detected';
+                }
+            } elseif ($shortScore >= $minScore) {
+                if (! $structureBear) {
+                    $diagnostics['rejection'] = 'Missing institutional structure (Breakdown, Retest, or 21-EMA Pullback)';
+                } elseif (! $volumeSurgeOK) {
+                    $diagnostics['rejection'] = "Insufficient volume surge ({$volRatio}x < 1.25x)";
+                } elseif (! $adxMomentumOK) {
+                    $diagnostics['rejection'] = "Weak ADX momentum ({round((float) $adx[$i], 1)} < {$c['adx_min']})";
+                } elseif (! $below200Ema) {
+                    $diagnostics['rejection'] = 'Counter-trend above 200 EMA baseline';
+                } elseif (! $noWickRejectionShort) {
+                    $diagnostics['rejection'] = 'Excessive lower absorption wick (> 30% of candle)';
+                } elseif (! $notOverextendedShort) {
+                    $diagnostics['rejection'] = 'Price overextended from Fast EMA (> 2.5 ATR)';
+                } elseif ($bullishDivergence) {
+                    $diagnostics['rejection'] = 'Bullish RSI divergence detected';
+                }
             }
 
             return [
@@ -614,30 +679,43 @@ class SignalEngine
                 $obvBull = ($i - $obvLb) >= 0 && $obv[$i] > $obv[$i - $obvLb];
                 $obvBear = ($i - $obvLb) >= 0 && $obv[$i] < $obv[$i - $obvLb];
 
-                $candleRange = $curHigh - $curLow;
+                $candleRange = max(0.0000001, $curHigh - $curLow);
                 $body = abs($curClose - $curOpen);
                 $bodyRatio = $candleRange > 0 ? $body / $candleRange : 0;
-                $strongBull = $curClose > $curOpen && $bodyRatio >= 0.60;
-                $strongBear = $curClose < $curOpen && $bodyRatio >= 0.60;
+                $upperWick = $curHigh - max($curClose, $curOpen);
+                $lowerWick = min($curClose, $curOpen) - $curLow;
+                $upperWickRatio = $upperWick / $candleRange;
+                $lowerWickRatio = $lowerWick / $candleRange;
+
+                // Rejection Wick & Candle Quality Filter
+                $strongBull = $curClose > $curOpen && $bodyRatio >= 0.48 && $upperWickRatio <= 0.30;
+                $strongBear = $curClose < $curOpen && $bodyRatio >= 0.48 && $lowerWickRatio <= 0.30;
                 $bullEngulf = $curClose > $curOpen && $closes[$i - 1] < $opens[$i - 1]
-                    && $curClose >= $opens[$i - 1] && $curOpen <= $closes[$i - 1];
+                    && $curClose >= $opens[$i - 1] && $curOpen <= $closes[$i - 1]
+                    && $upperWickRatio <= 0.30;
                 $bearEngulf = $curClose < $curOpen && $closes[$i - 1] > $opens[$i - 1]
-                    && $curClose <= $opens[$i - 1] && $curOpen >= $closes[$i - 1];
+                    && $curClose <= $opens[$i - 1] && $curOpen >= $closes[$i - 1]
+                    && $lowerWickRatio <= 0.30;
                 $bullCandle = $strongBull || $bullEngulf;
                 $bearCandle = $strongBear || $bearEngulf;
 
+                // Institutional Setup Verification (Donchian Breakout, Breakout Retest, 21-EMA Pullback)
                 $structureLen = (int) $c['structure_len'];
                 $previousHigh = max(array_slice($highs, $i - $structureLen, $structureLen));
                 $previousLow = min(array_slice($lows, $i - $structureLen, $structureLen));
                 $breakoutBuffer = (float) $c['breakout_buffer_pct'] / 100.0;
-                $breakoutLong = $curClose > ($previousHigh * (1.0 + $breakoutBuffer));
-                $breakoutShort = $curClose < ($previousLow * (1.0 - $breakoutBuffer));
-                $higherHigh = $curHigh > $highs[$i - 1] && $highs[$i - 1] > $highs[$i - 2];
-                $higherLow = $curLow > $lows[$i - 1];
-                $lowerLow = $curLow < $lows[$i - 1] && $lows[$i - 1] < $lows[$i - 2];
-                $lowerHigh = $curHigh < $highs[$i - 1];
-                $structureBull = $breakoutLong || ($higherHigh && $higherLow);
-                $structureBear = $breakoutShort || ($lowerLow && $lowerHigh);
+
+                $breakoutLong = $curClose > ($previousHigh * (1.0 + $breakoutBuffer)) && $bullCandle;
+                $breakoutShort = $curClose < ($previousLow * (1.0 - $breakoutBuffer)) && $bearCandle;
+
+                $retestLong = ($i >= 2 && $closes[$i - 1] > $previousHigh && $curLow <= ($previousHigh * 1.003) && $curClose >= $previousHigh && $bullCandle);
+                $retestShort = ($i >= 2 && $closes[$i - 1] < $previousLow && $curHigh >= ($previousLow * 0.997) && $curClose <= $previousLow && $bearCandle);
+
+                $pullbackLong = ($i >= 2 && $emaFast[$i] > $emaSlow[$i] && $curLow <= ($emaSlow[$i] * 1.003) && $curClose > $emaFast[$i] && $bullCandle && $lowerWickRatio >= 0.25);
+                $pullbackShort = ($i >= 2 && $emaFast[$i] < $emaSlow[$i] && $curHigh >= ($emaSlow[$i] * 0.997) && $curClose < $emaFast[$i] && $bearCandle && $upperWickRatio >= 0.25);
+
+                $structureBull = $breakoutLong || $retestLong || $pullbackLong;
+                $structureBear = $breakoutShort || $retestShort || $pullbackShort;
 
                 $atrPct = ($atr[$i] / $curClose) * 100.0;
                 $volatilityOK = $atrPct >= (float) $c['min_atr_pct'] && $atrPct <= (float) $c['max_atr_pct'];
@@ -652,6 +730,9 @@ class SignalEngine
 
                 [$bearishDivergence, $bullishDivergence] = $this->checkDivergence($highs, $lows, $rsi, $i, (int) $c['divergence_lookback']);
 
+                $volRatio = ($volSma[$i] !== null && $volSma[$i] > 0) ? round($curVol / $volSma[$i], 2) : 1.0;
+                $volumeScore = $volRatio >= (float) $c['vol_mult'] ? 12 : ($volRatio >= 1.20 ? 8 : 0);
+
                 $longScore = 0;
                 $longScore += ($trendBull && $htf1OK && $htf2OK) ? 20 : 0;
                 $longScore += $adxBull ? 15 : 0;
@@ -659,10 +740,10 @@ class SignalEngine
                 $longScore += $volumeScore;
                 $longScore += $obvBull ? 7 : 0;
                 $longScore += $bullCandle ? 10 : 0;
-                $longScore += $structureBull ? 10 : 0;
+                $longScore += $structureBull ? 15 : 0;
                 $longScore += $volatilityOK ? 5 : 0;
                 $longScore += $volatilityExpanding ? 5 : 0;
-                $longScore += $persistBull ? 10 : 0;
+                $longScore += $persistBull ? 8 : 0;
 
                 $shortScore = 0;
                 $shortScore += ($trendBear && $htf1OKBear && $htf2OKBear) ? 20 : 0;
@@ -671,14 +752,40 @@ class SignalEngine
                 $shortScore += $volumeScore;
                 $shortScore += $obvBear ? 7 : 0;
                 $shortScore += $bearCandle ? 10 : 0;
-                $shortScore += $structureBear ? 10 : 0;
+                $shortScore += $structureBear ? 15 : 0;
                 $shortScore += $volatilityOK ? 5 : 0;
                 $shortScore += $volatilityExpanding ? 5 : 0;
-                $shortScore += $persistBear ? 10 : 0;
+                $shortScore += $persistBear ? 8 : 0;
 
-                // Professional Institutional Gate: Must meet min score, follow macro trend, and align with HTF
-                $longQualifies = $longScore >= $minScore && $trendBullAt($i) && $htf1OK && $notOverextendedLong && ! $bearishDivergence;
-                $shortQualifies = $shortScore >= $minScore && $trendBearAt($i) && $htf1OKBear && $notOverextendedShort && ! $bullishDivergence;
+                // Strict Institutional Filters:
+                $volumeSurgeOK = $volRatio >= 1.25;
+                $adxMomentumOK = $adx[$i] >= (float) $c['adx_min'];
+                $above200Ema = $emaTrend[$i] === null || $curClose > (float) $emaTrend[$i];
+                $below200Ema = $emaTrend[$i] === null || $curClose < (float) $emaTrend[$i];
+                $noWickRejectionLong = $upperWickRatio <= 0.30;
+                $noWickRejectionShort = $lowerWickRatio <= 0.30;
+
+                $longQualifies = $longScore >= $minScore
+                    && $structureBull
+                    && $volumeSurgeOK
+                    && $adxMomentumOK
+                    && $above200Ema
+                    && $noWickRejectionLong
+                    && $trendBullAt($i)
+                    && $htf1OK
+                    && $notOverextendedLong
+                    && ! $bearishDivergence;
+
+                $shortQualifies = $shortScore >= $minScore
+                    && $structureBear
+                    && $volumeSurgeOK
+                    && $adxMomentumOK
+                    && $below200Ema
+                    && $noWickRejectionShort
+                    && $trendBearAt($i)
+                    && $htf1OKBear
+                    && $notOverextendedShort
+                    && ! $bullishDivergence;
 
                 $canLong = $activePosition === 'BUY' ? ($barsSinceSignal >= $cooldownBars) : ($barsSinceSignal >= $oppositeCooldownBars);
                 $canShort = $activePosition === 'SELL' ? ($barsSinceSignal >= $cooldownBars) : ($barsSinceSignal >= $oppositeCooldownBars);

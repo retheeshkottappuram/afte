@@ -179,7 +179,10 @@ class WatchCryptoSignals extends Command
                 'last_loop_duration_ms' => 0,
             ], 180);
 
-            $this->line('<fg=gray>['.now()->format('H:i:s')."] Cycle #{$loopCount} starting ({$modeLabel})...</>");
+            $btcTrend = $binanceClient->getBtcMarketTrend();
+            $btcColor = $btcTrend['trend'] === 'BULLISH' ? 'green' : ($btcTrend['trend'] === 'BEARISH' ? 'red' : 'yellow');
+            $btcLabel = "<fg={$btcColor}>BTC Macro: [{$btcTrend['trend']}] (\${$btcTrend['btc_price']})</>";
+            $this->line('<fg=gray>['.now()->format('H:i:s')."] Cycle #{$loopCount} starting ({$modeLabel}) | {$btcLabel}...</>");
 
             // =========================================================================
             // PIPELINE 1: DYNAMIC WHOLE-MARKET OPPORTUNITY SCANNER (BREAKOUTS & TRENDS)
@@ -199,6 +202,19 @@ class WatchCryptoSignals extends Command
                     $timeSec = (int) floor(($sig['candle_close_time'] ?? now()->timestamp * 1000) / 1000);
                     $timingStatus = $sig['timing_status'] ?? 'VALID';
                     $interval = $intervals[0] ?? '15m';
+
+                    // Condition 1: Bitcoin Macro Trend Filter on Telegram Dispatch
+                    if ($side === 'SELL' && ! $btcTrend['allow_short']) {
+                        continue;
+                    }
+                    if ($side === 'BUY' && ! $btcTrend['allow_long']) {
+                        continue;
+                    }
+
+                    // Condition 7: Minimum Institutional Score Gate (>= 82)
+                    if (($sig['score'] ?? 0) < 82) {
+                        continue;
+                    }
 
                     // A. PRE-BREAKOUT WATCH ALERT
                     if ($sigType === 'BREAKOUT_WATCH') {

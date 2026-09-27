@@ -277,21 +277,21 @@
             <div class="w-full lg:w-auto">
                 <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex items-center px-3 py-1 rounded-lg text-xs font-black tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 uppercase shadow-sm">
-                        ⚡ Whole-Market Scanner
+                        ⚡ Institutional Setup Scanner
+                    </span>
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                        🛡️ BTC Macro & Wick Filtered
                     </span>
                     <span id="marketScanStatusBadge" class="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700">
                         <span id="marketScanStatusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
                         <span id="marketScanStatusText">IDLE</span>
-                    </span>
-                    <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-950 text-slate-400 border border-slate-800 hidden sm:inline">
-                        php artisan crypto:check-signals --all --dry-run
                     </span>
                 </div>
                 <h3 class="text-lg font-bold text-white mt-2">
                     On-Demand Institutional Setup Scanner
                 </h3>
                 <p class="text-xs text-slate-400 max-w-2xl mt-1">
-                    Scan all ~350 Binance USDT Perpetual contracts in real-time. Detects breakout setups, multi-timeframe HTF alignment, momentum confluence, and displays trade levels (Entry, SL, TP1–3) without sending Telegram alerts.
+                    Scan active Binance USDT Perpetual contracts in real-time. Enforces strict <strong>Bitcoin Macro Direction Alignment</strong> (no counter-trend shorts/longs), <strong>Donchian Structure Breakouts</strong>, <strong>&ge; 1.30x Volume Surge</strong>, <strong>ADX Trend Momentum (&ge; 20)</strong>, and <strong>Rejection Wick Filtration</strong>.
                 </p>
 
                 <!-- Scan Metrics Bar -->

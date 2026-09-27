@@ -168,6 +168,7 @@ class MarketScanner
         string $baseInterval = '15m'
     ): array {
         $detectionStart = microtime(true);
+        $btcTrend = $this->binanceClient->getBtcMarketTrend();
 
         // 1. Discover and rank candidate pairs from entire Binance Futures universe
         $targetSymbols = $this->getRankedCandidateSymbols($minQuoteVolume24h, $maxCandidateSymbols);
@@ -228,6 +229,18 @@ class MarketScanner
                     );
 
                     if ($breakoutResult !== null) {
+                        // Condition 1: Bitcoin Macro Trend Filter
+                        if ($breakoutResult['side'] === 'BUY' && ! $btcTrend['allow_long']) {
+                            Log::info("MarketScanner: Filtered out {$symbol} BUY setup - Counter to BTC {$btcTrend['trend']} macro trend");
+
+                            continue;
+                        }
+                        if ($breakoutResult['side'] === 'SELL' && ! $btcTrend['allow_short']) {
+                            Log::info("MarketScanner: Filtered out {$symbol} SELL setup - Counter to BTC {$btcTrend['trend']} macro trend");
+
+                            continue;
+                        }
+
                         $timing = $this->timingGuard->validateEntry(
                             symbol: $symbol,
                             side: $breakoutResult['side'],
@@ -255,8 +268,26 @@ class MarketScanner
                     $trendEval = $this->signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles);
                     $trendSignal = $trendEval['signal'];
 
-                    if ($trendSignal !== null && ($trendSignal['score'] ?? 0) >= 80) {
+                    if ($trendSignal !== null && ($trendSignal['score'] ?? 0) >= 82) {
                         $side = $trendSignal['side'];
+
+                        // Condition 1: Bitcoin Macro Trend Filter
+                        if ($side === 'BUY' && ! $btcTrend['allow_long']) {
+                            Log::info("MarketScanner: Filtered out {$symbol} BUY trend setup - Counter to BTC {$btcTrend['trend']} macro trend");
+
+                            continue;
+                        }
+                        if ($side === 'SELL' && ! $btcTrend['allow_short']) {
+                            Log::info("MarketScanner: Filtered out {$symbol} SELL trend setup - Counter to BTC {$btcTrend['trend']} macro trend");
+
+                            continue;
+                        }
+
+                        // Condition 3: Minimum Volume Surge Requirement
+                        $volRatio = (float) ($trendSignal['volume_ratio'] ?? 1.0);
+                        if ($volRatio < 1.25) {
+                            continue;
+                        }
                         $entry = (float) $trendSignal['entry'];
                         $tp1 = (float) $trendSignal['tp1'];
                         $closeTimeMs = (int) ($baseCandles['closeTimes'][count($baseCandles['closeTimes']) - 2] ?? 0);

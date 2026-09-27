@@ -286,6 +286,7 @@ class DashboardController extends Controller
         }
 
         $data = Cache::remember($cacheKey, 60, function () use ($limit): array {
+            $btcTrend = $this->marketEngine->getBtcMarketTrend();
             $symbols = $this->marketEngine->getScannableSymbols();
             $scanSymbols = array_slice($symbols, 0, $limit);
 
@@ -297,7 +298,25 @@ class DashboardController extends Controller
                     $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
 
                     if ($eval !== null) {
+                        // Condition 1: Bitcoin Macro Trend Filter
+                        if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long']) {
+                            continue;
+                        }
+                        if ($eval['direction'] === 'SHORT' && ! $btcTrend['allow_short']) {
+                            continue;
+                        }
+
+                        // Condition 7: Institutional Conviction Score Gate (>= 80)
+                        if (($eval['score'] ?? 0) < 80) {
+                            continue;
+                        }
+
                         $ai = $this->validator->validate($eval, $klines['base']);
+
+                        // Require AI approval for peak entry accuracy
+                        if (! ($ai['approved'] ?? false)) {
+                            continue;
+                        }
 
                         $results[] = [
                             'symbol' => $sym,
@@ -325,6 +344,12 @@ class DashboardController extends Controller
 
             return [
                 'total_scanned' => count($scanSymbols),
+                'btc_macro' => [
+                    'trend' => $btcTrend['trend'],
+                    'btc_price' => $btcTrend['btc_price'],
+                    'allow_long' => $btcTrend['allow_long'],
+                    'allow_short' => $btcTrend['allow_short'],
+                ],
                 'opportunities' => $results,
                 'cached_at' => now()->toIso8601String(),
             ];
