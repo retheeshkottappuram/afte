@@ -37,18 +37,18 @@ class MarketScanController extends Controller
             @unlink($stopFile);
         }
 
-        Cache::put('crypto:manual_scan:status', 'RUNNING', 900);
-        Cache::put('crypto:manual_scan:running', true, 900);
-        Cache::put('crypto:manual_scan:heartbeat', now()->timestamp, 900);
-        Cache::put('crypto:manual_scan:started_at', now()->toIso8601String(), 3600);
-        Cache::put('crypto:manual_scan:signals', [], 3600);
+        Cache::put('crypto:manual_scan:status', 'RUNNING', 1800);
+        Cache::put('crypto:manual_scan:running', true, 1800);
+        Cache::put('crypto:manual_scan:heartbeat', now()->timestamp, 1800);
+        Cache::put('crypto:manual_scan:started_at', now()->toIso8601String(), 86400);
+        Cache::put('crypto:manual_scan:signals', [], 86400);
         Cache::put('crypto:manual_scan:progress', [
             'current_symbol' => 'Initializing...',
             'index' => 0,
             'total' => 0,
             'percent' => 0,
             'signals_found' => 0,
-        ], 900);
+        ], 1800);
 
         // 3. Prepare log file
         $logPath = storage_path('logs/manual_scan.log');
@@ -84,14 +84,15 @@ class MarketScanController extends Controller
                 pclose(popen("start \"\" /B \"{$batPath}\" > NUL 2>&1", 'r'));
             } else {
                 $cmd = sprintf(
-                    '(%s %s crypto:check-signals --all --dry-run >> %s 2>&1 & echo $!)',
+                    '(cd %s && %s %s crypto:check-signals --all --dry-run >> %s 2>&1 & echo $!)',
+                    escapeshellarg($basePath),
                     escapeshellarg($phpCli),
                     escapeshellarg($artisanPath),
                     escapeshellarg($logPath)
                 );
                 $capturedPid = trim((string) exec($cmd));
                 if (is_numeric($capturedPid)) {
-                    Cache::put('crypto:manual_scan:pid', (int) $capturedPid, 900);
+                    Cache::put('crypto:manual_scan:pid', (int) $capturedPid, 1800);
                 }
             }
 
@@ -105,8 +106,8 @@ class MarketScanController extends Controller
             ]);
         } catch (Throwable $e) {
             Log::error("MarketScanController: Failed to spawn scan process: {$e->getMessage()}");
-            Cache::put('crypto:manual_scan:status', 'STOPPED', 3600);
-            Cache::put('crypto:manual_scan:running', false, 3600);
+            Cache::put('crypto:manual_scan:status', 'STOPPED', 86400);
+            Cache::put('crypto:manual_scan:running', false, 86400);
 
             return response()->json([
                 'success' => false,
@@ -123,8 +124,8 @@ class MarketScanController extends Controller
     public function stop(): JsonResponse
     {
         Cache::put('crypto:manual_scan:stop', true, 120);
-        Cache::put('crypto:manual_scan:status', 'STOPPED', 3600);
-        Cache::put('crypto:manual_scan:running', false, 3600);
+        Cache::put('crypto:manual_scan:status', 'STOPPED', 86400);
+        Cache::put('crypto:manual_scan:running', false, 86400);
 
         // Write disk stop file for immediate detection by CLI loop
         $stopFile = storage_path('framework/stop-manual-scan');
@@ -181,12 +182,12 @@ class MarketScanController extends Controller
             if ($status === 'RUNNING') {
                 if (str_contains($logTail, '[COMPLETED]') || str_contains($logTail, 'Market scan finished successfully')) {
                     $status = 'COMPLETED';
-                    Cache::put('crypto:manual_scan:status', 'COMPLETED', 3600);
-                    Cache::put('crypto:manual_scan:running', false, 3600);
-                } elseif ($diffSeconds > 120) {
+                    Cache::put('crypto:manual_scan:status', 'COMPLETED', 86400);
+                    Cache::put('crypto:manual_scan:running', false, 86400);
+                } elseif ($diffSeconds > 180) {
                     $status = 'STOPPED';
-                    Cache::put('crypto:manual_scan:status', 'STOPPED', 3600);
-                    Cache::put('crypto:manual_scan:running', false, 3600);
+                    Cache::put('crypto:manual_scan:status', 'STOPPED', 86400);
+                    Cache::put('crypto:manual_scan:running', false, 86400);
                 }
             }
         }
@@ -210,8 +211,8 @@ class MarketScanController extends Controller
      */
     public function clear(): JsonResponse
     {
-        Cache::put('crypto:manual_scan:status', 'IDLE', 3600);
-        Cache::put('crypto:manual_scan:running', false, 3600);
+        Cache::put('crypto:manual_scan:status', 'IDLE', 86400);
+        Cache::put('crypto:manual_scan:running', false, 86400);
         Cache::forget('crypto:manual_scan:signals');
         Cache::forget('crypto:manual_scan:progress');
         Cache::forget('crypto:manual_scan:started_at');
@@ -257,6 +258,10 @@ class MarketScanController extends Controller
         }
 
         $candidates = [
+            '/usr/local/bin/ea-php84',
+            '/opt/cpanel/ea-php84/root/usr/bin/php',
+            '/usr/local/bin/ea-php83',
+            '/opt/cpanel/ea-php83/root/usr/bin/php',
             '/usr/bin/php-8.4',
             '/usr/bin/php8.4',
             '/usr/bin/php84',

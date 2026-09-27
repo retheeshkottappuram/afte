@@ -4,12 +4,14 @@ namespace App\Console\Commands;
 
 use App\Models\CryptoSignal;
 use App\Services\Crypto\BinanceClient;
+use App\Services\Crypto\MarketScanner;
 use App\Services\Crypto\SignalEngine;
 use App\Services\Crypto\SignalRecorder;
 use App\Services\Crypto\TelegramNotifier;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -25,6 +27,7 @@ class CheckCryptoSignals extends Command
                             {--symbol= : Optional specific symbol to evaluate (e.g. BTCUSDT)}
                             {--interval= : Optional timeframe interval to evaluate (e.g. 5m, 15m, 1h)}
                             {--all : Automatically scan all active liquid Binance Futures contracts}
+                            {--limit= : Optional maximum number of candidate symbols to scan when using --all (default 60)}
                             {--min-score= : Optional override for minimum confidence score (e.g. 40, 50)}
                             {--min-atr-pct= : Optional override for minimum ATR% threshold (e.g. 0.05)}
                             {--ignore-cooldown : Bypass cooldown cache to force alert}
@@ -42,7 +45,7 @@ class CheckCryptoSignals extends Command
     /**
      * Execute the console command.
      */
-    public function handle(BinanceClient $binanceClient): int
+    public function handle(BinanceClient $binanceClient, MarketScanner $marketScanner): int
     {
         @set_time_limit(0);
         @ini_set('max_execution_time', '0');
@@ -63,6 +66,7 @@ class CheckCryptoSignals extends Command
         $minAtrPctOption = $this->option('min-atr-pct');
         $ignoreCooldown = (bool) $this->option('ignore-cooldown');
         $testAlert = (bool) $this->option('test-alert');
+        $limitOption = $this->option('limit');
 
         $minVolume = (float) config('crypto.min_24h_volume', 5000000.0);
         $configuredSymbols = (array) config('crypto.symbols', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
@@ -71,15 +75,21 @@ class CheckCryptoSignals extends Command
         if ($singleSymbol) {
             $symbols = [strtoupper((string) $singleSymbol)];
         } elseif ($scanAll || $isConfiguredAll) {
-            $this->info("Fetching all active liquid Binance Futures USDT perpetuals (min 24h volume: \${$minVolume})...");
+            $scanLimit = $limitOption !== null ? max(10, (int) $limitOption) : 60;
+            $this->info("Discovering top liquid candidate Binance Futures contracts (min 24h volume: \${$minVolume}, limit: {$scanLimit})...");
             try {
-                $symbols = Cache::remember('crypto:futures:liquid_symbols', 1800, function () use ($binanceClient, $minVolume): array {
-                    return $binanceClient->getActiveFuturesSymbols($minVolume);
-                });
-                $this->info('Discovered '.count($symbols).' active liquid futures symbols.');
+                $symbols = $marketScanner->getRankedCandidateSymbols($minVolume, $scanLimit);
+                $this->info('Selected '.count($symbols).' high-liquidity candidate symbols for scanning.');
             } catch (Throwable $e) {
-                $this->warn("Failed to fetch dynamic symbols ({$e->getMessage()}). Falling back to configured symbols.");
-                $symbols = array_values(array_diff($configuredSymbols, ['ALL']));
+                $this->warn("Failed to fetch ranked dynamic symbols ({$e->getMessage()}). Falling back to active liquid symbols.");
+                try {
+                    $allLiquid = Cache::remember('crypto:futures:liquid_symbols', 1800, function () use ($binanceClient, $minVolume): array {
+                        return $binanceClient->getActiveFuturesSymbols($minVolume);
+                    });
+                    $symbols = array_slice($allLiquid, 0, $scanLimit);
+                } catch (Throwable) {
+                    $symbols = array_values(array_diff($configuredSymbols, ['ALL']));
+                }
             }
         } else {
             $symbols = array_values(array_diff($configuredSymbols, ['ALL']));
@@ -175,9 +185,9 @@ class CheckCryptoSignals extends Command
         $btcTrend = $binanceClient->getBtcMarketTrend();
         $this->info("⚡ BTC Macro Market Trend: {$btcTrend['trend']} (\${$btcTrend['btc_price']}) [Allow LONG: ".($btcTrend['allow_long'] ? 'YES' : 'NO').' | Allow SHORT: '.($btcTrend['allow_short'] ? 'YES' : 'NO').']');
 
-        Cache::put('crypto:manual_scan:status', 'RUNNING', 600);
-        Cache::put('crypto:manual_scan:running', true, 600);
-        Cache::put('crypto:manual_scan:signals', [], 3600);
+        Cache::put('crypto:manual_scan:status', 'RUNNING', 1800);
+        Cache::put('crypto:manual_scan:running', true, 1800);
+        Cache::put('crypto:manual_scan:signals', [], 86400);
         $processedCount = 0;
         $totalSymbols = count($symbols);
         $foundSignals = [];
@@ -192,11 +202,25 @@ class CheckCryptoSignals extends Command
 
                 $this->info("Starting crypto signal check... [Market: {$binanceClient->getMarketLabel()} | Timeframe: {$interval}".($useHtf1 ? " | HTF1: {$htf1Interval}" : '').($useHtf2 ? " | HTF2: {$htf2Interval}" : '')." | Min Score: {$minScoreLabel}]".($dryRun ? ' (DRY RUN)' : ''));
 
+                // Concurrent batch pre-fetch of base klines in chunks of 10
+                $prefetchedBase = [];
+                $chunks = array_chunk($symbols, 10);
+                foreach ($chunks as $chunk) {
+                    try {
+                        $batchKlines = $binanceClient->fetchBatchKlines($chunk, $interval, 320);
+                        foreach ($batchKlines as $sym => $k) {
+                            $prefetchedBase[strtoupper($sym)] = $k;
+                        }
+                    } catch (Throwable $e) {
+                        Log::debug("CheckCryptoSignals batch fetch fallback: {$e->getMessage()}");
+                    }
+                }
+
                 foreach ($symbols as $symbol) {
                     if (Cache::pull('crypto:manual_scan:stop') || file_exists(storage_path('framework/stop-manual-scan'))) {
                         $this->warn("\n⚠️ Stop signal received from frontend. Aborting market scan...");
-                        Cache::put('crypto:manual_scan:status', 'STOPPED', 3600);
-                        Cache::put('crypto:manual_scan:running', false, 3600);
+                        Cache::put('crypto:manual_scan:status', 'STOPPED', 86400);
+                        Cache::put('crypto:manual_scan:running', false, 86400);
                         @unlink(storage_path('framework/stop-manual-scan'));
 
                         return Command::SUCCESS;
@@ -204,8 +228,8 @@ class CheckCryptoSignals extends Command
 
                     $processedCount++;
                     Cache::put('crypto:manual_scan:heartbeat', now()->timestamp, 300);
-                    Cache::put('crypto:manual_scan:status', 'RUNNING', 300);
-                    Cache::put('crypto:manual_scan:running', true, 300);
+                    Cache::put('crypto:manual_scan:status', 'RUNNING', 1800);
+                    Cache::put('crypto:manual_scan:running', true, 1800);
                     Cache::put('crypto:manual_scan:progress', [
                         'current_symbol' => $symbol,
                         'index' => $processedCount,
@@ -221,8 +245,9 @@ class CheckCryptoSignals extends Command
                     try {
                         $this->line("Evaluating symbol: <comment>{$symbol}</comment>");
 
-                        // 1. Fetch base timeframe candles (limit 320 for 200 EMA + buffers)
-                        $baseCandles = $binanceClient->klines($symbol, $interval, 320);
+                        // 1. Fetch base timeframe candles (from batch prefetch or single fallback)
+                        $cleanSym = strtoupper($symbol);
+                        $baseCandles = $prefetchedBase[$cleanSym] ?? $binanceClient->klines($symbol, $interval, 320);
 
                         // 2. Fetch HTF1 and HTF2 candles
                         $htf1Candles = null;
@@ -264,6 +289,89 @@ class CheckCryptoSignals extends Command
                         $evalResult = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles);
                         $signal = $evalResult['signal'];
                         $diag = $evalResult['diagnostics'] ?? [];
+                        $isFreshBreakout = false;
+
+                        if ($signal !== null) {
+                            // Condition 1: Bitcoin Macro Trend Filter
+                            if ($signal['side'] === 'BUY' && ! $btcTrend['allow_long']) {
+                                $this->line("  -> <fg=yellow>Filtered out {$symbol} BUY setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+                                $signal = null;
+                            } elseif ($signal['side'] === 'SELL' && ! $btcTrend['allow_short']) {
+                                $this->line("  -> <fg=yellow>Filtered out {$symbol} SELL setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+                                $signal = null;
+                            } elseif ($signal['score'] < 82) {
+                                $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$signal['score']} below institutional conviction threshold (82)</>");
+                                $signal = null;
+                            } else {
+                                $volRatio = (float) ($signal['volume_ratio'] ?? 1.0);
+                                if ($volRatio < 1.25) {
+                                    $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Volume ratio {$volRatio}x below minimum threshold (1.25x)</>");
+                                    $signal = null;
+                                } else {
+                                    $isFreshBreakout = true;
+                                    $signal['setup_type'] = 'FRESH BREAKOUT';
+                                    $signal['setup_label'] = 'FRESH BREAKOUT';
+                                    $signal['age_minutes'] = 0;
+                                    $signal['is_active_trade'] = false;
+                                }
+                            }
+                        }
+
+                        // If no fresh breakout on the exact latest candle, check for active in-progress institutional setups from markers
+                        if ($signal === null && ! empty($history['markers'])) {
+                            $lastMarker = end($history['markers']);
+                            $markerScore = (int) ($lastMarker['score'] ?? 0);
+                            $markerSide = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
+                            $isBtcAligned = ($markerSide === 'BUY' && $btcTrend['allow_long']) || ($markerSide === 'SELL' && $btcTrend['allow_short']);
+
+                            if ($markerScore >= 82 && $isBtcAligned) {
+                                $markerTime = (int) ($lastMarker['time'] ?? 0);
+                                $candleAgeSeconds = now()->timestamp - $markerTime;
+                                $maxActiveSeconds = match ($interval) {
+                                    '1m' => 900,
+                                    '3m' => 1800,
+                                    '5m' => 3600,
+                                    '15m' => 14400, // 4 hours
+                                    '30m' => 28800, // 8 hours
+                                    '1h' => 43200,  // 12 hours
+                                    '4h' => 172800, // 48 hours
+                                    default => 14400,
+                                };
+
+                                if ($candleAgeSeconds <= $maxActiveSeconds) {
+                                    $closes = $baseCandles['closes'] ?? [];
+                                    $lastClose = count($closes) >= 2 ? (float) $closes[count($closes) - 2] : ((float) ($closes[count($closes) - 1] ?? 0.0));
+                                    $sl = (float) ($lastMarker['sl'] ?? 0);
+                                    $entry = (float) ($lastMarker['entry'] ?? 0);
+                                    $invalidated = ($markerSide === 'BUY' && $lastClose < $sl) || ($markerSide === 'SELL' && $lastClose > $sl);
+                                    $volRatio = (float) ($lastMarker['volume_ratio'] ?? 1.25);
+
+                                    if (! $invalidated && $entry > 0 && $volRatio >= 1.25) {
+                                        $signal = [
+                                            'side' => $markerSide,
+                                            'is_active_trade' => true,
+                                            'setup_type' => 'ACTIVE INSTITUTIONAL SETUP',
+                                            'setup_label' => 'ACTIVE INSTITUTIONAL SETUP',
+                                            'score' => $markerScore,
+                                            'grade' => (string) ($lastMarker['grade'] ?? ($markerScore >= 90 ? 'A' : 'B')),
+                                            'entry' => $entry,
+                                            'sl' => $sl,
+                                            'tp1' => (float) ($lastMarker['tp1'] ?? 0),
+                                            'tp2' => (float) ($lastMarker['tp2'] ?? 0),
+                                            'tp3' => (float) ($lastMarker['tp3'] ?? 0),
+                                            'rsi' => (float) ($lastMarker['rsi'] ?? 50.0),
+                                            'adx' => (float) ($lastMarker['adx'] ?? 25.0),
+                                            'volume_ratio' => $volRatio,
+                                            'atr_pct' => (float) ($lastMarker['atr_pct'] ?? 1.5),
+                                            'candle_close_time' => $markerTime * 1000,
+                                            'live_price' => $lastClose,
+                                            'age_minutes' => round($candleAgeSeconds / 60),
+                                        ];
+                                        $this->info("  -> 🎯 [ACTIVE SETUP FOUND] {$symbol} {$markerSide} (Score: {$markerScore}/100, Vol: {$volRatio}x, Age: {$signal['age_minutes']}m, Entry: {$entry}, SL: {$sl})");
+                                    }
+                                }
+                            }
+                        }
 
                         if ($signal === null) {
                             if (isset($diag['rejection']) && $diag['rejection'] !== null) {
@@ -280,35 +388,7 @@ class CheckCryptoSignals extends Command
                             continue;
                         }
 
-                        // Condition 1: Bitcoin Macro Trend Filter
-                        if ($signal['side'] === 'BUY' && ! $btcTrend['allow_long']) {
-                            $this->line("  -> <fg=yellow>Filtered out {$symbol} BUY setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
-
-                            continue;
-                        }
-                        if ($signal['side'] === 'SELL' && ! $btcTrend['allow_short']) {
-                            $this->line("  -> <fg=yellow>Filtered out {$symbol} SELL setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
-
-                            continue;
-                        }
-
-                        // Condition 7: Minimum Institutional Score Gate (>= 82)
-                        if ($signal['score'] < 82) {
-                            $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$signal['score']} below institutional conviction threshold (82)</>");
-
-                            continue;
-                        }
-
-                        // Condition 3: Minimum Volume Surge (>= 1.25x)
-                        $volRatio = (float) ($signal['volume_ratio'] ?? 1.0);
-                        if ($volRatio < 1.25) {
-                            $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Volume ratio {$volRatio}x below minimum threshold (1.25x)</>");
-
-                            continue;
-                        }
-
                         $sideEmoji = $signal['side'] === 'BUY' ? '🟢' : '🔴';
-                        $gradeStr = isset($signal['grade']) ? " [Grade {$signal['grade']}]" : '';
                         $foundSignals[] = [
                             'symbol' => $symbol,
                             'side' => $signal['side'],
@@ -323,15 +403,19 @@ class CheckCryptoSignals extends Command
                             'adx' => $signal['adx'] ?? null,
                             'volume_ratio' => $signal['volume_ratio'] ?? null,
                             'atr_pct' => $signal['atr_pct'] ?? null,
+                            'setup_type' => $signal['setup_type'] ?? 'INSTITUTIONAL SETUP',
+                            'setup_label' => $signal['setup_label'] ?? 'ACTIVE SETUP',
+                            'age_minutes' => $signal['age_minutes'] ?? 0,
                             'time' => Carbon::now('Asia/Kolkata')->format('H:i:s \I\S\T'),
                         ];
-                        Cache::put('crypto:manual_scan:signals', $foundSignals, 3600);
+                        Cache::put('crypto:manual_scan:signals', $foundSignals, 86400);
 
                         if ($dryRun) {
                             $this->table(
                                 ['Field', 'Value'],
                                 [
                                     ['Symbol', $symbol],
+                                    ['Type', $signal['setup_label'] ?? 'SETUP'],
                                     ['Side', "{$sideEmoji} {$signal['side']}"],
                                     ['Score', "{$signal['score']}/100"],
                                     ['Entry Price', $signal['entry']],
@@ -351,26 +435,28 @@ class CheckCryptoSignals extends Command
                             continue;
                         }
 
-                        // 5. Check Cache Cooldown for detailed evaluator
-                        $cacheKey = "crypto-signal:{$symbol}:{$interval}:{$signal['side']}";
-                        if (! $ignoreCooldown && Cache::has($cacheKey)) {
-                            $this->warn("  -> Signal for {$symbol} ({$signal['side']}) is cooling down. Skipping Telegram alert. (Use --ignore-cooldown to bypass)");
+                        if ($isFreshBreakout) {
+                            // 5. Check Cache Cooldown for detailed evaluator
+                            $cacheKey = "crypto-signal:{$symbol}:{$interval}:{$signal['side']}";
+                            if (! $ignoreCooldown && Cache::has($cacheKey)) {
+                                $this->warn("  -> Signal for {$symbol} ({$signal['side']}) is cooling down. Skipping Telegram alert. (Use --ignore-cooldown to bypass)");
 
-                            continue;
-                        }
+                                continue;
+                            }
 
-                        // 6. Store cooldown in cache
-                        Cache::put($cacheKey, true, now()->addMinutes($cooldownMinutes));
+                            // 6. Store cooldown in cache
+                            Cache::put($cacheKey, true, now()->addMinutes($cooldownMinutes));
 
-                        // 7. Format and send Telegram notification
-                        $message = $this->formatTelegramMessage($symbol, $interval, $signal, $binanceClient->getMarketLabel());
-                        $sent = $telegramNotifier->send($message);
+                            // 7. Format and send Telegram notification
+                            $message = $this->formatTelegramMessage($symbol, $interval, $signal, $binanceClient->getMarketLabel());
+                            $sent = $telegramNotifier->send($message);
 
-                        if ($sent) {
-                            self::recordSignal($symbol, $interval, $signal, $binanceClient->getMarketLabel(), 'cron_scanner');
-                            $this->info("  -> Telegram alert sent successfully for {$symbol} ({$signal['side']})!");
-                        } else {
-                            $this->error("  -> Failed to send Telegram alert for {$symbol}. Check log files for details.");
+                            if ($sent) {
+                                self::recordSignal($symbol, $interval, $signal, $binanceClient->getMarketLabel(), 'cron_scanner');
+                                $this->info("  -> Telegram alert sent successfully for {$symbol} ({$signal['side']})!");
+                            } else {
+                                $this->error("  -> Failed to send Telegram alert for {$symbol}. Check log files for details.");
+                            }
                         }
                     } catch (Throwable $e) {
                         $this->error("Error checking signals for {$symbol}: {$e->getMessage()}");
@@ -390,8 +476,9 @@ class CheckCryptoSignals extends Command
             }
         } while ($watch);
 
-        Cache::put('crypto:manual_scan:status', 'COMPLETED', 3600);
-        Cache::put('crypto:manual_scan:running', false, 3600);
+        Cache::put('crypto:manual_scan:status', 'COMPLETED', 86400);
+        Cache::put('crypto:manual_scan:running', false, 86400);
+        Cache::put('crypto:manual_scan:signals', $foundSignals, 86400);
         $this->info('✨ [COMPLETED] Market scan finished successfully. Total setups found: '.count($foundSignals));
 
         return Command::SUCCESS;

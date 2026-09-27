@@ -2255,14 +2255,18 @@
             const gradeBadge = s.grade === 'A'
                 ? '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-amber-400/20 text-amber-300 border border-amber-400/40">GRADE A</span>'
                 : '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">GRADE B</span>';
+            const setupTypeBadge = (s.setup_label === 'ACTIVE INSTITUTIONAL SETUP' || s.setup_type === 'ACTIVE INSTITUTIONAL SETUP')
+                ? `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">ACTIVE SETUP${s.age_minutes ? ` (${s.age_minutes}m ago)` : ''}</span>`
+                : '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40">FRESH BREAKOUT</span>';
 
             html += `
                 <div class="p-4 rounded-xl bg-slate-950/80 border ${borderCls} transition shadow-lg relative flex flex-col justify-between">
                     <div>
                         <div class="flex items-center justify-between mb-2">
-                            <div class="flex items-center space-x-2">
+                            <div class="flex items-center space-x-1.5 flex-wrap gap-y-1">
                                 <span class="text-base font-black text-white tracking-wide">${s.symbol}</span>
                                 ${gradeBadge}
+                                ${setupTypeBadge}
                             </div>
                             <span class="text-[11px] font-mono text-slate-400">${s.time || ''}</span>
                         </div>
