@@ -83,6 +83,10 @@ class RiskManager
      */
     public function canOpenTrade(TradingAccount $account, string $symbol, int $signalScore): array
     {
+        if ($account->mode === 'live' && ! config('trading.allow_live_trading', false)) {
+            return ['allowed' => false, 'reason' => 'LIVE trading is disabled in this environment to prevent dual-instance collisions with production.'];
+        }
+
         if ($account->kill_switch) {
             return ['allowed' => false, 'reason' => 'Emergency Kill Switch is ACTIVE. Trading halted.'];
         }

@@ -64,6 +64,14 @@ class TradingDaemonCommand extends Command
         }
 
         $mode = (string) ($this->option('mode') ?: config('trading.mode', 'paper'));
+
+        if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
+            $this->error('🛑 LIVE trading is strictly disabled in this environment (ALLOW_LIVE_TRADING is false).');
+            $this->line('To prevent order collisions with your live production server, use --mode=paper or --mode=shadow in local development.');
+
+            return self::FAILURE;
+        }
+
         $interval = max(1, (int) $this->option('interval'));
         $scanInterval = max(10, (int) $this->option('scan-interval'));
         $runOnce = (bool) $this->option('once');

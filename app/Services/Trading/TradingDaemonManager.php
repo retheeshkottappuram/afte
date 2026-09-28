@@ -101,6 +101,14 @@ class TradingDaemonManager
      */
     public function start(string $mode = 'paper'): array
     {
+        if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
+            return [
+                'success' => false,
+                'message' => 'LIVE trading daemon cannot be started from this environment (ALLOW_LIVE_TRADING is false). Please use Paper or Shadow mode in local development.',
+                'is_running' => false,
+            ];
+        }
+
         $account = TradingAccount::getForMode($mode);
         $account->is_running = true;
         $account->save();

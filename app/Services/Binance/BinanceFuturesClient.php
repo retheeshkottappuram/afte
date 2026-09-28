@@ -564,7 +564,7 @@ class BinanceFuturesClient
             return round($quantity, $precision);
         }
 
-        $steps = floor($quantity / $step);
+        $steps = floor(round($quantity / $step, 8));
 
         return round($steps * $step, $precision);
     }

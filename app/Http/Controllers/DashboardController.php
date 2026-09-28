@@ -466,6 +466,14 @@ class DashboardController extends Controller
         }
 
         $mode = $request->input('mode', config('trading.mode', 'paper'));
+
+        if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Live auto-trading is disabled in local development to prevent dual-instance collisions with the live server. Please switch to Paper or Shadow mode.',
+            ], 422);
+        }
+
         $account = TradingAccount::getForMode($mode);
 
         if ($account->is_running) {
@@ -518,6 +526,13 @@ class DashboardController extends Controller
         }
 
         $mode = $request->input('mode', config('trading.mode', 'paper'));
+
+        if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Live trading daemon cannot be started from this environment.',
+            ], 422);
+        }
 
         return response()->json($this->daemonManager->start($mode));
     }

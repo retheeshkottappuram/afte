@@ -15,6 +15,15 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Live Trading Safety Gate
+    |--------------------------------------------------------------------------
+    | Strictly prevents real live Binance order execution from local or dev
+    | environments to protect against dual-instance collisions with production.
+    */
+    'allow_live_trading' => (bool) env('ALLOW_LIVE_TRADING', env('APP_ENV') === 'production'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Compounding Challenge ($5 to $500)
     |--------------------------------------------------------------------------
     */

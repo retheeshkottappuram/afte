@@ -58,6 +58,16 @@ class OrderExecutor
 
         // 3. Live or Testnet Execution
         if (in_array($mode, ['live', 'testnet'], true)) {
+            if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
+                Log::warning("OrderExecutor: Blocked LIVE trade for {$symbol}. Live order execution is disabled in this environment (allow_live_trading is false).");
+
+                return [
+                    'status' => 'rejected',
+                    'trade' => null,
+                    'message' => 'Live order execution is disabled in this environment to prevent collisions with the production server.',
+                ];
+            }
+
             try {
                 $client = $this->client->forMode($mode);
                 try {
