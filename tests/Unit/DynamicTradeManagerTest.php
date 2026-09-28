@@ -44,8 +44,8 @@ class DynamicTradeManagerTest extends TestCase
             'opened_at' => Carbon::now(),
         ]);
 
-        // Price moves up to 101.2 (+1.2% gain, exceeding 1.0% threshold)
-        $manager->manageTrade($trade, 101.2);
+        // Price moves up to 101.35 (+1.35% gain, exceeding 1.30% threshold)
+        $manager->manageTrade($trade, 101.35);
         $trade->refresh();
 
         $this->assertTrue($trade->be_locked);

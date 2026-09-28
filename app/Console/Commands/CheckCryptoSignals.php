@@ -129,31 +129,36 @@ class CheckCryptoSignals extends Command
 
                 $testSignal = [
                     'side' => 'BUY',
-                    'score' => 92,
-                    'grade' => 'A',
+                    'score' => 95,
+                    'grade' => 'A+',
+                    'type' => 'PRE_BREAKOUT_COIL',
+                    'setup_type' => 'PRE_BREAKOUT_COIL',
+                    'setup_label' => 'PRE-BREAKOUT ASCENDING COIL',
                     'entry' => round($lastClose, 4),
-                    'sl' => round($lastClose * 0.985, 4),
-                    'tp1' => round($lastClose * 1.015, 4),
-                    'tp2' => round($lastClose * 1.030, 4),
-                    'tp3' => round($lastClose * 1.045, 4),
+                    'sl' => round($lastClose * 0.990, 4),
+                    'tp1' => round($lastClose * 1.0135, 4),
+                    'tp2' => round($lastClose * 1.0280, 4),
+                    'tp3' => round($lastClose * 1.0450, 4),
+                    'risk_reward' => '1 : 2.8',
                     'rsi' => 62.4,
                     'adx' => 26.8,
                     'volume_ratio' => 1.75,
                     'atr_pct' => 1.25,
+                    'rs_ratio' => 1.024,
                     'candle_close_time' => $closeTime,
                     'perpetual_options' => [
                         'recommended_leverage' => '5x - 10x',
                         'margin_mode' => 'Isolated Margin',
-                        'risk_reward' => '1 : 2.5',
-                        'sl_pct' => 1.50,
-                        'tp1_pct' => 1.50,
-                        'tp2_pct' => 3.00,
+                        'risk_reward' => '1 : 2.8',
+                        'sl_pct' => 1.00,
+                        'tp1_pct' => 1.35,
+                        'tp2_pct' => 2.80,
                         'tp3_pct' => 4.50,
-                        'sl_leveraged_pct' => 7.5,
-                        'tp1_leveraged_pct' => 7.5,
-                        'tp2_leveraged_pct' => 15.0,
-                        'tp3_leveraged_pct' => 22.5,
-                        'leverage_multiplier' => 5,
+                        'sl_leveraged_pct' => 10.0,
+                        'tp1_leveraged_pct' => 13.5,
+                        'tp2_leveraged_pct' => 28.0,
+                        'tp3_leveraged_pct' => 45.0,
+                        'leverage_multiplier' => 10,
                     ],
                 ];
 
@@ -201,8 +206,6 @@ class CheckCryptoSignals extends Command
                 $useHtf2 = (bool) ($indicatorConfig['use_htf2'] ?? true) && ($htf2Interval !== null) && ($interval !== $htf2Interval);
 
                 $this->info("Starting crypto signal check... [Market: {$binanceClient->getMarketLabel()} | Timeframe: {$interval}".($useHtf1 ? " | HTF1: {$htf1Interval}" : '').($useHtf2 ? " | HTF2: {$htf2Interval}" : '')." | Min Score: {$minScoreLabel}]".($dryRun ? ' (DRY RUN)' : ''));
-
-                // Concurrent batch pre-fetch of base klines in chunks of 10
                 $prefetchedBase = [];
                 $chunks = array_chunk($symbols, 10);
                 foreach ($chunks as $chunk) {
@@ -213,6 +216,16 @@ class CheckCryptoSignals extends Command
                         }
                     } catch (Throwable $e) {
                         Log::debug("CheckCryptoSignals batch fetch fallback: {$e->getMessage()}");
+                    }
+                }
+
+                // Pre-fetch BTC base candles for Relative Strength gating
+                $btcBaseCandles = $prefetchedBase['BTCUSDT'] ?? null;
+                if (! $btcBaseCandles) {
+                    try {
+                        $btcBaseCandles = $binanceClient->klines('BTCUSDT', $interval, 320);
+                    } catch (Throwable) {
+                        $btcBaseCandles = null;
                     }
                 }
 
@@ -248,6 +261,7 @@ class CheckCryptoSignals extends Command
                         // 1. Fetch base timeframe candles (from batch prefetch or single fallback)
                         $cleanSym = strtoupper($symbol);
                         $baseCandles = $prefetchedBase[$cleanSym] ?? $binanceClient->klines($symbol, $interval, 320);
+                        $btcCandlesForSym = ($cleanSym === 'BTCUSDT') ? $baseCandles : $btcBaseCandles;
 
                         // 2. Fetch HTF1 and HTF2 candles
                         $htf1Candles = null;
@@ -269,7 +283,7 @@ class CheckCryptoSignals extends Command
                         }
 
                         // 3. Synchronize all chart markers with database history and dispatch Telegram for any new marker
-                        $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140);
+                        $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140, $btcCandlesForSym);
                         $syncResult = SignalRecorder::syncMarkers(
                             $symbol,
                             $interval,
@@ -286,7 +300,7 @@ class CheckCryptoSignals extends Command
                         }
 
                         // 4. Evaluate detailed diagnostics on the latest closed candle
-                        $evalResult = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles);
+                        $evalResult = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandlesForSym);
                         $signal = $evalResult['signal'];
                         $diag = $evalResult['diagnostics'] ?? [];
                         $isFreshBreakout = false;
@@ -622,10 +636,15 @@ class CheckCryptoSignals extends Command
             : "🔴🔴🔴 <b>NEW TRADE ENTRY SIGNAL</b> 🔴🔴🔴\n⚡ <b>SIGNALALGO PRO™ | CHART SIGNAL PRINTED</b>\n🎯 <b>ACTION: {$actionVerb}</b>";
 
         $setupDesc = match ($type) {
+            'PRE_BREAKOUT_COIL' => $signal['setup_label'] ?? 'Pre-Breakout Coiling Squeeze (Early Entry)',
+            'WYCKOFF_SPRING' => 'Wyckoff Spring Liquidity Reversal (Trap Dump)',
+            'WYCKOFF_UPTHRUST' => 'Wyckoff Upthrust Liquidity Reversal (Trap Pump)',
+            'PULLBACK_VALUE' => '21-EMA Value Pullback Bounce',
             'RETEST_ENTRY' => 'Breakout Retest Pullback Bounce',
             'BREAKOUT_CONFIRMED' => 'Confirmed Structure Breakout',
+            'BREAKDOWN_CONFIRMED' => 'Confirmed Structure Breakdown',
             'REVERSAL' => 'High-Probability Trend Reversal',
-            default => 'Institutional Trend Continuation',
+            default => $signal['setup_label'] ?? 'Institutional High-Confluence Setup',
         };
 
         $chartUrl = config('app.url')."/signals?symbol={$cleanSymbol}&interval={$interval}";
@@ -642,11 +661,11 @@ class CheckCryptoSignals extends Command
             ."• <b>ENTRY PRICE:</b> <code>{$entryStr}</code> (Live: <code>{$livePriceStr}</code> | {$slippageSign})\n"
             ."• <b>STOP LOSS (SL):</b> <code>{$slStr}</code> (<b>-{$slPct}%</b> | -{$slLev}% @ {$levMult}x)\n"
             ."• <b>TARGET 1 (TP1):</b> <code>{$tp1Str}</code> (<b>+{$tp1Pct}%</b> | +{$tp1Lev}% @ {$levMult}x)\n"
-            ."  └ <i>⚡ Action: Close 40% & Shift Stop Loss to Breakeven</i>\n"
+            ."  └ <i>⚡ Action: Close 50% & Shift Stop Loss to Breakeven</i>\n"
             ."• <b>TARGET 2 (TP2):</b> <code>{$tp2Str}</code> (<b>+{$tp2Pct}%</b> | +{$tp2Lev}% @ {$levMult}x)\n"
-            ."  └ <i>⚡ Action: Close 35%</i>\n"
+            ."  └ <i>⚡ Action: Close 30% & Lock In TP1 (+15% ROE)</i>\n"
             ."• <b>TARGET 3 (TP3):</b> <code>{$tp3Str}</code> (<b>+{$tp3Pct}%</b> | +{$tp3Lev}% @ {$levMult}x)\n"
-            ."  └ <i>⚡ Action: Leave 25% Runner with Trailing Stop</i>\n\n"
+            ."  └ <i>⚡ Action: Leave 20% Runner with Trailing Stop</i>\n\n"
             ."🛡️ <b>RISK & POSITION SIZING:</b>\n"
             ."──────────────────────────\n"
             ."• <b>Margin Mode:</b> <b>Isolated Margin</b>\n"
@@ -655,10 +674,11 @@ class CheckCryptoSignals extends Command
             ."• <b>Risk Allocation:</b> 1.0% - 2.0% Maximum Account Risk\n\n"
             ."📊 <b>CHART CONFLUENCE (Why Signal Was Printed):</b>\n"
             ."──────────────────────────\n"
-            ."• <b>Setup Type:</b> {$setupDesc}\n"
+            ."• <b>Setup Type:</b> <b>{$setupDesc}</b>\n"
+            .(! empty($signal['rs_ratio']) ? "• <b>Relative Strength vs BTC:</b> <b>{$signal['rs_ratio']}</b>\n" : '')
             .($breakoutLevel > 0 ? "• <b>Breakout Level:</b> <code>{$breakoutLevelStr}</code> (Broken & Verified)\n" : '')
             ."• <b>RSI(14) Momentum:</b> <b>{$signal['rsi']}</b>\n"
-            ."• <b>ADX Trend Power:</b> <b>{$signal['adx']}</b> (Strong Trend)\n"
+            ."• <b>ADX Trend Power:</b> <b>{$signal['adx']}</b> (Directional Agreement)\n"
             ."• <b>Volume Surge:</b> <b>{$signal['volume_ratio']}x</b> vs 20-period SMA\n"
             ."• <b>Volatility ATR%:</b> <b>{$signal['atr_pct']}%</b>\n\n"
             ."━━━━━━━━━━━━━━━━━━━━━━━━━━\n"

@@ -115,9 +115,9 @@ class SignalEngine
      * @param  array<string, mixed>|null  $htf2
      * @return array<string, mixed>|null
      */
-    public function evaluate(array $candles, ?array $htf1 = null, ?array $htf2 = null): ?array
+    public function evaluate(array $candles, ?array $htf1 = null, ?array $htf2 = null, ?array $btcCandles = null): ?array
     {
-        return $this->evaluateDetailed($candles, $htf1, $htf2)['signal'];
+        return $this->evaluateDetailed($candles, $htf1, $htf2, $btcCandles)['signal'];
     }
 
     /**
@@ -126,9 +126,10 @@ class SignalEngine
      * @param  array<string, mixed>  $candles
      * @param  array<string, mixed>|null  $htf1
      * @param  array<string, mixed>|null  $htf2
+     * @param  array<string, mixed>|null  $btcCandles
      * @return array{signal: array<string, mixed>|null, diagnostics: array<string, mixed>}
      */
-    public function evaluateDetailed(array $candles, ?array $htf1 = null, ?array $htf2 = null): array
+    public function evaluateDetailed(array $candles, ?array $htf1 = null, ?array $htf2 = null, ?array $btcCandles = null): array
     {
         $c = $this->config;
         $closes = $candles['closes'] ?? [];
@@ -159,20 +160,24 @@ class SignalEngine
         $volSma = Indicators::sma($volumes, (int) $c['vol_len']);
         $obv = Indicators::obv($closes, $volumes);
         $bbWidth = Indicators::bbWidthPercent($closes, (int) $c['bb_len'], (float) $c['bb_mult']);
+        $ttm = Indicators::ttmSqueeze($highs, $lows, $closes, 20, 2.0, 1.5, 20);
         $dmiRes = Indicators::dmi($highs, $lows, $closes, (int) $c['adx_len'], (int) $c['adx_len']);
         $plusDI = $dmiRes['plus_di'] ?? $dmiRes[0];
         $minusDI = $dmiRes['minus_di'] ?? $dmiRes[1];
         $adx = $dmiRes['adx'] ?? $dmiRes[2];
 
+        $rsRatio = 1.0;
+        if ($btcCandles && ! empty($btcCandles['closes'])) {
+            $rsRatio = Indicators::relativeStrength($closes, $btcCandles['closes'], 24);
+        }
+
         if (
             $emaFast[$i] === null ||
             $emaSlow[$i] === null ||
-            $emaTrend[$i] === null ||
             $rsi[$i] === null ||
             $atr[$i] === null ||
             $volSma[$i] === null ||
-            $adx[$i] === null ||
-            $bbWidth[$i] === null
+            $adx[$i] === null
         ) {
             return [
                 'signal' => null,
@@ -188,48 +193,23 @@ class SignalEngine
         $trendBullAt = fn (int $idx): bool => $idx >= 0 &&
             $emaFast[$idx] !== null &&
             $emaSlow[$idx] !== null &&
-            $emaTrend[$idx] !== null &&
-            $emaFast[$idx] > $emaSlow[$idx] &&
-            $closes[$idx] > $emaTrend[$idx];
+            $emaFast[$idx] >= $emaSlow[$idx] &&
+            ($emaTrend[$idx] === null || $closes[$idx] >= (float) $emaTrend[$idx] * 0.995);
 
         $trendBearAt = fn (int $idx): bool => $idx >= 0 &&
             $emaFast[$idx] !== null &&
             $emaSlow[$idx] !== null &&
-            $emaTrend[$idx] !== null &&
-            $emaFast[$idx] < $emaSlow[$idx] &&
-            $closes[$idx] < $emaTrend[$idx];
+            $emaFast[$idx] <= $emaSlow[$idx] &&
+            ($emaTrend[$idx] === null || $closes[$idx] <= (float) $emaTrend[$idx] * 1.005);
 
         $trendBull = $trendBullAt($i);
         $trendBear = $trendBearAt($i);
-
-        $persistBull = true;
-        $persistBear = true;
-        for ($p = 0; $p < (int) $c['persistence_bars']; $p++) {
-            $persistBull = $persistBull && $trendBullAt($i - $p);
-            $persistBear = $persistBear && $trendBearAt($i - $p);
-        }
 
         [$htf1Bull, $htf1Bear] = $this->htfTrend($htf1, (int) $c['trend_len']);
         [$htf2Bull, $htf2Bear] = $this->htfTrend($htf2, (int) $c['trend_len']);
 
         $htf1OK = ! $c['use_htf1'] || $htf1 === null || $htf1Bull;
         $htf1OKBear = ! $c['use_htf1'] || $htf1 === null || $htf1Bear;
-        $htf2OK = ! $c['use_htf2'] || $htf2 === null || $htf2Bull;
-        $htf2OKBear = ! $c['use_htf2'] || $htf2 === null || $htf2Bear;
-
-        $adxBull = $adx[$i] >= $c['adx_min'] && $plusDI[$i] > $minusDI[$i];
-        $adxBear = $adx[$i] >= $c['adx_min'] && $minusDI[$i] > $plusDI[$i];
-
-        $rsiBull = $rsi[$i] > $c['rsi_long_min'];
-        $rsiBear = $rsi[$i] < $c['rsi_short_max'];
-        $rsiMomentumBull = $rsi[$i - 1] !== null && $rsi[$i] > $rsi[$i - 1];
-        $rsiMomentumBear = $rsi[$i - 1] !== null && $rsi[$i] < $rsi[$i - 1];
-
-        $volumeOK = $volSma[$i] !== null && $volSma[$i] > 0 && $volumes[$i] > ($volSma[$i] * (float) $c['vol_mult']);
-
-        $obvLb = (int) $c['obv_lookback'];
-        $obvBull = ($i - $obvLb) >= 0 && $obv[$i] > $obv[$i - $obvLb];
-        $obvBear = ($i - $obvLb) >= 0 && $obv[$i] < $obv[$i - $obvLb];
 
         $candleRange = max(0.0000001, $high - $low);
         $body = abs($close - $open);
@@ -239,175 +219,219 @@ class SignalEngine
         $upperWickRatio = $upperWick / $candleRange;
         $lowerWickRatio = $lowerWick / $candleRange;
 
-        // Condition 5: Rejection Wick & Candle Quality Filter (no long upper wick on longs, no long lower wick on shorts)
-        $strongBull = $close > $open && $bodyRatio >= 0.48 && $upperWickRatio <= 0.30;
-        $strongBear = $close < $open && $bodyRatio >= 0.48 && $lowerWickRatio <= 0.30;
-        $bullEngulf = $close > $open && $closes[$i - 1] < $opens[$i - 1]
-            && $close >= $opens[$i - 1] && $open <= $closes[$i - 1]
-            && $upperWickRatio <= 0.30;
-        $bearEngulf = $close < $open && $closes[$i - 1] > $opens[$i - 1]
-            && $close <= $opens[$i - 1] && $open >= $closes[$i - 1]
-            && $lowerWickRatio <= 0.30;
-        $bullCandle = $strongBull || $bullEngulf;
-        $bearCandle = $strongBear || $bearEngulf;
+        $bullCandle = ($close > $open) && ($bodyRatio >= 0.40) && ($upperWickRatio <= 0.30);
+        $bearCandle = ($close < $open) && ($bodyRatio >= 0.40) && ($lowerWickRatio <= 0.30);
 
-        // Condition 2: Institutional Setup Verification (Donchian Breakout, Breakout Retest, or 21-EMA Value Pullback)
+        // Institutional market structure discovery
         $structureLen = (int) $c['structure_len'];
-        $previousHigh = max(array_slice($highs, $i - $structureLen, $structureLen));
-        $previousLow = min(array_slice($lows, $i - $structureLen, $structureLen));
-        $breakoutBuffer = (float) $c['breakout_buffer_pct'] / 100.0;
+        $lookbackHighs = array_slice($highs, max(0, $i - $structureLen), $structureLen);
+        $lookbackLows = array_slice($lows, max(0, $i - $structureLen), $structureLen);
+        $previousHigh = max($lookbackHighs);
+        $previousLow = min($lookbackLows);
 
-        // Pattern 1: Donchian Structure Breakout
-        $breakoutLong = $close > ($previousHigh * (1.0 + $breakoutBuffer)) && $bullCandle;
-        $breakoutShort = $close < ($previousLow * (1.0 - $breakoutBuffer)) && $bearCandle;
+        $distToResPct = $previousHigh > 0 ? (($previousHigh - $close) / $previousHigh) * 100.0 : 999.0;
+        $distToSupPct = $previousLow > 0 ? (($close - $previousLow) / $previousLow) * 100.0 : 999.0;
 
-        // Pattern 2: Breakout Retest
-        $retestLong = ($i >= 2 && $closes[$i - 1] > $previousHigh && $low <= ($previousHigh * 1.003) && $close >= $previousHigh && $bullCandle);
-        $retestShort = ($i >= 2 && $closes[$i - 1] < $previousLow && $high >= ($previousLow * 0.997) && $close <= $previousLow && $bearCandle);
+        // Local structure swings
+        $low1 = $lows[$i];
+        $low2 = $lows[$i - 1];
+        $low3 = $lows[$i - 2];
+        $hasHigherLows = ($low1 >= $low2 * 0.999 && $low2 >= $low3 * 0.999);
 
-        // Pattern 3: Trend Pullback Value Bounce into 21 EMA
-        $pullbackLong = ($i >= 2 && $emaFast[$i] > $emaSlow[$i] && $low <= ($emaSlow[$i] * 1.003) && $close > $emaFast[$i] && $bullCandle && $lowerWickRatio >= 0.25);
-        $pullbackShort = ($i >= 2 && $emaFast[$i] < $emaSlow[$i] && $high >= ($emaSlow[$i] * 0.997) && $close < $emaFast[$i] && $bearCandle && $upperWickRatio >= 0.25);
+        $high1 = $highs[$i];
+        $high2 = $highs[$i - 1];
+        $high3 = $highs[$i - 2];
+        $hasLowerHighs = ($high1 <= $high2 * 1.001 && $high2 <= $high3 * 1.001);
 
-        $structureBull = $breakoutLong || $retestLong || $pullbackLong;
-        $structureBear = $breakoutShort || $retestShort || $pullbackShort;
-
-        $atrPct = $close > 0 ? ($atr[$i] / $close * 100.0) : 0.0;
-        $volatilityOK = $atrPct >= (float) $c['min_atr_pct'] && $atrPct <= (float) $c['max_atr_pct'];
-
-        $bbLb = (int) $c['bb_expansion_lookback'];
-        $volatilityExpanding = ($i - $bbLb) >= 0 && $bbWidth[$i - $bbLb] !== null
-            && $bbWidth[$i] > $bbWidth[$i - $bbLb];
-
-        $distanceFromEMA = $atr[$i] > 0 ? abs($close - (float) $emaFast[$i]) / $atr[$i] : 999.0;
-        $notOverextendedLong = $close >= (float) $emaSlow[$i] && $distanceFromEMA < 2.8;
-        $notOverextendedShort = $close <= (float) $emaSlow[$i] && $distanceFromEMA < 2.8;
-
-        [$bearishDivergence, $bullishDivergence] = $this->checkDivergence($highs, $lows, $rsi, $i, (int) $c['divergence_lookback']);
+        // Volatility Squeeze Check (BB inside KC or narrow width)
+        $bbCompression = false;
+        if (isset($bbWidth[$i]) && $bbWidth[$i] !== null) {
+            $recentBbWidths = array_slice(array_filter($bbWidth), -25);
+            if (! empty($recentBbWidths)) {
+                $minWidth = min($recentBbWidths);
+                $bbCompression = ($bbWidth[$i] <= $minWidth * 1.25);
+            }
+        }
+        $isCompressed = ($ttm['squeeze_on'][$i] ?? false) || $bbCompression;
 
         $volRatio = ($volSma[$i] !== null && $volSma[$i] > 0) ? round($volumes[$i] / $volSma[$i], 2) : 1.0;
-        $volumeScore = $volRatio >= (float) $c['vol_mult'] ? 12 : ($volRatio >= 1.20 ? 8 : 0);
-
-        $longScore = 0;
-        $longScore += ($trendBull && $htf1OK && $htf2OK) ? 20 : 0;
-        $longScore += $adxBull ? 15 : 0;
-        $longScore += ($rsiBull ? 7 : 0) + ($rsiMomentumBull ? 3 : 0);
-        $longScore += $volumeScore;
-        $longScore += $obvBull ? 7 : 0;
-        $longScore += $bullCandle ? 10 : 0;
-        $longScore += $structureBull ? 15 : 0;
-        $longScore += $volatilityOK ? 5 : 0;
-        $longScore += $volatilityExpanding ? 5 : 0;
-        $longScore += $persistBull ? 8 : 0;
-
-        $shortScore = 0;
-        $shortScore += ($trendBear && $htf1OKBear && $htf2OKBear) ? 20 : 0;
-        $shortScore += $adxBear ? 15 : 0;
-        $shortScore += ($rsiBear ? 7 : 0) + ($rsiMomentumBear ? 3 : 0);
-        $shortScore += $volumeScore;
-        $shortScore += $obvBear ? 7 : 0;
-        $shortScore += $bearCandle ? 10 : 0;
-        $shortScore += $structureBear ? 15 : 0;
-        $shortScore += $volatilityOK ? 5 : 0;
-        $shortScore += $volatilityExpanding ? 5 : 0;
-        $shortScore += $persistBear ? 8 : 0;
-
-        $minScore = (int) $c['minimum_score'];
-
-        // Strict Institutional Filters:
-        $volumeSurgeOK = $volRatio >= 1.25;
-        $adxMomentumOK = $adx[$i] >= (float) $c['adx_min'];
         $above200Ema = $emaTrend[$i] === null || $close > (float) $emaTrend[$i];
         $below200Ema = $emaTrend[$i] === null || $close < (float) $emaTrend[$i];
-        $noWickRejectionLong = $upperWickRatio <= 0.30;
-        $noWickRejectionShort = $lowerWickRatio <= 0.30;
 
-        $longQualifies = $longScore >= $minScore
-            && $structureBull
-            && $volumeSurgeOK
-            && $adxMomentumOK
-            && $above200Ema
-            && $noWickRejectionLong
-            && $trendBull
+        $breakoutBuffer = (float) $c['breakout_buffer_pct'] / 100.0;
+        $atrPct = $close > 0 ? ($atr[$i] / $close * 100.0) : 0.0;
+
+        // ==========================================
+        // HIGH-CONFLUENCE PRE-BREAKOUT SETUPS
+        // ==========================================
+        $setupType = null;
+        $setupLabel = null;
+        $side = null;
+        $rawSl = 0.0;
+        $score = 0;
+
+        // Long Setup 1: Wyckoff Spring Liquidity Reversal
+        $isSpringLong = ($low < $previousLow || $lows[$i - 1] < $previousLow)
+            && ($close > $previousLow)
+            && ($close > $open)
+            && ($lowerWickRatio >= 0.35)
+            && ! $htf1Bear
+            && $rsRatio >= 0.995;
+
+        // Long Setup 2: Pre-Breakout Ascending Coil Squeeze
+        $isPreBreakoutLong = ($distToResPct >= 0.12 && $distToResPct <= 1.30)
+            && ($hasHigherLows || $close > $emaFast[$i])
+            && $bullCandle
+            && $upperWickRatio <= 0.28
+            && $rsRatio >= 0.995
             && $htf1OK
-            && $notOverextendedLong
-            && ! $bearishDivergence;
+            && $trendBull;
 
-        $shortQualifies = $shortScore >= $minScore
-            && $structureBear
-            && $volumeSurgeOK
-            && $adxMomentumOK
-            && $below200Ema
-            && $noWickRejectionShort
-            && $trendBear
+        // Long Setup 3: Institutional 21-EMA Value Pullback Bounce
+        $isPullbackBounceLong = $trendBull
+            && $htf1OK
+            && $rsRatio >= 0.995
+            && ($low <= $emaSlow[$i] * 1.003 && $close > $emaFast[$i])
+            && $bullCandle
+            && ($lowerWickRatio >= 0.25)
+            && ($rsi[$i] >= 46.0 && $rsi[$i] <= 66.0);
+
+        // Long Setup 4: Confirmed Donchian Breakout
+        $isDonchianBreakoutLong = $close > ($previousHigh * (1.0 + $breakoutBuffer))
+            && $bullCandle && $htf1OK && $volRatio >= 1.25 && $above200Ema && $rsRatio >= 0.995;
+
+        // Long Setup 5: Breakout Retest Bounce
+        $isRetestLong = ($i >= 2 && $closes[$i - 1] > $previousHigh && $low <= ($previousHigh * 1.003) && $close >= $previousHigh && $bullCandle && $htf1OK);
+
+        // Short Setup 1: Wyckoff Upthrust Liquidity Reversal
+        $isUpthrustShort = ($high > $previousHigh || $highs[$i - 1] > $previousHigh)
+            && ($close < $previousHigh)
+            && ($close < $open)
+            && ($upperWickRatio >= 0.35)
+            && ! $htf1Bull
+            && $rsRatio <= 1.005;
+
+        // Short Setup 2: Pre-Breakdown Descending Coil Squeeze
+        $isPreBreakdownShort = ($distToSupPct >= 0.12 && $distToSupPct <= 1.30)
+            && ($hasLowerHighs || $close < $emaFast[$i])
+            && $bearCandle
+            && $lowerWickRatio <= 0.28
+            && $rsRatio <= 1.005
             && $htf1OKBear
-            && $notOverextendedShort
-            && ! $bullishDivergence;
+            && $trendBear;
 
+        // Short Setup 3: Institutional 21-EMA Value Pullback Rejection
+        $isPullbackRejectShort = $trendBear
+            && $htf1OKBear
+            && $rsRatio <= 1.005
+            && ($high >= $emaSlow[$i] * 0.997 && $close < $emaFast[$i])
+            && $bearCandle
+            && ($upperWickRatio >= 0.25)
+            && ($rsi[$i] <= 54.0 && $rsi[$i] >= 34.0);
+
+        // Short Setup 4: Confirmed Donchian Breakdown
+        $isDonchianBreakdownShort = $close < ($previousLow * (1.0 - $breakoutBuffer))
+            && $bearCandle && $htf1OKBear && $volRatio >= 1.25 && $below200Ema && $rsRatio <= 1.005;
+
+        // Short Setup 5: Breakdown Retest Rejection
+        $isRetestShort = ($i >= 2 && $closes[$i - 1] < $previousLow && $high >= ($previousLow * 0.997) && $close <= $previousLow && $bearCandle && $htf1OKBear);
+
+        if ($isSpringLong) {
+            $side = 'BUY';
+            $setupType = 'WYCKOFF_SPRING';
+            $setupLabel = 'WYCKOFF SPRING REVERSAL';
+            $score = 95;
+            $rawSl = min($low, $lows[$i - 1]) * 0.998;
+        } elseif ($isPreBreakoutLong) {
+            $side = 'BUY';
+            $setupType = 'PRE_BREAKOUT_COIL';
+            $setupLabel = 'PRE-BREAKOUT ASCENDING COIL';
+            $score = 92;
+            $rawSl = min($low1, $low2) * 0.998;
+        } elseif ($isUpthrustShort) {
+            $side = 'SELL';
+            $setupType = 'WYCKOFF_UPTHRUST';
+            $setupLabel = 'WYCKOFF UPTHRUST REVERSAL';
+            $score = 95;
+            $rawSl = max($high, $highs[$i - 1]) * 1.002;
+        } elseif ($isPreBreakdownShort) {
+            $side = 'SELL';
+            $setupType = 'PRE_BREAKOUT_COIL';
+            $setupLabel = 'PRE-BREAKDOWN DESCENDING COIL';
+            $score = 92;
+            $rawSl = max($high1, $high2) * 1.002;
+        } elseif ($isPullbackBounceLong) {
+            $side = 'BUY';
+            $setupType = 'PULLBACK_VALUE';
+            $setupLabel = '21-EMA VALUE PULLBACK BOUNCE';
+            $score = 88;
+            $rawSl = $low * 0.998;
+        } elseif ($isPullbackRejectShort) {
+            $side = 'SELL';
+            $setupType = 'PULLBACK_VALUE';
+            $setupLabel = '21-EMA VALUE PULLBACK REJECTION';
+            $score = 88;
+            $rawSl = $high * 1.002;
+        } elseif ($isDonchianBreakoutLong) {
+            $side = 'BUY';
+            $setupType = 'BREAKOUT_CONFIRMED';
+            $setupLabel = 'RESISTANCE BREAKOUT CONFIRMED';
+            $score = 88;
+            $rawSl = max($previousHigh * 0.995, $low * 0.998);
+        } elseif ($isDonchianBreakdownShort) {
+            $side = 'SELL';
+            $setupType = 'BREAKDOWN_CONFIRMED';
+            $setupLabel = 'SUPPORT BREAKDOWN CONFIRMED';
+            $score = 88;
+            $rawSl = min($previousLow * 1.005, $high * 1.002);
+        } elseif ($isRetestLong) {
+            $side = 'BUY';
+            $setupType = 'RETEST_ENTRY';
+            $setupLabel = 'BREAKOUT RETEST & BOUNCE';
+            $score = 86;
+            $rawSl = $low * 0.998;
+        } elseif ($isRetestShort) {
+            $side = 'SELL';
+            $setupType = 'RETEST_ENTRY';
+            $setupLabel = 'BREAKDOWN RETEST & REJECTION';
+            $score = 86;
+            $rawSl = $high * 1.002;
+        }
+
+        if ($side !== null) {
+            if ($isCompressed) {
+                $score += 3;
+            }
+            if ($volRatio >= 1.35) {
+                $score += 2;
+            }
+            if ($side === 'BUY' && $rsRatio >= 1.01) {
+                $score += 2;
+            } elseif ($side === 'SELL' && $rsRatio <= 0.99) {
+                $score += 2;
+            }
+            $score = min(99, $score);
+        }
+
+        $minScore = (int) $c['minimum_score'];
         $diagnostics = [
-            'buy_score' => $longScore,
-            'sell_score' => $shortScore,
+            'buy_score' => $side === 'BUY' ? $score : ($trendBull ? 72 : 50),
+            'sell_score' => $side === 'SELL' ? $score : ($trendBear ? 72 : 50),
             'minimum_score' => $minScore,
             'rsi' => round((float) $rsi[$i], 2),
             'adx' => round((float) $adx[$i], 2),
             'volume_ratio' => $volRatio,
             'atr_pct' => round($atrPct, 2),
             'close' => round($close, 4),
+            'rs_ratio' => round($rsRatio, 4),
             'rejection' => null,
         ];
 
-        if (! $longQualifies && ! $shortQualifies) {
-            if ((bool) ($c['enable_reversals'] ?? false)) {
-                $revSignal = $this->evaluateReversal(
-                    $candles,
-                    $i,
-                    $emaFast,
-                    $emaSlow,
-                    $emaTrend,
-                    $rsi,
-                    $atr,
-                    $volSma
-                );
-                if ($revSignal !== null) {
-                    return [
-                        'signal' => $revSignal,
-                        'diagnostics' => $diagnostics,
-                    ];
-                }
-            }
-
-            if ($longScore >= $minScore) {
-                if (! $structureBull) {
-                    $diagnostics['rejection'] = 'Missing institutional structure (Breakout, Retest, or 21-EMA Pullback)';
-                } elseif (! $volumeSurgeOK) {
-                    $diagnostics['rejection'] = "Insufficient volume surge ({$volRatio}x < 1.25x)";
-                } elseif (! $adxMomentumOK) {
-                    $diagnostics['rejection'] = "Weak ADX momentum ({round((float) $adx[$i], 1)} < {$c['adx_min']})";
-                } elseif (! $above200Ema) {
-                    $diagnostics['rejection'] = 'Counter-trend below 200 EMA baseline';
-                } elseif (! $noWickRejectionLong) {
-                    $diagnostics['rejection'] = 'Excessive upper rejection wick (> 30% of candle)';
-                } elseif (! $notOverextendedLong) {
-                    $diagnostics['rejection'] = 'Price overextended from Fast EMA (> 2.5 ATR)';
-                } elseif ($bearishDivergence) {
-                    $diagnostics['rejection'] = 'Bearish RSI divergence detected';
-                }
-            } elseif ($shortScore >= $minScore) {
-                if (! $structureBear) {
-                    $diagnostics['rejection'] = 'Missing institutional structure (Breakdown, Retest, or 21-EMA Pullback)';
-                } elseif (! $volumeSurgeOK) {
-                    $diagnostics['rejection'] = "Insufficient volume surge ({$volRatio}x < 1.25x)";
-                } elseif (! $adxMomentumOK) {
-                    $diagnostics['rejection'] = "Weak ADX momentum ({round((float) $adx[$i], 1)} < {$c['adx_min']})";
-                } elseif (! $below200Ema) {
-                    $diagnostics['rejection'] = 'Counter-trend above 200 EMA baseline';
-                } elseif (! $noWickRejectionShort) {
-                    $diagnostics['rejection'] = 'Excessive lower absorption wick (> 30% of candle)';
-                } elseif (! $notOverextendedShort) {
-                    $diagnostics['rejection'] = 'Price overextended from Fast EMA (> 2.5 ATR)';
-                } elseif ($bullishDivergence) {
-                    $diagnostics['rejection'] = 'Bullish RSI divergence detected';
-                }
+        if ($side === null || $score < $minScore) {
+            if ($side === null) {
+                $diagnostics['rejection'] = 'No institutional setup (Spring, Pre-Breakout Coil, or 21-EMA Pullback)';
+            } else {
+                $diagnostics['rejection'] = "Setup score ({$score}) below minimum threshold ({$minScore})";
             }
 
             return [
@@ -416,71 +440,35 @@ class SignalEngine
             ];
         }
 
-        $side = $longQualifies && (! $shortQualifies || $longScore >= $shortScore) ? 'BUY' : 'SELL';
-        $score = $side === 'BUY' ? $longScore : $shortScore;
+        // ==========================================
+        // STRICT ASYMMETRIC RISK-REWARD ENGINE (Min 0.75%, Max 1.35% SL)
+        // ==========================================
         $entry = $close;
-        $atrVal = (float) $atr[$i];
+        $minSlDist = $entry * 0.0075;
+        $maxSlDist = $entry * 0.0135;
+        $rawRisk = abs($entry - $rawSl);
+        $risk = max($minSlDist, min($maxSlDist, $rawRisk));
 
-        if ($side === 'BUY') {
-            $structureSL = $previousLow - ($atrVal * 0.25);
-            $atrSL = $close - ($atrVal * (float) $c['sl_mult']);
-            $sl = (bool) $c['use_structure_sl'] ? min($atrSL, $structureSL) : $atrSL;
-            $risk = $entry - $sl;
-            $tp1 = $entry + max($atrVal * (float) $c['tp1_mult'], $risk * (float) $c['min_rr']);
-            $tp2 = $entry + max($atrVal * (float) $c['tp2_mult'], $risk * ((float) $c['min_rr'] + 1.0));
-            $tp3 = $entry + max($atrVal * (float) $c['tp3_mult'], $risk * ((float) $c['min_rr'] + 2.0));
-        } else {
-            $structureSL = $previousHigh + ($atrVal * 0.25);
-            $atrSL = $close + ($atrVal * (float) $c['sl_mult']);
-            $sl = (bool) $c['use_structure_sl'] ? max($atrSL, $structureSL) : $atrSL;
-            $risk = $sl - $entry;
-            $tp1 = $entry - max($atrVal * (float) $c['tp1_mult'], $risk * (float) $c['min_rr']);
-            $tp2 = $entry - max($atrVal * (float) $c['tp2_mult'], $risk * ((float) $c['min_rr'] + 1.0));
-            $tp3 = $entry - max($atrVal * (float) $c['tp3_mult'], $risk * ((float) $c['min_rr'] + 2.0));
-        }
+        $sl = $side === 'BUY' ? round($entry - $risk, 6) : round($entry + $risk, 6);
+        $tp1 = $side === 'BUY' ? round($entry + ($risk * 1.35), 6) : round($entry - ($risk * 1.35), 6); // 1:1.35 R:R (+15% ROE)
+        $tp2 = $side === 'BUY' ? round($entry + ($risk * 2.80), 6) : round($entry - ($risk * 2.80), 6); // 1:2.80 R:R (+30% ROE)
+        $tp3 = $side === 'BUY' ? round($entry + ($risk * 4.50), 6) : round($entry - ($risk * 4.50), 6); // 1:4.50 R:R (+50% ROE)
 
-        if ($risk <= 0) {
-            $diagnostics['rejection'] = 'Invalid stop-loss calculation (risk <= 0)';
-
-            return [
-                'signal' => null,
-                'diagnostics' => $diagnostics,
-            ];
-        }
-
-        $rewardToRisk = abs($tp1 - $entry) / $risk;
-        if ($rewardToRisk < (float) $c['min_rr']) {
-            $diagnostics['rejection'] = "Reward-to-risk ratio ({$rewardToRisk}) below minimum threshold ({$c['min_rr']})";
-
-            return [
-                'signal' => null,
-                'diagnostics' => $diagnostics,
-            ];
-        }
+        $slDistancePct = $entry > 0 ? round(($risk / $entry) * 100.0, 2) : 1.0;
+        $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100.0, 2) : 1.35;
+        $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100.0, 2) : 2.80;
+        $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100.0, 2) : 4.50;
+        $rrRatio = $slDistancePct > 0 ? round($tp2Pct / $slDistancePct, 1) : 2.8;
 
         $grade = $score >= (int) $c['grade_a'] ? 'A' : ($score >= (int) $c['grade_b'] ? 'B' : 'C');
-
-        $slDistancePct = $entry > 0 ? round(abs($entry - $sl) / $entry * 100.0, 2) : 0.0;
-        $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100.0, 2) : 0.0;
-        $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100.0, 2) : 0.0;
-        $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100.0, 2) : 0.0;
-        $rrRatio = $slDistancePct > 0 ? round($tp2Pct / $slDistancePct, 1) : 2.5;
-
         $recLeverage = '5x - 10x';
-        $levMult = 5;
-        if ($atrPct > 3.0) {
-            $recLeverage = '3x - 5x';
-            $levMult = 3;
-        } elseif ($atrPct < 1.0) {
-            $recLeverage = '8x - 12x';
-            $levMult = 10;
-        }
+        $levMult = 10;
 
         $perpetualOptions = [
             'recommended_leverage' => $recLeverage,
             'margin_mode' => 'Isolated Margin',
             'order_type' => 'Limit / Market Entry',
-            'risk_per_trade' => '1% - 2% Account Balance',
+            'risk_per_trade' => '1.0% - 2.0% Account Balance',
             'risk_reward' => "1 : {$rrRatio}",
             'sl_pct' => $slDistancePct,
             'tp1_pct' => $tp1Pct,
@@ -498,17 +486,22 @@ class SignalEngine
             'side' => $side,
             'score' => $score,
             'grade' => $grade,
-            'entry' => round($entry, 8),
-            'sl' => round($sl, 8),
-            'tp1' => round($tp1, 8),
-            'tp2' => round($tp2, 8),
-            'tp3' => round($tp3, 8),
-            'risk_reward' => round($rewardToRisk, 2),
+            'setup_type' => $setupType,
+            'setup_label' => $setupLabel,
+            'entry' => round($entry, 6),
+            'sl' => round($sl, 6),
+            'tp1' => round($tp1, 6),
+            'tp2' => round($tp2, 6),
+            'tp3' => round($tp3, 6),
+            'risk_reward' => "1 : {$rrRatio}",
             'rsi' => round((float) $rsi[$i], 2),
             'adx' => round((float) $adx[$i], 2),
             'volume_ratio' => $volRatio,
             'atr_pct' => round($atrPct, 2),
             'candle_close_time' => $closeTimes[$i] ?? 0,
+            'rs_ratio' => round($rsRatio, 4),
+            'breakout_level' => $side === 'BUY' ? round($previousHigh, 4) : round($previousLow, 4),
+            'distance_pct' => $side === 'BUY' ? round($distToResPct, 2) : round($distToSupPct, 2),
             'perpetual_options' => $perpetualOptions,
         ];
 
@@ -524,6 +517,7 @@ class SignalEngine
      * @param  array<string, mixed>  $candles
      * @param  array<string, mixed>|null  $htf1
      * @param  array<string, mixed>|null  $htf2
+     * @param  array<string, mixed>|null  $btcCandles
      * @return array{
      *     candles: array<int, array{time: int, open: float, high: float, low: float, close: float, volume: float}>,
      *     markers: array<int, array<string, mixed>>,
@@ -532,7 +526,7 @@ class SignalEngine
      *     ema200: array<int, array{time: int, value: float}>
      * }
      */
-    public function evaluateHistory(array $candles, ?array $htf1 = null, ?array $htf2 = null, int $lookback = 140): array
+    public function evaluateHistory(array $candles, ?array $htf1 = null, ?array $htf2 = null, int $lookback = 140, ?array $btcCandles = null): array
     {
         $c = $this->config;
         $closes = $candles['closes'] ?? [];
@@ -569,20 +563,19 @@ class SignalEngine
         $rsi = Indicators::rsi($closes, $rsiLen);
         $atr = Indicators::atr($highs, $lows, $closes, $atrLen);
         $volSma = Indicators::sma($volumes, $volLen);
-        $obv = Indicators::obv($closes, $volumes);
         $bbWidth = Indicators::bbWidthPercent($closes, $bbLen, $bbMult);
+        $ttm = Indicators::ttmSqueeze($highs, $lows, $closes, 20, 2.0, 1.5, 20);
         $dmiRes = Indicators::dmi($highs, $lows, $closes, $adxLen, $adxLen);
-        $plusDI = $dmiRes['plus_di'] ?? $dmiRes[0];
-        $minusDI = $dmiRes['minus_di'] ?? $dmiRes[1];
         $adx = $dmiRes['adx'] ?? $dmiRes[2];
 
-        [$htf1Bull, $htf1Bear] = $this->htfTrend($htf1, $trendLen);
-        [$htf2Bull, $htf2Bear] = $this->htfTrend($htf2, $trendLen);
+        $rsRatio = 1.0;
+        if ($btcCandles && ! empty($btcCandles['closes'])) {
+            $rsRatio = Indicators::relativeStrength($closes, $btcCandles['closes'], 24);
+        }
 
+        [$htf1Bull, $htf1Bear] = $this->htfTrend($htf1, $trendLen);
         $htf1OK = ! $c['use_htf1'] || $htf1 === null || $htf1Bull;
         $htf1OKBear = ! $c['use_htf1'] || $htf1 === null || $htf1Bear;
-        $htf2OK = ! $c['use_htf2'] || $htf2 === null || $htf2Bull;
-        $htf2OKBear = ! $c['use_htf2'] || $htf2 === null || $htf2Bear;
 
         $chartCandles = [];
         $ema9Series = [];
@@ -596,20 +589,8 @@ class SignalEngine
         $oppositeCooldownBars = (int) ($c['opposite_cooldown_bars'] ?? 3);
         $activePosition = 'NONE';
         $barsSinceSignal = 999;
-
-        $trendBullAt = fn (int $idx): bool => $idx >= 0 &&
-            $emaFast[$idx] !== null &&
-            $emaSlow[$idx] !== null &&
-            $emaTrend[$idx] !== null &&
-            $emaFast[$idx] > $emaSlow[$idx] &&
-            $closes[$idx] > $emaTrend[$idx];
-
-        $trendBearAt = fn (int $idx): bool => $idx >= 0 &&
-            $emaFast[$idx] !== null &&
-            $emaSlow[$idx] !== null &&
-            $emaTrend[$idx] !== null &&
-            $emaFast[$idx] < $emaSlow[$idx] &&
-            $closes[$idx] < $emaTrend[$idx];
+        $structureLen = (int) $c['structure_len'];
+        $breakoutBuffer = (float) $c['breakout_buffer_pct'] / 100.0;
 
         for ($i = $startIndex; $i < $count; $i++) {
             $barsSinceSignal++;
@@ -642,43 +623,15 @@ class SignalEngine
             // Only evaluate historical signals on fully formed bars up to $count - 2
             if (
                 $i <= ($count - 2) &&
-                $i >= (int) $c['structure_len'] + 2 &&
+                $i >= $structureLen + 2 &&
                 $emaFast[$i] !== null &&
                 $emaSlow[$i] !== null &&
-                $emaTrend[$i] !== null &&
                 $rsi[$i] !== null &&
                 $atr[$i] !== null &&
                 $volSma[$i] !== null &&
-                $adx[$i] !== null &&
-                $bbWidth[$i] !== null &&
                 $curClose > 0 &&
                 $atr[$i] > 0
             ) {
-                $trendBull = $trendBullAt($i);
-                $trendBear = $trendBearAt($i);
-
-                $persistBull = true;
-                $persistBear = true;
-                for ($p = 0; $p < (int) $c['persistence_bars']; $p++) {
-                    $persistBull = $persistBull && $trendBullAt($i - $p);
-                    $persistBear = $persistBear && $trendBearAt($i - $p);
-                }
-
-                $adxBull = $adx[$i] >= $c['adx_min'] && $plusDI[$i] > $minusDI[$i];
-                $adxBear = $adx[$i] >= $c['adx_min'] && $minusDI[$i] > $plusDI[$i];
-
-                $rsiBull = $rsi[$i] > $c['rsi_long_min'];
-                $rsiBear = $rsi[$i] < $c['rsi_short_max'];
-                $rsiMomentumBull = $rsi[$i - 1] !== null && $rsi[$i] > $rsi[$i - 1];
-                $rsiMomentumBear = $rsi[$i - 1] !== null && $rsi[$i] < $rsi[$i - 1];
-
-                $volRatio = ($volSma[$i] !== null && $volSma[$i] > 0) ? round($curVol / $volSma[$i], 2) : 1.0;
-                $volumeScore = $volRatio >= (float) $c['vol_mult'] ? 8 : ($volRatio >= 0.85 ? 5 : 0);
-
-                $obvLb = (int) $c['obv_lookback'];
-                $obvBull = ($i - $obvLb) >= 0 && $obv[$i] > $obv[$i - $obvLb];
-                $obvBear = ($i - $obvLb) >= 0 && $obv[$i] < $obv[$i - $obvLb];
-
                 $candleRange = max(0.0000001, $curHigh - $curLow);
                 $body = abs($curClose - $curOpen);
                 $bodyRatio = $candleRange > 0 ? $body / $candleRange : 0;
@@ -687,217 +640,151 @@ class SignalEngine
                 $upperWickRatio = $upperWick / $candleRange;
                 $lowerWickRatio = $lowerWick / $candleRange;
 
-                // Rejection Wick & Candle Quality Filter
-                $strongBull = $curClose > $curOpen && $bodyRatio >= 0.48 && $upperWickRatio <= 0.30;
-                $strongBear = $curClose < $curOpen && $bodyRatio >= 0.48 && $lowerWickRatio <= 0.30;
-                $bullEngulf = $curClose > $curOpen && $closes[$i - 1] < $opens[$i - 1]
-                    && $curClose >= $opens[$i - 1] && $curOpen <= $closes[$i - 1]
-                    && $upperWickRatio <= 0.30;
-                $bearEngulf = $curClose < $curOpen && $closes[$i - 1] > $opens[$i - 1]
-                    && $curClose <= $opens[$i - 1] && $curOpen >= $closes[$i - 1]
-                    && $lowerWickRatio <= 0.30;
-                $bullCandle = $strongBull || $bullEngulf;
-                $bearCandle = $strongBear || $bearEngulf;
+                $bullCandle = ($curClose > $curOpen) && ($bodyRatio >= 0.40) && ($upperWickRatio <= 0.30);
+                $bearCandle = ($curClose < $curOpen) && ($bodyRatio >= 0.40) && ($lowerWickRatio <= 0.30);
 
-                // Institutional Setup Verification (Donchian Breakout, Breakout Retest, 21-EMA Pullback)
-                $structureLen = (int) $c['structure_len'];
                 $previousHigh = max(array_slice($highs, $i - $structureLen, $structureLen));
                 $previousLow = min(array_slice($lows, $i - $structureLen, $structureLen));
-                $breakoutBuffer = (float) $c['breakout_buffer_pct'] / 100.0;
 
-                $breakoutLong = $curClose > ($previousHigh * (1.0 + $breakoutBuffer)) && $bullCandle;
-                $breakoutShort = $curClose < ($previousLow * (1.0 - $breakoutBuffer)) && $bearCandle;
+                $distToResPct = $previousHigh > 0 ? (($previousHigh - $curClose) / $previousHigh) * 100.0 : 999.0;
+                $distToSupPct = $previousLow > 0 ? (($curClose - $previousLow) / $previousLow) * 100.0 : 999.0;
 
-                $retestLong = ($i >= 2 && $closes[$i - 1] > $previousHigh && $curLow <= ($previousHigh * 1.003) && $curClose >= $previousHigh && $bullCandle);
-                $retestShort = ($i >= 2 && $closes[$i - 1] < $previousLow && $curHigh >= ($previousLow * 0.997) && $curClose <= $previousLow && $bearCandle);
+                $low1 = $lows[$i];
+                $low2 = $lows[$i - 1];
+                $low3 = $lows[$i - 2];
+                $hasHigherLows = ($low1 >= $low2 * 0.999 && $low2 >= $low3 * 0.999);
 
-                $pullbackLong = ($i >= 2 && $emaFast[$i] > $emaSlow[$i] && $curLow <= ($emaSlow[$i] * 1.003) && $curClose > $emaFast[$i] && $bullCandle && $lowerWickRatio >= 0.25);
-                $pullbackShort = ($i >= 2 && $emaFast[$i] < $emaSlow[$i] && $curHigh >= ($emaSlow[$i] * 0.997) && $curClose < $emaFast[$i] && $bearCandle && $upperWickRatio >= 0.25);
+                $high1 = $highs[$i];
+                $high2 = $highs[$i - 1];
+                $high3 = $highs[$i - 2];
+                $hasLowerHighs = ($high1 <= $high2 * 1.001 && $high2 <= $high3 * 1.001);
 
-                $structureBull = $breakoutLong || $retestLong || $pullbackLong;
-                $structureBear = $breakoutShort || $retestShort || $pullbackShort;
-
+                $volRatio = ($volSma[$i] > 0) ? round($curVol / $volSma[$i], 2) : 1.0;
                 $atrPct = ($atr[$i] / $curClose) * 100.0;
-                $volatilityOK = $atrPct >= (float) $c['min_atr_pct'] && $atrPct <= (float) $c['max_atr_pct'];
-
-                $bbLb = (int) $c['bb_expansion_lookback'];
-                $volatilityExpanding = ($i - $bbLb) >= 0 && $bbWidth[$i - $bbLb] !== null
-                    && $bbWidth[$i] > $bbWidth[$i - $bbLb];
-
-                $distanceFromEMA = $atr[$i] > 0 ? abs($curClose - (float) $emaFast[$i]) / $atr[$i] : 999.0;
-                $notOverextendedLong = $curClose >= (float) $emaSlow[$i] && $distanceFromEMA < 2.8;
-                $notOverextendedShort = $curClose <= (float) $emaSlow[$i] && $distanceFromEMA < 2.8;
-
-                [$bearishDivergence, $bullishDivergence] = $this->checkDivergence($highs, $lows, $rsi, $i, (int) $c['divergence_lookback']);
-
-                $volRatio = ($volSma[$i] !== null && $volSma[$i] > 0) ? round($curVol / $volSma[$i], 2) : 1.0;
-                $volumeScore = $volRatio >= (float) $c['vol_mult'] ? 12 : ($volRatio >= 1.20 ? 8 : 0);
-
-                $longScore = 0;
-                $longScore += ($trendBull && $htf1OK && $htf2OK) ? 20 : 0;
-                $longScore += $adxBull ? 15 : 0;
-                $longScore += ($rsiBull ? 7 : 0) + ($rsiMomentumBull ? 3 : 0);
-                $longScore += $volumeScore;
-                $longScore += $obvBull ? 7 : 0;
-                $longScore += $bullCandle ? 10 : 0;
-                $longScore += $structureBull ? 15 : 0;
-                $longScore += $volatilityOK ? 5 : 0;
-                $longScore += $volatilityExpanding ? 5 : 0;
-                $longScore += $persistBull ? 8 : 0;
-
-                $shortScore = 0;
-                $shortScore += ($trendBear && $htf1OKBear && $htf2OKBear) ? 20 : 0;
-                $shortScore += $adxBear ? 15 : 0;
-                $shortScore += ($rsiBear ? 7 : 0) + ($rsiMomentumBear ? 3 : 0);
-                $shortScore += $volumeScore;
-                $shortScore += $obvBear ? 7 : 0;
-                $shortScore += $bearCandle ? 10 : 0;
-                $shortScore += $structureBear ? 15 : 0;
-                $shortScore += $volatilityOK ? 5 : 0;
-                $shortScore += $volatilityExpanding ? 5 : 0;
-                $shortScore += $persistBear ? 8 : 0;
-
-                // Strict Institutional Filters:
-                $volumeSurgeOK = $volRatio >= 1.25;
-                $adxMomentumOK = $adx[$i] >= (float) $c['adx_min'];
+                $trendBull = $emaFast[$i] >= $emaSlow[$i] && ($emaTrend[$i] === null || $curClose >= $emaTrend[$i] * 0.995);
+                $trendBear = $emaFast[$i] <= $emaSlow[$i] && ($emaTrend[$i] === null || $curClose <= $emaTrend[$i] * 1.005);
                 $above200Ema = $emaTrend[$i] === null || $curClose > (float) $emaTrend[$i];
                 $below200Ema = $emaTrend[$i] === null || $curClose < (float) $emaTrend[$i];
-                $noWickRejectionLong = $upperWickRatio <= 0.30;
-                $noWickRejectionShort = $lowerWickRatio <= 0.30;
 
-                $longQualifies = $longScore >= $minScore
-                    && $structureBull
-                    && $volumeSurgeOK
-                    && $adxMomentumOK
-                    && $above200Ema
-                    && $noWickRejectionLong
-                    && $trendBullAt($i)
-                    && $htf1OK
-                    && $notOverextendedLong
-                    && ! $bearishDivergence;
+                $histSide = null;
+                $histSetupType = null;
+                $histSetupLabel = null;
+                $histScore = 0;
+                $histRawSl = 0.0;
 
-                $shortQualifies = $shortScore >= $minScore
-                    && $structureBear
-                    && $volumeSurgeOK
-                    && $adxMomentumOK
-                    && $below200Ema
-                    && $noWickRejectionShort
-                    && $trendBearAt($i)
-                    && $htf1OKBear
-                    && $notOverextendedShort
-                    && ! $bullishDivergence;
+                // Long Setups
+                if (($curLow < $previousLow || $lows[$i - 1] < $previousLow) && $curClose > $previousLow && $curClose > $curOpen && $lowerWickRatio >= 0.35 && ! $htf1Bear && $rsRatio >= 0.995) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'WYCKOFF_SPRING';
+                    $histSetupLabel = 'WYCKOFF SPRING REVERSAL';
+                    $histScore = 95;
+                    $histRawSl = min($curLow, $lows[$i - 1]) * 0.998;
+                } elseif ($distToResPct >= 0.12 && $distToResPct <= 1.30 && ($hasHigherLows || $curClose > $emaFast[$i]) && $bullCandle && $upperWickRatio <= 0.28 && $rsRatio >= 0.995 && $htf1OK && $trendBull) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'PRE_BREAKOUT_COIL';
+                    $histSetupLabel = 'PRE-BREAKOUT ASCENDING COIL';
+                    $histScore = 92;
+                    $histRawSl = min($low1, $low2) * 0.998;
+                } elseif ($trendBull && $htf1OK && $rsRatio >= 0.995 && ($curLow <= $emaSlow[$i] * 1.003 && $curClose > $emaFast[$i]) && $bullCandle && $lowerWickRatio >= 0.25 && $rsi[$i] >= 46.0 && $rsi[$i] <= 66.0) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'PULLBACK_VALUE';
+                    $histSetupLabel = '21-EMA VALUE PULLBACK BOUNCE';
+                    $histScore = 88;
+                    $histRawSl = $curLow * 0.998;
+                } elseif ($curClose > ($previousHigh * (1.0 + $breakoutBuffer)) && $bullCandle && $htf1OK && $volRatio >= 1.25 && $above200Ema && $rsRatio >= 0.995) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'BREAKOUT_CONFIRMED';
+                    $histSetupLabel = 'RESISTANCE BREAKOUT CONFIRMED';
+                    $histScore = 88;
+                    $histRawSl = max($previousHigh * 0.995, $curLow * 0.998);
+                } elseif ($i >= 2 && $closes[$i - 1] > $previousHigh && $curLow <= ($previousHigh * 1.003) && $curClose >= $previousHigh && $bullCandle && $htf1OK) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'RETEST_ENTRY';
+                    $histSetupLabel = 'BREAKOUT RETEST & BOUNCE';
+                    $histScore = 86;
+                    $histRawSl = $curLow * 0.998;
+                }
 
-                $canLong = $activePosition === 'BUY' ? ($barsSinceSignal >= $cooldownBars) : ($barsSinceSignal >= $oppositeCooldownBars);
-                $canShort = $activePosition === 'SELL' ? ($barsSinceSignal >= $cooldownBars) : ($barsSinceSignal >= $oppositeCooldownBars);
+                // Short Setups
+                if ($histSide === null) {
+                    if (($curHigh > $previousHigh || $highs[$i - 1] > $previousHigh) && $curClose < $previousHigh && $curClose < $curOpen && $upperWickRatio >= 0.35 && ! $htf1Bull && $rsRatio <= 1.005) {
+                        $histSide = 'SELL';
+                        $histSetupType = 'WYCKOFF_UPTHRUST';
+                        $histSetupLabel = 'WYCKOFF UPTHRUST REVERSAL';
+                        $histScore = 95;
+                        $histRawSl = max($curHigh, $highs[$i - 1]) * 1.002;
+                    } elseif ($distToSupPct >= 0.12 && $distToSupPct <= 1.30 && ($hasLowerHighs || $curClose < $emaFast[$i]) && $bearCandle && $lowerWickRatio <= 0.28 && $rsRatio <= 1.005 && $htf1OKBear && $trendBear) {
+                        $histSide = 'SELL';
+                        $histSetupType = 'PRE_BREAKOUT_COIL';
+                        $histSetupLabel = 'PRE-BREAKDOWN DESCENDING COIL';
+                        $histScore = 92;
+                        $histRawSl = max($high1, $high2) * 1.002;
+                    } elseif ($trendBear && $htf1OKBear && $rsRatio <= 1.005 && ($curHigh >= $emaSlow[$i] * 0.997 && $curClose < $emaFast[$i]) && $bearCandle && $upperWickRatio >= 0.25 && $rsi[$i] <= 54.0 && $rsi[$i] >= 34.0) {
+                        $histSide = 'SELL';
+                        $histSetupType = 'PULLBACK_VALUE';
+                        $histSetupLabel = '21-EMA VALUE PULLBACK REJECTION';
+                        $histScore = 88;
+                        $histRawSl = $curHigh * 1.002;
+                    } elseif ($curClose < ($previousLow * (1.0 - $breakoutBuffer)) && $bearCandle && $htf1OKBear && $volRatio >= 1.25 && $below200Ema && $rsRatio <= 1.005) {
+                        $histSide = 'SELL';
+                        $histSetupType = 'BREAKDOWN_CONFIRMED';
+                        $histSetupLabel = 'SUPPORT BREAKDOWN CONFIRMED';
+                        $histScore = 88;
+                        $histRawSl = min($previousLow * 1.005, $curHigh * 1.002);
+                    } elseif ($i >= 2 && $closes[$i - 1] < $previousLow && $curHigh >= ($previousLow * 0.997) && $curClose <= $previousLow && $bearCandle && $htf1OKBear) {
+                        $histSide = 'SELL';
+                        $histSetupType = 'RETEST_ENTRY';
+                        $histSetupLabel = 'BREAKDOWN RETEST & REJECTION';
+                        $histScore = 86;
+                        $histRawSl = $curHigh * 1.002;
+                    }
+                }
 
-                if ($longQualifies && $canLong) {
-                    $structureSL = $previousLow - ($atr[$i] * 0.25);
-                    $atrSL = $curClose - ($atr[$i] * (float) $c['sl_mult']);
-                    $sl = (bool) $c['use_structure_sl'] ? min($atrSL, $structureSL) : $atrSL;
-                    $risk = $curClose - $sl;
-                    if ($risk > 0) {
-                        $tp1 = $curClose + max($atr[$i] * (float) $c['tp1_mult'], $risk * (float) $c['min_rr']);
-                        $tp2 = $curClose + max($atr[$i] * (float) $c['tp2_mult'], $risk * ((float) $c['min_rr'] + 1.0));
-                        $tp3 = $curClose + max($atr[$i] * (float) $c['tp3_mult'], $risk * ((float) $c['min_rr'] + 2.0));
-                        $grade = $longScore >= (int) $c['grade_a'] ? 'A' : ($longScore >= (int) $c['grade_b'] ? 'B' : 'C');
+                if ($histSide !== null && $histScore >= $minScore) {
+                    $canTrade = $activePosition === $histSide ? ($barsSinceSignal >= $cooldownBars) : ($barsSinceSignal >= $oppositeCooldownBars);
+
+                    if ($canTrade) {
+                        $minRisk = $curClose * 0.0075;
+                        $maxRisk = $curClose * 0.0135;
+                        $calcRisk = max($minRisk, min($maxRisk, abs($curClose - $histRawSl)));
+
+                        $sl = $histSide === 'BUY' ? round($curClose - $calcRisk, 4) : round($curClose + $calcRisk, 4);
+                        $tp1 = $histSide === 'BUY' ? round($curClose + ($calcRisk * 1.35), 4) : round($curClose - ($calcRisk * 1.35), 4);
+                        $tp2 = $histSide === 'BUY' ? round($curClose + ($calcRisk * 2.80), 4) : round($curClose - ($calcRisk * 2.80), 4);
+                        $tp3 = $histSide === 'BUY' ? round($curClose + ($calcRisk * 4.50), 4) : round($curClose - ($calcRisk * 4.50), 4);
+
+                        $grade = $histScore >= (int) $c['grade_a'] ? 'A' : ($histScore >= (int) $c['grade_b'] ? 'B' : 'C');
+                        $slPct = round(($calcRisk / $curClose) * 100, 2);
+                        $tp2Pct = round(abs($tp2 - $curClose) / $curClose * 100, 2);
+                        $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8';
 
                         $markers[] = [
                             'time' => $timeSec,
-                            'position' => 'belowBar',
-                            'color' => '#10b981',
-                            'shape' => 'arrowUp',
-                            'text' => "SignalAlgo BUY [{$grade}: {$longScore}]",
+                            'position' => $histSide === 'BUY' ? 'belowBar' : 'aboveBar',
+                            'color' => $histSide === 'BUY' ? '#10b981' : '#ef4444',
+                            'shape' => $histSide === 'BUY' ? 'arrowUp' : 'arrowDown',
+                            'text' => "SignalAlgo {$histSide} [{$grade}: {$histScore}]",
                             'size' => 2,
-                            'side' => 'BUY',
-                            'score' => $longScore,
+                            'side' => $histSide,
+                            'score' => $histScore,
                             'grade' => $grade,
-                            'setup_type' => 'TREND',
+                            'setup_type' => $histSetupType,
+                            'setup_label' => $histSetupLabel,
                             'entry' => round($curClose, 4),
-                            'sl' => round($sl, 4),
-                            'tp1' => round($tp1, 4),
-                            'tp2' => round($tp2, 4),
-                            'tp3' => round($tp3, 4),
+                            'sl' => $sl,
+                            'tp1' => $tp1,
+                            'tp2' => $tp2,
+                            'tp3' => $tp3,
+                            'risk_reward' => $rrRatio,
                             'rsi' => round((float) $rsi[$i], 1),
-                            'adx' => round((float) $adx[$i], 1),
+                            'adx' => isset($adx[$i]) && $adx[$i] !== null ? round((float) $adx[$i], 1) : 0.0,
                             'atr_pct' => round($atrPct, 2),
-                            'volume_ratio' => $volSma[$i] > 0 ? round($curVol / $volSma[$i], 2) : 1.0,
+                            'volume_ratio' => $volRatio,
+                            'rs_ratio' => round($rsRatio, 4),
                         ];
-                        $activePosition = 'BUY';
-                        $barsSinceSignal = 0;
-                    }
-                } elseif ($shortQualifies && $canShort) {
-                    $structureSL = $previousHigh + ($atr[$i] * 0.25);
-                    $atrSL = $curClose + ($atr[$i] * (float) $c['sl_mult']);
-                    $sl = (bool) $c['use_structure_sl'] ? max($atrSL, $structureSL) : $atrSL;
-                    $risk = $sl - $curClose;
-                    if ($risk > 0) {
-                        $tp1 = $curClose - max($atr[$i] * (float) $c['tp1_mult'], $risk * (float) $c['min_rr']);
-                        $tp2 = $curClose - max($atr[$i] * (float) $c['tp2_mult'], $risk * ((float) $c['min_rr'] + 1.0));
-                        $tp3 = $curClose - max($atr[$i] * (float) $c['tp3_mult'], $risk * ((float) $c['min_rr'] + 2.0));
-                        $grade = $shortScore >= (int) $c['grade_a'] ? 'A' : ($shortScore >= (int) $c['grade_b'] ? 'B' : 'C');
 
-                        $markers[] = [
-                            'time' => $timeSec,
-                            'position' => 'aboveBar',
-                            'color' => '#ef4444',
-                            'shape' => 'arrowDown',
-                            'text' => "SignalAlgo SELL [{$grade}: {$shortScore}]",
-                            'size' => 2,
-                            'side' => 'SELL',
-                            'score' => $shortScore,
-                            'grade' => $grade,
-                            'setup_type' => 'TREND',
-                            'entry' => round($curClose, 4),
-                            'sl' => round($sl, 4),
-                            'tp1' => round($tp1, 4),
-                            'tp2' => round($tp2, 4),
-                            'tp3' => round($tp3, 4),
-                            'rsi' => round((float) $rsi[$i], 1),
-                            'adx' => round((float) $adx[$i], 1),
-                            'atr_pct' => round($atrPct, 2),
-                            'volume_ratio' => $volSma[$i] > 0 ? round($curVol / $volSma[$i], 2) : 1.0,
-                        ];
-                        $activePosition = 'SELL';
+                        $activePosition = $histSide;
                         $barsSinceSignal = 0;
-                    }
-                } elseif ((bool) ($c['enable_reversals'] ?? false)) {
-                    $rev = $this->evaluateReversal(
-                        $candles,
-                        $i,
-                        $emaFast,
-                        $emaSlow,
-                        $emaTrend,
-                        $rsi,
-                        $atr,
-                        $volSma
-                    );
-                    if ($rev !== null) {
-                        $canRev = $activePosition === $rev['side'] ? ($barsSinceSignal >= $cooldownBars) : ($barsSinceSignal >= $oppositeCooldownBars);
-                        if ($canRev) {
-                            $markers[] = [
-                                'time' => $timeSec,
-                                'position' => $rev['side'] === 'BUY' ? 'belowBar' : 'aboveBar',
-                                'color' => $rev['side'] === 'BUY' ? '#10b981' : '#ef4444',
-                                'shape' => $rev['side'] === 'BUY' ? 'arrowUp' : 'arrowDown',
-                                'text' => "SignalAlgo {$rev['side']} [REV {$rev['grade']}: {$rev['score']}]",
-                                'size' => 2,
-                                'side' => $rev['side'],
-                                'score' => $rev['score'],
-                                'grade' => $rev['grade'],
-                                'setup_type' => 'REVERSAL',
-                                'entry' => round($curClose, 4),
-                                'sl' => $rev['sl'],
-                                'tp1' => $rev['tp1'],
-                                'tp2' => $rev['tp2'],
-                                'tp3' => $rev['tp3'],
-                                'rsi' => round((float) $rsi[$i], 1),
-                                'adx' => isset($adx[$i]) && $adx[$i] !== null ? round((float) $adx[$i], 1) : 0.0,
-                                'atr_pct' => round($atrPct, 2),
-                                'volume_ratio' => $volSma[$i] > 0 ? round($curVol / $volSma[$i], 2) : 1.0,
-                            ];
-                            $activePosition = $rev['side'];
-                            $barsSinceSignal = 0;
-                        }
                     }
                 }
             }

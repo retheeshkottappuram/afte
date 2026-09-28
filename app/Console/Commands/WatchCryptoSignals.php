@@ -323,7 +323,8 @@ class WatchCryptoSignals extends Command
                                 continue;
                             }
 
-                            $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140);
+                            $btcCandles = ($symbol === 'BTCUSDT') ? $baseCandles : $binanceClient->klines('BTCUSDT', $interval, 320);
+                            $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140, $btcCandles);
                             $markers = $history['markers'] ?? [];
 
                             if (! empty($markers)) {

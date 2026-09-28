@@ -80,8 +80,11 @@ class CryptoSignalController extends Controller
             $htf1Candles = $multiKlines['htf1'];
             $htf2Candles = $multiKlines['htf2'];
 
-            $evaluation = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles);
-            $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140);
+            // Fetch BTC base candles for Relative Strength evaluation
+            $btcCandles = ($symbol === 'BTCUSDT') ? $baseCandles : $binanceClient->klines('BTCUSDT', $interval, 320);
+
+            $evaluation = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandles);
+            $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140, $btcCandles);
             $closes = $baseCandles['closes'] ?? [];
             $lastClose = count($closes) >= 2 ? $closes[count($closes) - 2] : ($closes[count($closes) - 1] ?? 0.0);
 
@@ -143,19 +146,19 @@ class CryptoSignalController extends Controller
 
                         if (! $invalidated && $entry > 0) {
                             $atrPct = (float) ($lastMarker['atr_pct'] ?? 1.5);
-                            $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
-                            $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
+                            $recLeverage = '5x - 10x';
+                            $levMult = 10;
                             $slPct = round(abs($entry - $sl) / $entry * 100, 2);
                             $tp1Pct = round(abs(($lastMarker['tp1'] ?? $entry) - $entry) / $entry * 100, 2);
                             $tp2Pct = round(abs(($lastMarker['tp2'] ?? $entry) - $entry) / $entry * 100, 2);
                             $tp3Pct = round(abs(($lastMarker['tp3'] ?? $entry) - $entry) / $entry * 100, 2);
-                            $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.0';
+                            $rrRatio = $lastMarker['risk_reward'] ?? ($slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8');
 
                             $activePerpOptions = [
                                 'recommended_leverage' => $recLeverage,
                                 'margin_mode' => 'Isolated Margin',
                                 'order_type' => 'Limit / Market Entry',
-                                'risk_per_trade' => '1% - 2% Account Balance',
+                                'risk_per_trade' => '1.0% - 2.0% Account Balance',
                                 'risk_reward' => $rrRatio,
                                 'sl_pct' => $slPct,
                                 'tp1_pct' => $tp1Pct,
@@ -172,7 +175,8 @@ class CryptoSignalController extends Controller
                             $signal = [
                                 'side' => $side,
                                 'is_active_trade' => true,
-                                'setup_type' => $lastMarker['setup_type'] ?? 'STRUCTURE_BREAKOUT',
+                                'setup_type' => $lastMarker['setup_type'] ?? 'PRE_BREAKOUT_COIL',
+                                'setup_label' => $lastMarker['setup_label'] ?? ($lastMarker['setup_type'] ?? 'PRE-BREAKOUT COIL'),
                                 'score' => $markerScore,
                                 'grade' => (string) ($lastMarker['grade'] ?? 'A'),
                                 'entry' => $entry,
@@ -180,11 +184,13 @@ class CryptoSignalController extends Controller
                                 'tp1' => (float) ($lastMarker['tp1'] ?? 0),
                                 'tp2' => (float) ($lastMarker['tp2'] ?? 0),
                                 'tp3' => (float) ($lastMarker['tp3'] ?? 0),
+                                'risk_reward' => $rrRatio,
                                 'rsi' => $lastMarker['rsi'] ?? null,
                                 'adx' => $lastMarker['adx'] ?? null,
                                 'atr_pct' => $atrPct,
                                 'volume_ratio' => $lastMarker['volume_ratio'] ?? null,
                                 'candle_close_time' => $markerTime * 1000,
+                                'rs_ratio' => $lastMarker['rs_ratio'] ?? null,
                                 'perpetual_options' => $activePerpOptions,
                             ];
                         }
@@ -250,14 +256,17 @@ class CryptoSignalController extends Controller
             $htf1Candles = ($useHtf && $interval !== $htf1Interval) ? $binanceClient->klines($symbol, $htf1Interval, 260) : null;
             $htf2Candles = ($useHtf && $htf2Interval !== null && $interval !== $htf2Interval) ? $binanceClient->klines($symbol, $htf2Interval, 260) : null;
 
+            // Fetch BTC base candles for Relative Strength evaluation
+            $btcCandles = ($symbol === 'BTCUSDT') ? $baseCandles : $binanceClient->klines('BTCUSDT', $interval, 320);
+
             $btcTrend = $binanceClient->getBtcMarketTrend();
 
-            $evaluation = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles);
+            $evaluation = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandles);
             $signal = $evaluation['signal'];
 
             // If no fresh signal on current closed candle, check if latest historical marker is an active valid setup
             if (! $signal) {
-                $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140);
+                $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140, $btcCandles);
                 $lastMarker = ! empty($history['markers']) ? end($history['markers']) : null;
                 if ($lastMarker && ((int) ($lastMarker['score'] ?? 0)) >= 82) {
                     $side = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
@@ -271,18 +280,19 @@ class CryptoSignalController extends Controller
 
                     if ($isBtcAligned && ! $invalidated && $entry > 0 && $candleAgeSeconds <= 14400) {
                         $atrPct = (float) ($lastMarker['atr_pct'] ?? 1.5);
-                        $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
-                        $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
+                        $recLeverage = '5x - 10x';
+                        $levMult = 10;
                         $slPct = round(abs($entry - $sl) / $entry * 100, 2);
                         $tp1Pct = round(abs(($lastMarker['tp1'] ?? $entry) - $entry) / $entry * 100, 2);
                         $tp2Pct = round(abs(($lastMarker['tp2'] ?? $entry) - $entry) / $entry * 100, 2);
                         $tp3Pct = round(abs(($lastMarker['tp3'] ?? $entry) - $entry) / $entry * 100, 2);
-                        $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.0';
+                        $rrRatio = $lastMarker['risk_reward'] ?? ($slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8');
 
                         $signal = [
                             'side' => $side,
                             'is_active_trade' => true,
-                            'setup_type' => $lastMarker['setup_type'] ?? 'STRUCTURE_BREAKOUT',
+                            'setup_type' => $lastMarker['setup_type'] ?? 'PRE_BREAKOUT_COIL',
+                            'setup_label' => $lastMarker['setup_label'] ?? ($lastMarker['setup_type'] ?? 'PRE-BREAKOUT COIL'),
                             'score' => (int) ($lastMarker['score'] ?? 82),
                             'grade' => (string) ($lastMarker['grade'] ?? 'A'),
                             'entry' => $entry,
@@ -290,16 +300,18 @@ class CryptoSignalController extends Controller
                             'tp1' => (float) ($lastMarker['tp1'] ?? 0),
                             'tp2' => (float) ($lastMarker['tp2'] ?? 0),
                             'tp3' => (float) ($lastMarker['tp3'] ?? 0),
+                            'risk_reward' => $rrRatio,
                             'rsi' => $lastMarker['rsi'] ?? null,
                             'adx' => $lastMarker['adx'] ?? null,
                             'volume_ratio' => $lastMarker['volume_ratio'] ?? null,
                             'atr_pct' => $atrPct,
                             'candle_close_time' => ((int) ($lastMarker['time'] ?? 0)) * 1000,
+                            'rs_ratio' => $lastMarker['rs_ratio'] ?? null,
                             'perpetual_options' => [
                                 'recommended_leverage' => $recLeverage,
                                 'margin_mode' => 'Isolated Margin',
                                 'order_type' => 'Limit / Market Entry',
-                                'risk_per_trade' => '1% - 2% Account Balance',
+                                'risk_per_trade' => '1.0% - 2.0% Account Balance',
                                 'risk_reward' => $rrRatio,
                                 'sl_pct' => $slPct,
                                 'tp1_pct' => $tp1Pct,

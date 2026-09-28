@@ -181,6 +181,12 @@ class MarketScanner
         $htf1 = $this->resolveHtf1($baseInterval);
         $htf2 = $this->resolveHtf2($baseInterval);
 
+        $btcBaseCandles = null;
+        try {
+            $btcBaseCandles = $this->binanceClient->klines('BTCUSDT', $baseInterval, 320);
+        } catch (Throwable) {
+        }
+
         // 2. Scan pairs in concurrent batches
         $chunks = array_chunk($targetSymbols, 8);
 
@@ -221,11 +227,14 @@ class MarketScanner
                     } catch (Throwable) {
                     }
 
+                    $btcCandlesForSym = ($symbol === 'BTCUSDT') ? $baseCandles : $btcBaseCandles;
+
                     // A. Evaluate Breakout Detector (Watchlist & Confirmed Breakout)
                     $breakoutResult = $this->breakoutDetector->evaluate(
                         $baseCandles,
                         $htf1Candles,
-                        $htf2Candles
+                        $htf2Candles,
+                        $btcCandlesForSym
                     );
 
                     if ($breakoutResult !== null) {
@@ -265,7 +274,7 @@ class MarketScanner
                     }
 
                     // B. Evaluate Standard SignalEngine (Institutional Trend Continuation)
-                    $trendEval = $this->signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles);
+                    $trendEval = $this->signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandlesForSym);
                     $trendSignal = $trendEval['signal'];
 
                     if ($trendSignal !== null && ($trendSignal['score'] ?? 0) >= 82) {

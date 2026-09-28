@@ -44,7 +44,8 @@ class BreakoutDetector
         array $baseCandles,
         ?array $htf1Candles = null,
         ?array $htf2Candles = null,
-        ?array $microCandles = null
+        ?array $microCandles = null,
+        ?array $btcCandles = null
     ): ?array {
         $closes = $baseCandles['closes'] ?? [];
         $highs = $baseCandles['highs'] ?? [];
@@ -75,6 +76,7 @@ class BreakoutDetector
         $volSma = Indicators::sma($volumes, 20);
         [$adx, $plusDI, $minusDI] = Indicators::adx($highs, $lows, $closes, 14);
         [$bbUpper, $bbMiddle, $bbLower, $bbWidth] = Indicators::bollingerBands($closes, 20, 2.0);
+        $ttm = Indicators::ttmSqueeze($highs, $lows, $closes, 20);
 
         $curEma9 = $ema9[$i] ?? null;
         $curEma21 = $ema21[$i] ?? null;
@@ -105,18 +107,24 @@ class BreakoutDetector
             }
         }
 
-        // 3. Structural Resistance and Support Discovery
+        // 3. Relative Strength vs Bitcoin
+        $rsRatio = 1.0;
+        if ($btcCandles && ! empty($btcCandles['closes'])) {
+            $rsRatio = Indicators::relativeStrength($closes, $btcCandles['closes'], 24);
+        }
+
+        // 4. Structural Resistance and Support Discovery
         $structureLen = 30;
         $lookbackHighs = array_slice($highs, max(0, $i - $structureLen), $structureLen);
         $lookbackLows = array_slice($lows, max(0, $i - $structureLen), $structureLen);
         $resistance = max($lookbackHighs);
         $support = min($lookbackLows);
 
-        // Calculate distance percentages to breakout levels
+        // Distance percentages to breakout levels
         $distToResPct = $resistance > 0 ? round((($resistance - $currentClose) / $resistance) * 100, 2) : 999.0;
         $distToSuppPct = $support > 0 ? round((($currentClose - $support) / $support) * 100, 2) : 999.0;
 
-        // Candle geometry
+        // Candle geometry & wick hygiene
         $candleRange = max(0.0000001, $currentHigh - $currentLow);
         $body = abs($currentClose - $currentOpen);
         $bodyRatio = $candleRange > 0 ? $body / $candleRange : 0.0;
@@ -125,11 +133,10 @@ class BreakoutDetector
         $upperWickRatio = $upperWick / $candleRange;
         $lowerWickRatio = $lowerWick / $candleRange;
 
-        // Condition 5: Rejection Wick & Solid Body Filter
-        $isBullCandle = ($currentClose > $currentOpen) && ($bodyRatio >= 0.48) && ($upperWickRatio <= 0.30);
-        $isBearCandle = ($currentClose < $currentOpen) && ($bodyRatio >= 0.48) && ($lowerWickRatio <= 0.30);
+        $isBullCandle = ($currentClose > $currentOpen) && ($bodyRatio >= 0.40) && ($upperWickRatio <= 0.30);
+        $isBearCandle = ($currentClose < $currentOpen) && ($bodyRatio >= 0.40) && ($lowerWickRatio <= 0.30);
 
-        // Volatility Squeeze Check (Bollinger Band Compression)
+        // Volatility Squeeze Check (BB inside KC or narrow width)
         $bbCompression = false;
         if (isset($bbWidth[$i]) && $bbWidth[$i] !== null) {
             $recentBbWidths = array_slice(array_filter($bbWidth), -25);
@@ -138,164 +145,241 @@ class BreakoutDetector
                 $bbCompression = ($bbWidth[$i] <= $minWidth * 1.25);
             }
         }
+        $isCompressed = ($ttm['squeeze_on'][$i] ?? false) || $bbCompression;
+
+        // Local structure swings
+        $low1 = $lows[$i];
+        $low2 = $lows[$i - 1];
+        $low3 = $lows[$i - 2];
+        $hasHigherLows = ($low1 >= $low2 * 0.999 && $low2 >= $low3 * 0.999);
+
+        $high1 = $highs[$i];
+        $high2 = $highs[$i - 1];
+        $high3 = $highs[$i - 2];
+        $hasLowerHighs = ($high1 <= $high2 * 1.001 && $high2 <= $high3 * 1.001);
 
         // ==========================================
-        // SCENARIO 1: CONFIRMED RESISTANCE BREAKOUT
+        // SCENARIO 1: PRE-BREAKOUT ASCENDING COIL SQUEEZE (Enter BEFORE Breakout)
+        // ==========================================
+        if ($distToResPct >= 0.12 && $distToResPct <= 1.30 && ($hasHigherLows || $currentClose > $curEma9) && $isBullCandle && $upperWickRatio <= 0.28 && $rsRatio >= 0.995 && $htf1Bull) {
+            $entry = $currentClose;
+            $rawSl = min($low1, $low2) * 0.998;
+            $score = 92;
+            $score += $isCompressed ? 4 : 0;
+            $score += $volRatio >= 1.2 ? 2 : 0;
+
+            return $this->formatBreakoutPayload(
+                type: 'PRE_BREAKOUT_COIL',
+                side: 'BUY',
+                score: min(98, $score),
+                grade: 'A',
+                breakoutLevel: $resistance,
+                distancePct: $distToResPct,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: 'PRE-BREAKOUT ASCENDING COIL',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
+            );
+        }
+
+        // ==========================================
+        // SCENARIO 2: PRE-BREAKDOWN DESCENDING COIL SQUEEZE (Enter BEFORE Breakdown)
+        // ==========================================
+        if ($distToSuppPct >= 0.12 && $distToSuppPct <= 1.30 && ($hasLowerHighs || $currentClose < $curEma9) && $isBearCandle && $lowerWickRatio <= 0.28 && $rsRatio <= 1.005 && $htf1Bear) {
+            $entry = $currentClose;
+            $rawSl = max($high1, $high2) * 1.002;
+            $score = 92;
+            $score += $isCompressed ? 4 : 0;
+            $score += $volRatio >= 1.2 ? 2 : 0;
+
+            return $this->formatBreakoutPayload(
+                type: 'PRE_BREAKOUT_COIL',
+                side: 'SELL',
+                score: min(98, $score),
+                grade: 'A',
+                breakoutLevel: $support,
+                distancePct: $distToSuppPct,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: 'PRE-BREAKDOWN DESCENDING COIL',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
+            );
+        }
+
+        // ==========================================
+        // SCENARIO 3: WYCKOFF SPRING LIQUIDITY REVERSAL
+        // ==========================================
+        if (($currentLow < $support || $lows[$i - 1] < $support) && $currentClose > $support && $currentClose > $currentOpen && $lowerWickRatio >= 0.35 && $rsRatio >= 0.995 && ! $htf1Bear) {
+            $entry = $currentClose;
+            $rawSl = min($currentLow, $lows[$i - 1]) * 0.998;
+
+            return $this->formatBreakoutPayload(
+                type: 'WYCKOFF_SPRING',
+                side: 'BUY',
+                score: 95,
+                grade: 'A+',
+                breakoutLevel: $support,
+                distancePct: 0.0,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: 'WYCKOFF SPRING REVERSAL',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
+            );
+        }
+
+        // ==========================================
+        // SCENARIO 4: WYCKOFF UPTHRUST LIQUIDITY REVERSAL
+        // ==========================================
+        if (($currentHigh > $resistance || $highs[$i - 1] > $resistance) && $currentClose < $resistance && $currentClose < $currentOpen && $upperWickRatio >= 0.35 && $rsRatio <= 1.005 && ! $htf1Bull) {
+            $entry = $currentClose;
+            $rawSl = max($currentHigh, $highs[$i - 1]) * 1.002;
+
+            return $this->formatBreakoutPayload(
+                type: 'WYCKOFF_UPTHRUST',
+                side: 'SELL',
+                score: 95,
+                grade: 'A+',
+                breakoutLevel: $resistance,
+                distancePct: 0.0,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: 'WYCKOFF UPTHRUST REVERSAL',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
+            );
+        }
+
+        // ==========================================
+        // SCENARIO 5: CONFIRMED RESISTANCE BREAKOUT
         // ==========================================
         $confirmedLong = (
             $currentClose > $resistance &&
             $isBullCandle &&
-            $volRatio >= 1.30 &&
-            $curAdx >= 20.0 &&
-            $curRsi >= 52.0 &&
-            $curRsi <= 76.0 &&
+            $volRatio >= 1.25 &&
+            $curRsi >= 50.0 &&
+            $curRsi <= 74.0 &&
+            $rsRatio >= 0.995 &&
             $htf1Bull &&
             ($curEma200 === null || $currentClose > $curEma200)
         );
 
         if ($confirmedLong) {
             $entry = $currentClose;
-            $sl = max($resistance - ($curAtr * 0.45), $currentLow - ($curAtr * 0.20));
-            $risk = $entry - $sl;
+            $rawSl = max($resistance * 0.995, $currentLow * 0.998);
 
-            if ($risk > 0) {
-                $tp1 = round($entry + max($curAtr * 1.8, $risk * 2.0), 4);
-                $tp2 = round($entry + max($curAtr * 3.5, $risk * 3.5), 4);
-                $tp3 = round($entry + max($curAtr * 5.5, $risk * 5.0), 4);
-
-                $score = 84;
-                $score += $volRatio >= 1.5 ? 8 : 4;
-                $score += ($curRsi > $prevRsi) ? 4 : 0;
-                $score += $bbCompression ? 6 : 0;
-                $score = min(98, $score);
-                $grade = $score >= 90 ? 'A' : 'B';
-
-                return $this->formatBreakoutPayload(
-                    type: 'BREAKOUT_CONFIRMED',
-                    side: 'BUY',
-                    score: $score,
-                    grade: $grade,
-                    breakoutLevel: $resistance,
-                    distancePct: 0.0,
-                    entry: $entry,
-                    sl: $sl,
-                    tp1: $tp1,
-                    tp2: $tp2,
-                    tp3: $tp3,
-                    volRatio: $volRatio,
-                    rsi: $curRsi,
-                    adx: $curAdx,
-                    atrPct: $atrPct,
-                    setupLabel: 'RESISTANCE BREAKOUT CONFIRMED',
-                    closeTimeMs: $closeTimeMs
-                );
-            }
+            return $this->formatBreakoutPayload(
+                type: 'BREAKOUT_CONFIRMED',
+                side: 'BUY',
+                score: 88,
+                grade: 'A',
+                breakoutLevel: $resistance,
+                distancePct: 0.0,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: 'RESISTANCE BREAKOUT CONFIRMED',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
+            );
         }
 
         // ==========================================
-        // SCENARIO 2: CONFIRMED SUPPORT BREAKDOWN
+        // SCENARIO 6: CONFIRMED SUPPORT BREAKDOWN
         // ==========================================
         $confirmedShort = (
             $currentClose < $support &&
             $isBearCandle &&
-            $volRatio >= 1.30 &&
-            $curAdx >= 20.0 &&
-            $curRsi <= 48.0 &&
-            $curRsi >= 24.0 &&
+            $volRatio >= 1.25 &&
+            $curRsi <= 50.0 &&
+            $curRsi >= 26.0 &&
+            $rsRatio <= 1.005 &&
             $htf1Bear &&
             ($curEma200 === null || $currentClose < $curEma200)
         );
 
         if ($confirmedShort) {
             $entry = $currentClose;
-            $sl = min($support + ($curAtr * 0.45), $currentHigh + ($curAtr * 0.20));
-            $risk = $sl - $entry;
+            $rawSl = min($support * 1.005, $currentHigh * 1.002);
 
-            if ($risk > 0) {
-                $tp1 = round($entry - max($curAtr * 1.8, $risk * 2.0), 4);
-                $tp2 = round($entry - max($curAtr * 3.5, $risk * 3.5), 4);
-                $tp3 = round($entry - max($curAtr * 5.5, $risk * 5.0), 4);
-
-                $score = 84;
-                $score += $volRatio >= 1.5 ? 8 : 4;
-                $score += ($curRsi < $prevRsi) ? 4 : 0;
-                $score += $bbCompression ? 6 : 0;
-                $score = min(98, $score);
-                $grade = $score >= 90 ? 'A' : 'B';
-
-                return $this->formatBreakoutPayload(
-                    type: 'BREAKOUT_CONFIRMED',
-                    side: 'SELL',
-                    score: $score,
-                    grade: $grade,
-                    breakoutLevel: $support,
-                    distancePct: 0.0,
-                    entry: $entry,
-                    sl: $sl,
-                    tp1: $tp1,
-                    tp2: $tp2,
-                    tp3: $tp3,
-                    volRatio: $volRatio,
-                    rsi: $curRsi,
-                    adx: $curAdx,
-                    atrPct: $atrPct,
-                    setupLabel: 'SUPPORT BREAKDOWN CONFIRMED',
-                    closeTimeMs: $closeTimeMs
-                );
-            }
+            return $this->formatBreakoutPayload(
+                type: 'BREAKOUT_CONFIRMED',
+                side: 'SELL',
+                score: 88,
+                grade: 'A',
+                breakoutLevel: $support,
+                distancePct: 0.0,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: 'SUPPORT BREAKDOWN CONFIRMED',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
+            );
         }
 
         // ==========================================
-        // SCENARIO 3: BREAKOUT RETEST ENTRY
+        // SCENARIO 7: BREAKOUT RETEST ENTRY
         // ==========================================
-        // Price previously broke above resistance and current bar pulled back to retest resistance as support
-        if ($i >= 2 && $closes[$i - 1] > $resistance && $currentLow <= ($resistance * 1.004) && $currentClose >= $resistance && $htf1Bull && $volRatio >= 1.15 && $curAdx >= 20.0 && ($curEma200 === null || $currentClose > $curEma200) && $upperWickRatio <= 0.30) {
+        if ($i >= 2 && $closes[$i - 1] > $resistance && $currentLow <= ($resistance * 1.004) && $currentClose >= $resistance && $htf1Bull && $volRatio >= 1.10 && $rsRatio >= 0.995 && ($curEma200 === null || $currentClose > $curEma200) && $upperWickRatio <= 0.30) {
             $entry = $currentClose;
-            $sl = $resistance - ($curAtr * 0.50);
-            $risk = $entry - $sl;
+            $rawSl = $currentLow * 0.998;
 
-            if ($risk > 0) {
-                $tp1 = round($entry + max($curAtr * 1.8, $risk * 2.0), 4);
-                $tp2 = round($entry + max($curAtr * 3.5, $risk * 3.5), 4);
-                $tp3 = round($entry + max($curAtr * 5.5, $risk * 5.0), 4);
-
-                return $this->formatBreakoutPayload(
-                    type: 'RETEST_ENTRY',
-                    side: 'BUY',
-                    score: 86,
-                    grade: 'B',
-                    breakoutLevel: $resistance,
-                    distancePct: 0.0,
-                    entry: $entry,
-                    sl: $sl,
-                    tp1: $tp1,
-                    tp2: $tp2,
-                    tp3: $tp3,
-                    volRatio: $volRatio,
-                    rsi: $curRsi,
-                    adx: $curAdx,
-                    atrPct: $atrPct,
-                    setupLabel: 'BREAKOUT RETEST & BOUNCE',
-                    closeTimeMs: $closeTimeMs
-                );
-            }
+            return $this->formatBreakoutPayload(
+                type: 'RETEST_ENTRY',
+                side: 'BUY',
+                score: 86,
+                grade: 'B',
+                breakoutLevel: $resistance,
+                distancePct: 0.0,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: 'BREAKOUT RETEST & BOUNCE',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
+            );
         }
 
         // ==========================================
-        // SCENARIO 4: PRE-BREAKOUT WATCH (WATCHLIST ALERT)
+        // SCENARIO 8: PRE-BREAKOUT WATCH (WATCHLIST ALERT)
         // ==========================================
-        // Price is approaching resistance within 0.20% - 1.20% with rising volume and bullish momentum
-        if ($distToResPct >= 0.15 && $distToResPct <= 1.20 && $volRatio >= 1.15 && $curAdx >= 20.0 && $curRsi >= 53.0 && $curRsi <= 68.0 && $htf1Bull && ($curEma200 === null || $currentClose > $curEma200) && $upperWickRatio <= 0.30) {
+        if ($distToResPct >= 0.15 && $distToResPct <= 1.25 && $volRatio >= 1.10 && $curRsi >= 52.0 && $curRsi <= 68.0 && $rsRatio >= 0.995 && $htf1Bull && ($curEma200 === null || $currentClose > $curEma200) && $upperWickRatio <= 0.30) {
             $probScore = 80;
             $probScore += ($volRatio >= 1.30) ? 8 : 4;
             $probScore += ($curRsi > $prevRsi) ? 4 : 0;
-            $probScore += ($curEma9 !== null && $curEma21 !== null && $curEma9 > $curEma21) ? 5 : 0;
-            $probScore += $bbCompression ? 5 : 0;
+            $probScore += $isCompressed ? 5 : 0;
             $probScore = min(96, $probScore);
 
             $entryEst = $resistance * 1.0015;
-            $slEst = $resistance - ($curAtr * 0.60);
-            $riskEst = $entryEst - $slEst;
+            $rawSlEst = $resistance * 0.991;
 
             return $this->formatBreakoutPayload(
                 type: 'BREAKOUT_WATCH',
@@ -305,16 +389,14 @@ class BreakoutDetector
                 breakoutLevel: $resistance,
                 distancePct: $distToResPct,
                 entry: round($entryEst, 4),
-                sl: round($slEst, 4),
-                tp1: round($entryEst + max($curAtr * 1.8, $riskEst * 2.0), 4),
-                tp2: round($entryEst + max($curAtr * 3.5, $riskEst * 3.5), 4),
-                tp3: round($entryEst + max($curAtr * 5.5, $riskEst * 5.0), 4),
+                rawSl: $rawSlEst,
                 volRatio: $volRatio,
                 rsi: $curRsi,
                 adx: $curAdx,
                 atrPct: $atrPct,
                 setupLabel: 'RESISTANCE BREAKOUT WATCH',
-                closeTimeMs: $closeTimeMs
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio
             );
         }
 
@@ -322,7 +404,7 @@ class BreakoutDetector
     }
 
     /**
-     * Format breakout setup into standard typed array with perpetual trade options.
+     * Format breakout setup into standard typed array with tight asymmetric perpetual trade options.
      */
     protected function formatBreakoutPayload(
         string $type,
@@ -332,25 +414,34 @@ class BreakoutDetector
         float $breakoutLevel,
         float $distancePct,
         float $entry,
-        float $sl,
-        float $tp1,
-        float $tp2,
-        float $tp3,
+        float $rawSl,
         float $volRatio,
         float $rsi,
         float $adx,
         float $atrPct,
         string $setupLabel,
-        int $closeTimeMs
+        int $closeTimeMs,
+        float $rsRatio = 1.0
     ): array {
-        $slPct = $entry > 0 ? round(abs($entry - $sl) / $entry * 100, 2) : 1.5;
-        $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100, 2) : 2.5;
-        $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100, 2) : 4.5;
-        $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100, 2) : 7.0;
-        $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.5';
+        // Enforce strict structural risk bounds (Min 0.75%, Max 1.35%)
+        $rawSlDist = abs($entry - $rawSl);
+        $minSlDist = $entry * 0.0075;
+        $maxSlDist = $entry * 0.0135;
+        $risk = max($minSlDist, min($maxSlDist, $rawSlDist));
 
-        $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
-        $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
+        $sl = $side === 'BUY' ? round($entry - $risk, 6) : round($entry + $risk, 6);
+        $tp1 = $side === 'BUY' ? round($entry + ($risk * 1.35), 6) : round($entry - ($risk * 1.35), 6); // 1:1.35 R:R (+15% ROE)
+        $tp2 = $side === 'BUY' ? round($entry + ($risk * 2.80), 6) : round($entry - ($risk * 2.80), 6); // 1:2.80 R:R (+30% ROE)
+        $tp3 = $side === 'BUY' ? round($entry + ($risk * 4.50), 6) : round($entry - ($risk * 4.50), 6); // 1:4.50 R:R (+50% ROE)
+
+        $slPct = $entry > 0 ? round(($risk / $entry) * 100, 2) : 1.0;
+        $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100, 2) : 1.5;
+        $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100, 2) : 3.0;
+        $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100, 2) : 4.8;
+        $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8';
+
+        $recLeverage = '5x - 10x';
+        $levMult = 10;
 
         return [
             'type' => $type,
@@ -371,6 +462,7 @@ class BreakoutDetector
             'atr_pct' => $atrPct,
             'setup_label' => $setupLabel,
             'candle_close_time' => $closeTimeMs,
+            'rs_ratio' => round($rsRatio, 4),
             'perpetual_options' => [
                 'recommended_leverage' => $recLeverage,
                 'margin_mode' => 'Isolated Margin',

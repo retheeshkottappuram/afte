@@ -74,20 +74,20 @@ class SignalRecorder
                 $volRatio = isset($marker['volume_ratio']) ? (float) $marker['volume_ratio'] : 1.0;
 
                 // Derive perpetual risk-reward and leverage options
-                $slPct = $entry > 0 ? round(abs($entry - $sl) / $entry * 100, 2) : 1.5;
-                $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100, 2) : 1.5;
-                $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100, 2) : 3.0;
-                $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100, 2) : 4.5;
-                $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.0';
+                $slPct = $entry > 0 ? round(abs($entry - $sl) / $entry * 100, 2) : 1.0;
+                $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100, 2) : 1.35;
+                $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100, 2) : 2.80;
+                $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100, 2) : 4.50;
+                $rrRatio = $marker['risk_reward'] ?? ($slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8');
 
-                $recLeverage = $atrPct > 3.0 ? '3x - 5x' : ($atrPct < 1.0 ? '8x - 12x' : '5x - 10x');
-                $levMult = $atrPct > 3.0 ? 3 : ($atrPct < 1.0 ? 10 : 5);
+                $recLeverage = '5x - 10x';
+                $levMult = 10;
 
                 $perpetualOptions = [
                     'recommended_leverage' => $recLeverage,
                     'margin_mode' => 'Isolated Margin',
                     'order_type' => 'Limit / Market Entry',
-                    'risk_per_trade' => '1% - 2% Account Balance',
+                    'risk_per_trade' => '1.0% - 2.0% Account Balance',
                     'risk_reward' => $rrRatio,
                     'sl_pct' => $slPct,
                     'tp1_pct' => $tp1Pct,
@@ -104,6 +104,7 @@ class SignalRecorder
                 $signalPayload = [
                     'side' => $side,
                     'setup_type' => $setupType,
+                    'setup_label' => $marker['setup_label'] ?? $setupType,
                     'score' => $score,
                     'grade' => $grade,
                     'entry' => $entry,
@@ -111,11 +112,13 @@ class SignalRecorder
                     'tp1' => $tp1,
                     'tp2' => $tp2,
                     'tp3' => $tp3,
+                    'risk_reward' => $rrRatio,
                     'rsi' => $rsi,
                     'adx' => $adx,
                     'volume_ratio' => $volRatio,
                     'atr_pct' => $atrPct,
                     'candle_close_time' => $candleCloseTimeMs,
+                    'rs_ratio' => $marker['rs_ratio'] ?? null,
                     'perpetual_options' => $perpetualOptions,
                     'is_chart_printed' => true,
                 ];

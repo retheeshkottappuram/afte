@@ -23,7 +23,7 @@ class RiskManagerTest extends TestCase
             'initial_balance' => 5.0,
         ]);
         $stage1 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(3, $stage1['max_positions']);
+        $this->assertEquals(2, $stage1['max_positions']);
         $this->assertEquals(10, $stage1['default_leverage']);
 
         $seedAccount->balance = 50.0;

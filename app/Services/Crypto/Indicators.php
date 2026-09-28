@@ -471,4 +471,121 @@ class Indicators
 
         return 100.0 - (100.0 / (1.0 + $rs));
     }
+
+    /**
+     * Keltner Channels: EMA(20) +/- Multiplier * ATR(10).
+     *
+     * @param  array<int, float>  $highs
+     * @param  array<int, float>  $lows
+     * @param  array<int, float>  $closes
+     * @return array{upper: array<int, float|null>, middle: array<int, float|null>, lower: array<int, float|null>}
+     */
+    public static function keltnerChannels(array $highs, array $lows, array $closes, int $length = 20, float $multiplier = 1.5): array
+    {
+        $count = count($closes);
+        $middle = self::ema($closes, $length);
+        $atr = self::atr($highs, $lows, $closes, 10);
+
+        $upper = array_fill(0, $count, null);
+        $lower = array_fill(0, $count, null);
+
+        for ($i = 0; $i < $count; $i++) {
+            if ($middle[$i] !== null && $atr[$i] !== null) {
+                $upper[$i] = $middle[$i] + ($multiplier * $atr[$i]);
+                $lower[$i] = $middle[$i] - ($multiplier * $atr[$i]);
+            }
+        }
+
+        return [
+            'upper' => $upper,
+            'middle' => $middle,
+            'lower' => $lower,
+        ];
+    }
+
+    /**
+     * TTM Squeeze Detection (Bollinger Bands inside Keltner Channel).
+     *
+     * @param  array<int, float>  $highs
+     * @param  array<int, float>  $lows
+     * @param  array<int, float>  $closes
+     * @return array{
+     *     squeeze_on: array<int, bool>,
+     *     fired_bullish: array<int, bool>,
+     *     fired_bearish: array<int, bool>,
+     *     momentum: array<int, float|null>
+     * }
+     */
+    public static function ttmSqueeze(array $highs, array $lows, array $closes, int $length = 20): array
+    {
+        $count = count($closes);
+        $bb = self::bollingerBands($closes, $length, 2.0);
+        $kc = self::keltnerChannels($highs, $lows, $closes, $length, 2.0);
+
+        $squeezeOn = array_fill(0, $count, false);
+        $firedBull = array_fill(0, $count, false);
+        $firedBear = array_fill(0, $count, false);
+        $momentum = array_fill(0, $count, null);
+
+        for ($i = $length; $i < $count; $i++) {
+            $bbUp = $bb['upper'][$i] ?? null;
+            $bbLow = $bb['lower'][$i] ?? null;
+            $kcUp = $kc['upper'][$i] ?? null;
+            $kcLow = $kc['lower'][$i] ?? null;
+
+            if ($bbUp !== null && $bbLow !== null && $kcUp !== null && $kcLow !== null) {
+                // Squeeze is ON when BB is inside KC
+                $isSqueeze = ($bbUp <= $kcUp) && ($bbLow >= $kcLow);
+                $squeezeOn[$i] = $isSqueeze;
+
+                // Squeeze firing: previous bar was in squeeze, current bar broke out
+                $prevSqueeze = $squeezeOn[$i - 1] ?? false;
+                if ($prevSqueeze && ! $isSqueeze) {
+                    if ($closes[$i] > ($kc['middle'][$i] ?? $closes[$i])) {
+                        $firedBull[$i] = true;
+                    } else {
+                        $firedBear[$i] = true;
+                    }
+                }
+            }
+        }
+
+        return [
+            'squeeze_on' => $squeezeOn,
+            'fired_bullish' => $firedBull,
+            'fired_bearish' => $firedBear,
+            'momentum' => $momentum,
+        ];
+    }
+
+    /**
+     * Compute Relative Strength ratio vs benchmark (e.g. BTC).
+     *
+     * @param  array<int, float>  $coinCloses
+     * @param  array<int, float>  $benchCloses
+     */
+    public static function relativeStrength(array $coinCloses, array $benchCloses, int $period = 24): float
+    {
+        $cCount = count($coinCloses);
+        $bCount = count($benchCloses);
+
+        if ($cCount <= $period || $bCount <= $period) {
+            return 1.0;
+        }
+
+        $cCur = $coinCloses[$cCount - 2];
+        $cPast = $coinCloses[$cCount - 2 - $period];
+
+        $bCur = $benchCloses[$bCount - 2];
+        $bPast = $benchCloses[$bCount - 2 - $period];
+
+        if ($cPast <= 0 || $bPast <= 0 || $bCur <= 0) {
+            return 1.0;
+        }
+
+        $coinPerf = $cCur / $cPast;
+        $benchPerf = $bCur / $bPast;
+
+        return $benchPerf > 0 ? round($coinPerf / $benchPerf, 4) : 1.0;
+    }
 }
