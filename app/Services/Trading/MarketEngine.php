@@ -23,9 +23,13 @@ class MarketEngine
         $limit = (int) config('trading.scanner.top_symbols_limit', 25);
         $minVol = (float) config('trading.scanner.min_quote_volume_24h', 10000000.0);
         $priority = (array) config('trading.scanner.priority_symbols', []);
+        $stage1 = (array) config('trading.stages.stage_1', []);
+        $excluded = (array) ($stage1['exclude_symbols'] ?? ['BTCUSDT', 'ETHUSDT']);
+        $maxPrice = (float) ($stage1['max_coin_price'] ?? 50.0);
 
         try {
             $tickers = $this->client->get24hrTickers();
+            $exchangeInfo = $this->client->getExchangeInfo();
             $candidates = [];
 
             foreach ($tickers as $ticker) {
@@ -36,32 +40,51 @@ class MarketEngine
                 $last = (float) ($ticker['lastPrice'] ?? 0.0);
                 $changePct = abs((float) ($ticker['priceChangePercent'] ?? 0.0));
 
-                if (str_ends_with($sym, 'USDT') && $vol >= $minVol && $last > 0 && $high > 0 && $low > 0) {
-                    // 1. Proximity to 24h High (Bullish breakout) or Low (Bearish breakdown)
-                    $distHighPct = (($high - $last) / $high) * 100.0;
-                    $distLowPct = (($last - $low) / $low) * 100.0;
-                    $minDistPct = min(abs($distHighPct), abs($distLowPct));
-
-                    // Highest score if within 0.2% - 2.5% of the breakout boundary
-                    $proximityScore = max(0.0, 50.0 - ($minDistPct * 12.0));
-
-                    // 2. Active Volatility & Momentum Score (rewards coins actively in motion, 2% to 15%)
-                    $momentumScore = min(30.0, $changePct * 2.5);
-
-                    // 3. Liquidity Weighting
-                    $liquidityScore = min(20.0, log10(max(1.0, $vol / 1000000.0)) * 6.0);
-
-                    // Priority Coin Bonus
-                    $priorityBonus = in_array($sym, $priority, true) ? 10.0 : 0.0;
-
-                    $breakoutReadiness = $proximityScore + $momentumScore + $liquidityScore + $priorityBonus;
-
-                    $candidates[] = [
-                        'symbol' => $sym,
-                        'score' => $breakoutReadiness,
-                        'volume' => $vol,
-                    ];
+                if (! str_ends_with($sym, 'USDT') || $vol < $minVol || $last <= 0 || $high <= 0 || $low <= 0) {
+                    continue;
                 }
+
+                // Exclude heavyweight coins (BTC/ETH) to allow fine-grained lot sizing on micro capital (< $25)
+                if (in_array(strtoupper($sym), $excluded, true)) {
+                    continue;
+                }
+
+                // If coin price is too high (e.g. > $50) and not an explicitly whitelisted priority coin (like SOL), skip
+                if ($last > $maxPrice && ! in_array($sym, $priority, true)) {
+                    continue;
+                }
+
+                // In Stage 1, skip coins whose minimum lot step notional exceeds $7.50 (cannot be sized to ~$5.50)
+                $symInfo = $exchangeInfo[$sym] ?? null;
+                $step = (float) ($symInfo['stepSize'] ?? 0.001);
+                if ($step > 0 && ($step * $last) > 7.50) {
+                    continue;
+                }
+
+                // 1. Proximity to 24h High (Bullish breakout) or Low (Bearish breakdown)
+                $distHighPct = (($high - $last) / $high) * 100.0;
+                $distLowPct = (($last - $low) / $low) * 100.0;
+                $minDistPct = min(abs($distHighPct), abs($distLowPct));
+
+                // Highest score if within 0.2% - 2.5% of the breakout boundary
+                $proximityScore = max(0.0, 45.0 - ($minDistPct * 12.0));
+
+                // 2. Active Volatility & Momentum Score (rewards coins actively in motion, 3% to 20%)
+                $momentumScore = min(35.0, $changePct * 2.8);
+
+                // 3. Liquidity Weighting
+                $liquidityScore = min(15.0, log10(max(1.0, $vol / 1000000.0)) * 5.0);
+
+                // Priority High-Beta Coin Bonus
+                $priorityBonus = in_array($sym, $priority, true) ? 15.0 : 0.0;
+
+                $breakoutReadiness = $proximityScore + $momentumScore + $liquidityScore + $priorityBonus;
+
+                $candidates[] = [
+                    'symbol' => $sym,
+                    'score' => $breakoutReadiness,
+                    'volume' => $vol,
+                ];
             }
 
             // Sort candidates by Breakout Readiness Score descending
@@ -69,17 +92,17 @@ class MarketEngine
 
             $symbols = array_column(array_slice($candidates, 0, $limit), 'symbol');
 
-            // Ensure top priority symbols are in candidates if not present
+            // Ensure top priority symbols are included if not present
             foreach ($priority as $sym) {
-                if (! in_array($sym, $symbols, true) && count($symbols) < $limit + 5) {
+                if (! in_array($sym, $excluded, true) && ! in_array($sym, $symbols, true) && count($symbols) < $limit + 5) {
                     $symbols[] = $sym;
                 }
             }
 
             return array_values(array_unique($symbols));
         } catch (\Exception) {
-            // Fallback to priority symbols if API error
-            return $priority;
+            // Fallback to non-excluded priority symbols
+            return array_values(array_diff($priority, $excluded));
         }
     }
 

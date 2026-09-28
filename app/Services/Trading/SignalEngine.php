@@ -278,19 +278,22 @@ class SignalEngine
         $entryPrice = $currentClose;
         $rawSlDist = abs($entryPrice - $slPrice);
 
-        // Enforce strict risk bounds: Min 0.75%, Max 1.35% (Never 2.3%!)
-        $minSlDist = $entryPrice * 0.0075;
-        $maxSlDist = $entryPrice * 0.0135;
+        // Enforce strict risk bounds: Min 0.65%, Max 1.25% (Scalp risk boundary)
+        $minSlDist = $entryPrice * 0.0065;
+        $maxSlDist = $entryPrice * 0.0125;
         $slDist = max($minSlDist, min($maxSlDist, $rawSlDist));
 
+        // Asymmetric micro-compounding targets:
+        // TP1: Rapid cash capture (1:1.05 R:R, ~0.80% - 1.00% price move, +8% to +10% ROE at 10x)
+        // TP2: Trend expansion (1:2.20 R:R, ~1.70% - 2.40% price move, +17% to +24% ROE)
         if ($direction === 'LONG') {
             $initialSl = round($entryPrice - $slDist, 6);
-            $tp1 = round($entryPrice + ($slDist * 1.35), 6); // 1:1.35 R:R (Lock 45-50% profit!)
-            $tp2 = round($entryPrice + ($slDist * 2.80), 6); // 1:2.80 R:R (Lock 30% profit!)
+            $tp1 = round($entryPrice + ($slDist * 1.05), 6); // Rapid 50% profit booking
+            $tp2 = round($entryPrice + ($slDist * 2.20), 6); // 30% trend harvest
         } else {
             $initialSl = round($entryPrice + $slDist, 6);
-            $tp1 = round($entryPrice - ($slDist * 1.35), 6); // 1:1.35 R:R
-            $tp2 = round($entryPrice - ($slDist * 2.80), 6); // 1:2.80 R:R
+            $tp1 = round($entryPrice - ($slDist * 1.05), 6);
+            $tp2 = round($entryPrice - ($slDist * 2.20), 6);
         }
 
         $slPct = round(($slDist / $entryPrice) * 100, 2);

@@ -104,6 +104,12 @@ class RiskManager
             return ['allowed' => false, 'reason' => "Signal score {$signalScore} is below required threshold {$stage['min_score']} for {$stage['stage']}."];
         }
 
+        // Restrict high-priced/heavyweight coins (BTC/ETH) in micro-account stage to preserve lot sizing
+        $excludedSymbols = (array) ($stage['exclude_symbols'] ?? []);
+        if (in_array(strtoupper($symbol), $excludedSymbols, true)) {
+            return ['allowed' => false, 'reason' => "Symbol {$symbol} is excluded in {$stage['stage']} to preserve micro-capital lot sizing."];
+        }
+
         // Check if there is already an open trade for this exact symbol
         $existingTrade = Trade::where('mode', $account->mode)
             ->where('symbol', $symbol)
@@ -119,23 +125,11 @@ class RiskManager
             ->where('status', 'OPEN')
             ->get();
 
-        $maxPositions = (int) ($stage['max_positions'] ?? 2);
-        $maxUnprotected = (int) ($stage['max_unprotected'] ?? 1);
+        $maxPositions = (int) ($stage['max_positions'] ?? 3);
+        $maxUnprotected = (int) ($stage['max_unprotected'] ?? 2);
 
         // Classify trades into Unprotected (at-risk) vs Protected (risk-free runners)
-        $unprotectedTrades = $openTrades->filter(function (Trade $t): bool {
-            if ($t->be_locked || $t->tp1_hit) {
-                return false; // Protected: SL is at or above breakeven / partial profit locked
-            }
-            if ($t->isLong() && $t->current_sl >= $t->entry_price) {
-                return false;
-            }
-            if (! $t->isLong() && $t->current_sl <= $t->entry_price) {
-                return false;
-            }
-
-            return true;
-        });
+        $unprotectedTrades = $openTrades->filter(fn (Trade $t): bool => ! $t->isProtected());
 
         // 1. Check total positions limit
         if ($openTrades->count() >= $maxPositions) {
@@ -155,7 +149,7 @@ class RiskManager
 
         // 3. Check real Available Margin Balance
         $availMargin = $this->getAvailableBalance($account);
-        $minRequiredMargin = (float) config('trading.fund_management.min_available_margin', 0.45);
+        $minRequiredMargin = (float) config('trading.fund_management.min_available_margin', 0.50);
 
         if ($availMargin < $minRequiredMargin) {
             return ['allowed' => false, 'reason' => "Insufficient available margin (\${$availMargin}). Minimum \${$minRequiredMargin} free balance required to open an additional trade."];
@@ -242,13 +236,27 @@ class RiskManager
         $rawQuantity = $targetNotional / $entryPrice;
         $formattedQuantity = $this->client->formatQuantity($symbol, $rawQuantity);
 
-        // Ensure floor rounding never drops below exchange minNotional
-        if ($formattedQuantity > 0 && ($formattedQuantity * $entryPrice) < $minNotional) {
-            $info = $this->client->getExchangeInfo()[$symbol] ?? null;
-            $step = (float) ($info['stepSize'] ?? 0.001);
-            $precision = (int) ($info['quantityPrecision'] ?? 3);
-            if ($step > 0) {
-                $formattedQuantity = round($formattedQuantity + $step, $precision);
+        $info = $this->client->getExchangeInfo()[$symbol] ?? null;
+        $step = (float) ($info['stepSize'] ?? 0.001);
+        $precision = (int) ($info['quantityPrecision'] ?? 3);
+
+        // Fallback: If target notional was smaller than 1 exchange lot step, check if 1 step is affordable
+        if ($formattedQuantity <= 0 && $step > 0) {
+            $stepNotional = $step * $entryPrice;
+            $stepMargin = $stepNotional / $leverage;
+            if ($stepMargin <= $maxAffordableMargin && $stepMargin <= ($availMargin * 0.45)) {
+                $formattedQuantity = round($step, $precision);
+            }
+        }
+
+        // Ensure lot size meets exchange minNotional ($5.00)
+        if ($formattedQuantity > 0 && ($formattedQuantity * $entryPrice) < $minNotional && $step > 0) {
+            while (($formattedQuantity * $entryPrice) < $minNotional) {
+                $candidateQty = round($formattedQuantity + $step, $precision);
+                if (($candidateQty * $entryPrice / $leverage) > $maxAffordableMargin) {
+                    break;
+                }
+                $formattedQuantity = $candidateQty;
             }
         }
 
@@ -257,6 +265,10 @@ class RiskManager
         }
 
         $finalNotional = $formattedQuantity * $entryPrice;
+        if ($finalNotional < $minNotional) {
+            return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'amount_added' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => "Position notional (\${$finalNotional}) is below Binance minimum notional (\${$minNotional})."];
+        }
+
         $finalMargin = round($finalNotional / $leverage, 4);
 
         return [

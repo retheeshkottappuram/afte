@@ -308,7 +308,7 @@ class TradingDaemonManager
                         $klines = $this->marketEngine->getMultiTimeframeKlines($sym);
                         $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
 
-                        if ($eval !== null && $eval['score'] >= 82) {
+                        if ($eval !== null && $eval['score'] >= 80) {
                             $ai = $this->validator->validate($eval, $klines['base']);
 
                             if ($ai['approved']) {

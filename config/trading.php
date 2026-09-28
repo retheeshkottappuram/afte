@@ -27,14 +27,16 @@ return [
     |--------------------------------------------------------------------------
     */
     'stages' => [
-        // Stage 1: Seed ($3 to $25) - High-conviction pre-breakout setups, strict risk cap
+        // Stage 1: Seed ($3 to $25) - High-velocity micro compounding on momentum altcoins
         'stage_1' => [
             'max_equity' => 25.0,
-            'max_positions' => 2,     // Allows up to 2 concurrent positions
-            'max_unprotected' => 1,   // Only 1 unprotected (at-risk) position at a time on micro balance
+            'max_positions' => 3,     // Allows up to 3 concurrent positions
+            'max_unprotected' => 2,   // Allows up to 2 unprotected positions; protected (BE/TP1) positions don't count
             'default_leverage' => 10,
-            'max_risk_pct' => 5.0,    // Strictly capped risk (~$0.06-$0.08 per trade)
-            'min_score' => 82,        // Elite-grade pre-breakout setups only
+            'max_risk_pct' => 5.0,
+            'min_score' => 80,
+            'max_coin_price' => 50.0, // Exclude heavy coins (BTC/ETH) to allow fine-grained lot sizing
+            'exclude_symbols' => ['BTCUSDT', 'ETHUSDT'],
         ],
         // Stage 2: Acceleration ($25 to $100)
         'stage_2' => [
@@ -42,8 +44,10 @@ return [
             'max_positions' => 3,
             'max_unprotected' => 2,
             'default_leverage' => 8,
-            'max_risk_pct' => 4.0,    // Risk ~$1.00-$3.00
+            'max_risk_pct' => 4.0,
             'min_score' => 80,
+            'max_coin_price' => 250.0,
+            'exclude_symbols' => [],
         ],
         // Stage 3: Scale ($100 to $500)
         'stage_3' => [
@@ -51,8 +55,10 @@ return [
             'max_positions' => 4,
             'max_unprotected' => 2,
             'default_leverage' => 5,
-            'max_risk_pct' => 2.5,    // Risk $2.50-$12.00
+            'max_risk_pct' => 2.5,
             'min_score' => 78,
+            'max_coin_price' => 100000.0,
+            'exclude_symbols' => [],
         ],
     ],
 
@@ -62,10 +68,10 @@ return [
     |--------------------------------------------------------------------------
     */
     'fund_management' => [
-        'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.45),       // Minimum free available margin in USD to open a new trade
+        'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.50),       // Minimum free available margin in USD to open a new trade
         'exempt_protected_positions' => true, // Breakeven or profit-locked trades do not block new trades
-        'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.25),     // Sized for Binance $5 minimum notional at 10x leverage
-        'amount_per_trade' => env('TRADING_AMOUNT_PER_TRADE') !== null ? (float) env('TRADING_AMOUNT_PER_TRADE') : null, // Fixed margin amount in USD added per trade (e.g. 0.60, 1.00), null for dynamic
+        'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.50),     // Sized for Binance $5 minimum notional (~$0.55 margin at 10x)
+        'amount_per_trade' => env('TRADING_AMOUNT_PER_TRADE') !== null ? (float) env('TRADING_AMOUNT_PER_TRADE') : null, // Fixed margin amount in USD added per trade, null for dynamic
     ],
 
     /*
@@ -86,20 +92,26 @@ return [
     |--------------------------------------------------------------------------
     */
     'management' => [
-        // Breakeven lock: Triggered ONLY after price expands cleanly (+1.30%) or after TP1
-        'be_gain_pct' => 1.30,
-        'be_fee_buffer_pct' => 0.12, // Entry + 0.12% to cover maker/taker round-trip fees
+        // Fast Breakeven Lock: Triggered at +0.45% gain (+4.5% ROE at 10x) OR +4.5% ROE
+        // Guarantees winning positions NEVER turn into red losses!
+        'be_gain_pct' => 0.45,
+        'be_roe_threshold' => 4.5,
+        'be_fee_buffer_pct' => 0.10, // Entry + 0.10% covers taker fees
 
         // Partial Profit Booking:
-        'tp1_pct' => 1.50,           // TP1 at +1.50% price gain (+15% ROE at 10x)
-        'tp1_close_ratio' => 0.50,   // Close 50% at TP1 to lock guaranteed bank profit
+        'tp1_pct' => 0.85,           // Fast TP1 at +0.85% price gain (+8.5% ROE at 10x)
+        'tp1_close_ratio' => 0.50,   // Close 50% at TP1 to bank guaranteed cash
 
-        'tp2_pct' => 3.00,           // TP2 at +3.00% price gain (+30% ROE at 10x)
+        'tp2_pct' => 1.80,           // TP2 at +1.80% price gain (+18% ROE at 10x)
         'tp2_close_ratio' => 0.30,   // Close 30% at TP2
 
-        // Remaining 20% runs on Trailing SL to capture home-run trends:
-        'trailing_sl_atr_mult' => 2.0,
-        'trailing_sl_trigger_pct' => 2.50, // Start trailing after +2.5% gain
+        // Remaining 20% runs on Trailing SL to capture explosive breakouts:
+        'trailing_sl_atr_mult' => 1.8,
+        'trailing_sl_trigger_pct' => 1.20, // Start trailing after +1.20% gain
+
+        // Trade Stagnation & Dead-Position Timeout Pruner (Micro-Account Capital Velocity):
+        'stagnation_timeout_minutes' => 60, // Close if holding > 60m with positive profit without hitting TP1
+        'max_hold_minutes' => 90,           // Hard exit after 90m for stagnant flat trades to free margin
     ],
 
     /*
@@ -133,9 +145,9 @@ return [
         'min_quote_volume_24h' => 10000000.0, // $10M min 24h volume
         'top_symbols_limit' => 25,
         'priority_symbols' => [
-            'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'SUIUSDT',
-            'DOGEUSDT', 'NEARUSDT', 'AVAXUSDT', 'ADAUSDT', 'XRPUSDT',
-            'LINKUSDT', 'APTUSDT', 'DOTUSDT', 'RENDERUSDT', 'PEPEUSDT',
+            'SUIUSDT', 'DOGEUSDT', 'NEARUSDT', 'SOLUSDT', 'RENDERUSDT',
+            'PEPEUSDT', '1000PEPEUSDT', 'FETUSDT', 'SEIUSDT',
+            'LINKUSDT', 'XRPUSDT', 'ADAUSDT', 'TIAUSDT', 'INJUSDT',
         ],
     ],
 

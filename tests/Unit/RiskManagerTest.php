@@ -23,7 +23,7 @@ class RiskManagerTest extends TestCase
             'initial_balance' => 5.0,
         ]);
         $stage1 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(2, $stage1['max_positions']);
+        $this->assertEquals(3, $stage1['max_positions']);
         $this->assertEquals(10, $stage1['default_leverage']);
 
         $seedAccount->balance = 50.0;
@@ -124,5 +124,28 @@ class RiskManagerTest extends TestCase
 
         $this->assertEquals(0.60, $trade->amount_added);
         $this->assertEquals(6.00, $trade->position_size_usd);
+    }
+
+    public function test_stage_1_excludes_heavy_coins(): void
+    {
+        $riskManager = app(RiskManager::class);
+
+        $account = TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+            'is_running' => true,
+        ]);
+
+        $canOpenBtc = $riskManager->canOpenTrade($account, 'BTCUSDT', 95);
+        $this->assertFalse($canOpenBtc['allowed']);
+        $this->assertStringContainsString('excluded', $canOpenBtc['reason']);
+
+        $canOpenEth = $riskManager->canOpenTrade($account, 'ETHUSDT', 95);
+        $this->assertFalse($canOpenEth['allowed']);
+        $this->assertStringContainsString('excluded', $canOpenEth['reason']);
+
+        $canOpenSui = $riskManager->canOpenTrade($account, 'SUIUSDT', 95);
+        $this->assertTrue($canOpenSui['allowed']);
     }
 }

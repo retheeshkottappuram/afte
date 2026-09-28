@@ -132,4 +132,83 @@ class DynamicTradeManagerTest extends TestCase
         $this->assertEquals(0.0, $trade->remaining_quantity);
         $this->assertNotNull($trade->closed_at);
     }
+
+    public function test_early_breakeven_locked_at_point_four_five_gain(): void
+    {
+        $manager = app(DynamicTradeManager::class);
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+        ]);
+
+        $trade = Trade::create([
+            'symbol' => 'SUIUSDT',
+            'side' => 'LONG',
+            'mode' => 'paper',
+            'status' => 'OPEN',
+            'stage' => 'ENTRY',
+            'entry_price' => 2.0,
+            'quantity' => 25.0,
+            'remaining_quantity' => 25.0,
+            'margin_used' => 5.0,
+            'leverage' => 10,
+            'initial_sl' => 1.98,
+            'current_sl' => 1.98,
+            'tp1_price' => 2.02,
+            'tp2_price' => 2.04,
+            'be_locked' => false,
+            'tp1_hit' => false,
+            'tp2_hit' => false,
+            'opened_at' => Carbon::now(),
+        ]);
+
+        // Price moves up by +0.50% to 2.01 (exceeds 0.45% / 4.5% ROE threshold)
+        $manager->manageTrade($trade, 2.01);
+        $trade->refresh();
+
+        $this->assertTrue($trade->be_locked);
+        $this->assertTrue($trade->isProtected());
+        $this->assertGreaterThan(2.0, $trade->current_sl);
+    }
+
+    public function test_stagnation_timeout_closes_trade_after_hard_timeout(): void
+    {
+        $manager = app(DynamicTradeManager::class);
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+        ]);
+
+        $trade = Trade::create([
+            'symbol' => 'DOGEUSDT',
+            'side' => 'LONG',
+            'mode' => 'paper',
+            'status' => 'OPEN',
+            'stage' => 'ENTRY',
+            'entry_price' => 0.15,
+            'quantity' => 300.0,
+            'remaining_quantity' => 300.0,
+            'margin_used' => 4.5,
+            'leverage' => 10,
+            'initial_sl' => 0.147,
+            'current_sl' => 0.147,
+            'tp1_price' => 0.155,
+            'tp2_price' => 0.160,
+            'be_locked' => false,
+            'tp1_hit' => false,
+            'tp2_hit' => false,
+            'opened_at' => Carbon::now()->subMinutes(95), // 95 minutes old
+        ]);
+
+        // Price is slightly flat at 0.1498 (below entry, but above SL)
+        $manager->manageTrade($trade, 0.1498);
+        $trade->refresh();
+
+        $this->assertEquals('CLOSED', $trade->status);
+        $this->assertEquals('STAGNATION_TIMEOUT_EXIT', $trade->exit_reason);
+    }
 }

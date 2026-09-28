@@ -49,17 +49,23 @@ class DynamicTradeManager
                 return $this->closeTrade($trade, $price, $reason);
             }
 
-            // 2. Check TP1 Partial Booking (Secure 50% profit & elevate SL to breakeven)
+            // 2. Check Breakeven Protection (Locks early at +0.45% gain or +4.5% ROE to guarantee no loss)
+            $this->checkBreakeven($trade, $price);
+
+            // 3. Check Stagnation & Dead-Position Timeout Pruner (Releases trapped margin on slow trades)
+            $stagnationExit = $this->checkStagnationExit($trade, $price);
+            if ($stagnationExit !== null) {
+                return $stagnationExit;
+            }
+
+            // 4. Check TP1 Partial Booking (Close 50% at +0.85% gain / +8.5% ROE and lock guaranteed profit)
             $this->checkTp1($trade, $price);
 
-            // 3. Check TP2 Partial Booking (Secure 30% profit & trail SL to TP1)
+            // 5. Check TP2 Partial Booking (Close 30% at +1.80% gain / +18% ROE and trail SL to TP1)
             $this->checkTp2($trade, $price);
 
-            // 4. Update Dynamic Trailing Stop on Remaining Runner (20%)
+            // 6. Dynamic Trailing Stop & High-Water Mark Profit Protection on Runner
             $this->updateTrailingStop($trade, $price);
-
-            // 5. Check Breakeven Protection Fallback (only after substantial favorable move)
-            $this->checkBreakeven($trade, $price);
 
             $trade->save();
 
@@ -84,7 +90,8 @@ class DynamicTradeManager
     }
 
     /**
-     * Breakeven logic: locks in Entry + fee buffer when price reaches threshold.
+     * Breakeven logic: locks in Entry + fee buffer when price reaches +0.45% gain or +4.5% ROE.
+     * Prevents winning positions from ever turning into losses.
      */
     protected function checkBreakeven(Trade $trade, float $currentPrice): void
     {
@@ -92,14 +99,17 @@ class DynamicTradeManager
             return;
         }
 
-        $gainPctThreshold = (float) config('trading.management.be_gain_pct', 1.0);
-        $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.12);
+        $gainPctThreshold = (float) config('trading.management.be_gain_pct', 0.45);
+        $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.10);
+        $roeThreshold = (float) config('trading.management.be_roe_threshold', 4.5);
 
         $gainPct = $trade->isLong()
             ? (($currentPrice - $trade->entry_price) / $trade->entry_price) * 100.0
             : (($trade->entry_price - $currentPrice) / $trade->entry_price) * 100.0;
 
-        if ($gainPct >= $gainPctThreshold) {
+        $currentRoe = $trade->calculateRoe($currentPrice);
+
+        if ($gainPct >= $gainPctThreshold || $currentRoe >= $roeThreshold) {
             $newSl = $trade->isLong()
                 ? $trade->entry_price * (1.0 + ($bufferPct / 100.0))
                 : $trade->entry_price * (1.0 - ($bufferPct / 100.0));
@@ -116,7 +126,48 @@ class DynamicTradeManager
     }
 
     /**
-     * TP1 Logic: Book 33% profit and ensure breakeven is locked.
+     * Stagnation & Dead-Position Timeout Pruner.
+     * Closes trades holding longer than timeout to recycle margin for explosive setups.
+     *
+     * @return array{status: string, message: string}|null
+     */
+    protected function checkStagnationExit(Trade $trade, float $currentPrice): ?array
+    {
+        if (! $trade->opened_at) {
+            return null;
+        }
+
+        $timeoutMinutes = (int) config('trading.management.stagnation_timeout_minutes', 60);
+        $hardTimeout = (int) config('trading.management.max_hold_minutes', 90);
+
+        if ($timeoutMinutes <= 0) {
+            return null;
+        }
+
+        $ageMinutes = $trade->opened_at->diffInMinutes(Carbon::now());
+        if ($ageMinutes < $timeoutMinutes) {
+            return null;
+        }
+
+        $gainPct = $trade->isLong()
+            ? (($currentPrice - $trade->entry_price) / $trade->entry_price) * 100.0
+            : (($trade->entry_price - $currentPrice) / $trade->entry_price) * 100.0;
+
+        // Positive profit stagnation: Holding > 60m with positive profit (+0.10% or more), take the banked win!
+        if ($gainPct >= 0.10) {
+            return $this->closeTrade($trade, $currentPrice, 'STAGNATION_PROFIT_TAKE');
+        }
+
+        // Hard timeout: Holding > 90m without reaching TP1, exit to prevent blocking capital
+        if ($ageMinutes >= $hardTimeout && ! $trade->tp1_hit) {
+            return $this->closeTrade($trade, $currentPrice, 'STAGNATION_TIMEOUT_EXIT');
+        }
+
+        return null;
+    }
+
+    /**
+     * TP1 Logic: Book 50% profit and guarantee breakeven lock.
      */
     protected function checkTp1(Trade $trade, float $currentPrice): void
     {
@@ -132,7 +183,7 @@ class DynamicTradeManager
             return;
         }
 
-        $ratio = (float) config('trading.management.tp1_close_ratio', 0.33);
+        $ratio = (float) config('trading.management.tp1_close_ratio', 0.50);
         $closeQty = $this->client->formatQuantity($trade->symbol, $trade->quantity * $ratio);
 
         if ($closeQty > 0 && $closeQty < $trade->remaining_quantity) {
@@ -146,14 +197,12 @@ class DynamicTradeManager
             $trade->tp1_hit = true;
             $trade->stage = 'TP1_HIT';
 
-            // Ensure SL is at least at Breakeven
-            if (! $trade->be_locked) {
-                $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.12);
-                $trade->current_sl = $trade->isLong()
-                    ? round($trade->entry_price * (1.0 + ($bufferPct / 100.0)), 6)
-                    : round($trade->entry_price * (1.0 - ($bufferPct / 100.0)), 6);
-                $trade->be_locked = true;
-            }
+            // Ensure SL is elevated to at least Breakeven + small buffer
+            $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.10);
+            $trade->current_sl = $trade->isLong()
+                ? round($trade->entry_price * (1.0 + ($bufferPct / 100.0)), 6)
+                : round($trade->entry_price * (1.0 - ($bufferPct / 100.0)), 6);
+            $trade->be_locked = true;
 
             // Immediately elevate native Stop Loss order on Binance exchange to Breakeven
             $this->updateExchangeStopLoss($trade, $trade->current_sl);
@@ -181,7 +230,7 @@ class DynamicTradeManager
     }
 
     /**
-     * TP2 Logic: Book second profit and trail SL to TP1 level.
+     * TP2 Logic: Book 30% profit and trail SL to TP1 level.
      */
     protected function checkTp2(Trade $trade, float $currentPrice): void
     {
@@ -197,7 +246,7 @@ class DynamicTradeManager
             return;
         }
 
-        $ratio = (float) config('trading.management.tp2_close_ratio', 0.25);
+        $ratio = (float) config('trading.management.tp2_close_ratio', 0.30);
         $closeQty = $this->client->formatQuantity($trade->symbol, $trade->quantity * $ratio);
 
         if ($closeQty > 0 && $closeQty < $trade->remaining_quantity) {
@@ -244,28 +293,51 @@ class DynamicTradeManager
     }
 
     /**
-     * Trailing Stop on the remaining runner (34%).
+     * Dynamic Trailing Stop & High-Water Mark Profit Protection on runner.
      */
     protected function updateTrailingStop(Trade $trade, float $currentPrice): void
     {
+        // 1. High-Water Mark Stepped Protection (locks in banked profit as peak expands)
+        $peakGainPct = $trade->isLong()
+            ? ((($trade->highest_price ?? $currentPrice) - $trade->entry_price) / $trade->entry_price) * 100.0
+            : (($trade->entry_price - ($trade->lowest_price ?? $currentPrice)) / $trade->entry_price) * 100.0;
+
+        if ($peakGainPct >= 2.00) {
+            // Lock in at least +1.20% gain (+12% ROE)
+            $steppedSl = $trade->isLong()
+                ? $trade->entry_price * 1.0120
+                : $trade->entry_price * 0.9880;
+            if ($trade->isLong() ? ($steppedSl > $trade->current_sl) : ($steppedSl < $trade->current_sl)) {
+                $trade->current_sl = round($steppedSl, 6);
+                $this->updateExchangeStopLoss($trade, $trade->current_sl);
+            }
+        } elseif ($peakGainPct >= 1.20) {
+            // Lock in at least +0.40% gain (+4% ROE)
+            $steppedSl = $trade->isLong()
+                ? $trade->entry_price * 1.0040
+                : $trade->entry_price * 0.9960;
+            if ($trade->isLong() ? ($steppedSl > $trade->current_sl) : ($steppedSl < $trade->current_sl)) {
+                $trade->current_sl = round($steppedSl, 6);
+                $this->updateExchangeStopLoss($trade, $trade->current_sl);
+            }
+        }
+
+        // 2. ATR Trailing Stop (active on final runner in TRAILING stage)
         if ($trade->stage !== 'TRAILING') {
             return;
         }
 
-        // Use estimated ATR or 2.0% trail distance
-        $atr = (float) ($trade->meta['atr'] ?? ($trade->entry_price * 0.015));
-        $trailDist = $atr * (float) config('trading.management.trailing_sl_atr_mult', 2.0);
+        $atr = (float) ($trade->meta['atr'] ?? ($trade->entry_price * 0.012));
+        $trailDist = $atr * (float) config('trading.management.trailing_sl_atr_mult', 1.8);
 
         if ($trade->isLong()) {
-            $candidateSl = round($trade->highest_price - $trailDist, 6);
-            // Only trail upward
+            $candidateSl = round(($trade->highest_price ?? $currentPrice) - $trailDist, 6);
             if ($candidateSl > $trade->current_sl) {
                 $trade->current_sl = $candidateSl;
                 $this->updateExchangeStopLoss($trade, $candidateSl);
             }
         } else {
-            $candidateSl = round($trade->lowest_price + $trailDist, 6);
-            // Only trail downward
+            $candidateSl = round(($trade->lowest_price ?? $currentPrice) + $trailDist, 6);
             if ($candidateSl < $trade->current_sl) {
                 $trade->current_sl = $candidateSl;
                 $this->updateExchangeStopLoss($trade, $candidateSl);

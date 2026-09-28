@@ -27,8 +27,8 @@ class TradingDaemonCommand extends Command
      */
     protected $signature = 'trade:daemon
                             {--mode= : Override mode (paper, testnet, live)}
-                            {--interval=4 : Seconds between position management cycles}
-                            {--scan-interval=45 : Seconds between market scanner cycles}
+                            {--interval=2 : Seconds between position management cycles}
+                            {--scan-interval=25 : Seconds between market scanner cycles}
                             {--start : Activate auto-trading state}
                             {--once : Run a single loop iteration and exit}';
 
@@ -149,6 +149,8 @@ class TradingDaemonCommand extends Command
                         if (($result['status'] ?? '') === 'closed') {
                             $totalClosedCount++;
                             $this->logWarn("Position Closed: {$trade->symbol} ({$result['message']})");
+                            // Free slot opened: immediately trigger fresh market scan!
+                            $lastScanTime = 0;
                         }
                     } catch (Throwable $tradeEx) {
                         Log::warning("[TradingDaemon] Trade management error on {$trade->symbol}: {$tradeEx->getMessage()}");
@@ -177,7 +179,7 @@ class TradingDaemonCommand extends Command
                                 $klines = $marketEngine->getMultiTimeframeKlines($sym);
                                 $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
 
-                                if ($eval !== null && $eval['score'] >= 82) {
+                                if ($eval !== null && $eval['score'] >= 80) {
                                     // Macro Market Trend Filter Gate
                                     if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long']) {
                                         $this->logLine("Skipped {$sym} LONG: Counter-trend to Bearish BTC macro.");

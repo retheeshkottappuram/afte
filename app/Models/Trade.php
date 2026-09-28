@@ -133,6 +133,27 @@ class Trade extends Model
     }
 
     /**
+     * Determine if position is protected (risk-free).
+     * Once breakeven is locked or TP1 is banked, the trade carries no principal risk.
+     */
+    public function isProtected(): bool
+    {
+        if ($this->be_locked || $this->tp1_hit) {
+            return true;
+        }
+
+        if ($this->isLong() && $this->current_sl >= $this->entry_price) {
+            return true;
+        }
+
+        if ($this->isShort() && $this->current_sl <= $this->entry_price) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Calculate unrealized PnL in USD based on current market price.
      */
     public function calculateUnrealizedPnl(float $currentPrice): float
