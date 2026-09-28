@@ -659,7 +659,54 @@
             <div id="signalalgo_canvas_chart" class="w-full h-full"></div>
 
             <!-- 2. TradingView Iframe Widget (Alternative mode) -->
-            <div id="tradingview_futures_chart" class="hidden w-full h-full"></div>
+            <div id="tradingview_futures_chart" class="hidden w-full h-full relative"></div>
+
+            <!-- Floating Signal Overlay HUD for TradingView Studio -->
+            <div id="tvStudioSignalOverlay" class="hidden absolute top-3 left-4 z-20 pointer-events-auto bg-slate-950/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-700/80 shadow-2xl max-w-xs sm:max-w-sm transition-all duration-200">
+                <div class="flex items-center justify-between pb-2 border-b border-slate-800 gap-2">
+                    <div class="flex items-center space-x-2">
+                        <span id="tvSignalDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
+                        <span id="tvSignalBadge" class="font-black text-xs uppercase tracking-wider text-slate-300">⚪ STANDBY (NO SETUP)</span>
+                    </div>
+                    <span id="tvSignalScore" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-slate-900 text-slate-300 border border-slate-700">SCORE: --</span>
+                </div>
+
+                <div id="tvSignalDetails" class="mt-2 space-y-1.5 text-[11px]">
+                    <div class="flex items-center justify-between text-slate-400">
+                        <span>Setup: <strong id="tvSetupType" class="text-slate-200 font-semibold">Scanning...</strong></span>
+                        <span>R:R <strong id="tvRrRatio" class="text-emerald-400 font-mono">1 : 2.5</strong></span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1.5 font-mono pt-1 text-[10px]">
+                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                            <div class="text-slate-500 text-[9px] uppercase">Entry</div>
+                            <div id="tvEntryVal" class="text-cyan-400 font-bold">--</div>
+                        </div>
+                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                            <div class="text-slate-500 text-[9px] uppercase">Stop Loss</div>
+                            <div id="tvSlVal" class="text-rose-400 font-bold">--</div>
+                        </div>
+                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                            <div class="text-slate-500 text-[9px] uppercase">Take Profit 1</div>
+                            <div id="tvTp1Val" class="text-emerald-400 font-bold">--</div>
+                        </div>
+                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                            <div class="text-slate-500 text-[9px] uppercase">Take Profit 2</div>
+                            <div id="tvTp2Val" class="text-emerald-400 font-bold">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
+                    <button type="button" onclick="copyPineScript()" class="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 border border-indigo-500/40 transition flex items-center space-x-1">
+                        <span>📋</span>
+                        <span>Copy Pine Script</span>
+                    </button>
+                    <button type="button" onclick="switchChartMode('algo')" class="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600/50 border border-emerald-500/40 transition flex items-center space-x-1">
+                        <span>⚡</span>
+                        <span>Arrows View</span>
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -993,6 +1040,7 @@
         const tvContainer = document.getElementById('tradingview_futures_chart');
         const tooltip = document.getElementById('algoChartTooltip');
         const legend = document.getElementById('algoIndicatorLegend');
+        const tvOverlay = document.getElementById('tvStudioSignalOverlay');
 
         if (mode === 'algo') {
             algoTab.className = 'px-3 py-1.5 rounded-lg font-bold transition flex items-center space-x-1.5 bg-emerald-600 text-white shadow';
@@ -1001,6 +1049,7 @@
             tvContainer.classList.add('hidden');
             if (tooltip) tooltip.classList.remove('hidden');
             if (legend) legend.classList.remove('hidden');
+            if (tvOverlay) tvOverlay.classList.add('hidden');
 
             if (chart && algoContainer) {
                 chart.applyOptions({ width: algoContainer.clientWidth, height: algoContainer.clientHeight });
@@ -1013,6 +1062,7 @@
             tvContainer.classList.remove('hidden');
             if (tooltip) tooltip.classList.add('hidden');
             if (legend) legend.classList.add('hidden');
+            if (tvOverlay) tvOverlay.classList.remove('hidden');
 
             initTradingViewWidget(activeSymbol);
         }
@@ -1525,6 +1575,55 @@
                     const hudHtf = document.getElementById('hud-active-htf');
                     if (hudHtf) hudHtf.textContent = data.htf_interval.toUpperCase();
                 }
+
+                // Update TradingView Studio Floating Overlay HUD
+                const tvDot = document.getElementById('tvSignalDot');
+                const tvBadge = document.getElementById('tvSignalBadge');
+                const tvScore = document.getElementById('tvSignalScore');
+                const tvSetup = document.getElementById('tvSetupType');
+                const tvRr = document.getElementById('tvRrRatio');
+                const tvEntry = document.getElementById('tvEntryVal');
+                const tvSl = document.getElementById('tvSlVal');
+                const tvTp1 = document.getElementById('tvTp1Val');
+                const tvTp2 = document.getElementById('tvTp2Val');
+
+                if (tvBadge) {
+                    if (sig && sig.side === 'BUY') {
+                        if (tvDot) tvDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping';
+                        tvBadge.className = 'font-black text-xs uppercase tracking-wider text-emerald-400';
+                        tvBadge.textContent = '🟢 BUY / LONG SIGNAL';
+                        if (tvScore) tvScore.textContent = `SCORE: ${sig.score}/100`;
+                        if (tvSetup) tvSetup.textContent = sig.setup_type || 'BULLISH SETUP';
+                        if (tvRr) tvRr.textContent = perp.risk_reward || '1 : 2.5';
+                    } else if (sig && sig.side === 'SELL') {
+                        if (tvDot) tvDot.className = 'w-2.5 h-2.5 rounded-full bg-rose-400 animate-ping';
+                        tvBadge.className = 'font-black text-xs uppercase tracking-wider text-rose-400';
+                        tvBadge.textContent = '🔴 SELL / SHORT SIGNAL';
+                        if (tvScore) tvScore.textContent = `SCORE: ${sig.score}/100`;
+                        if (tvSetup) tvSetup.textContent = sig.setup_type || 'BEARISH SETUP';
+                        if (tvRr) tvRr.textContent = perp.risk_reward || '1 : 2.5';
+                    } else {
+                        if (tvDot) tvDot.className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
+                        tvBadge.className = 'font-black text-xs uppercase tracking-wider text-slate-400';
+                        tvBadge.textContent = '⚪ STANDBY (NO SETUP)';
+                        const rawScore = Math.max(diag.buy_score || 0, diag.sell_score || 0);
+                        if (tvScore) tvScore.textContent = `SCORE: ${rawScore}/100`;
+                        if (tvSetup) tvSetup.textContent = 'SCANNING...';
+                        if (tvRr) tvRr.textContent = '--';
+                    }
+
+                    if (sig && sig.entry) {
+                        if (tvEntry) tvEntry.textContent = fmt(sig.entry);
+                        if (tvSl) tvSl.textContent = fmt(sig.sl);
+                        if (tvTp1) tvTp1.textContent = fmt(sig.tp1);
+                        if (tvTp2) tvTp2.textContent = fmt(sig.tp2);
+                    } else {
+                        if (tvEntry) tvEntry.textContent = '--';
+                        if (tvSl) tvSl.textContent = '--';
+                        if (tvTp1) tvTp1.textContent = '--';
+                        if (tvTp2) tvTp2.textContent = '--';
+                    }
+                }
             })
             .catch(err => {
                 if (err.name === 'AbortError') {
@@ -1650,6 +1749,51 @@
                 btn.innerHTML = originalText;
             }
         });
+    }
+
+    function copyPineScript() {
+        const pineCode = `//@version=5
+indicator("SignalAlgo PRO™ Institutional Signals", overlay=true)
+
+// --- Moving Averages ---
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema200 = ta.ema(close, 200)
+
+plot(ema9, color=color.cyan, title="EMA 9", linewidth=2)
+plot(ema21, color=color.orange, title="EMA 21", linewidth=2)
+plot(ema200, color=color.purple, title="EMA 200", linewidth=3)
+
+// --- Technical Indicators ---
+rsi14 = ta.rsi(close, 14)
+atr14 = ta.atr(14)
+volSma = ta.sma(volume, 20)
+volRatio = volume / volSma
+
+// --- Trend Alignment ---
+bullTrend = close > ema200 and ema9 > ema21
+bearTrend = close < ema200 and ema9 < ema21
+
+// --- High-Confluence Conditions ---
+buyPullback = bullTrend and low <= ema21 and close > ema9 and rsi14 >= 46 and rsi14 <= 68 and volRatio >= 1.05
+buyBreakout = bullTrend and close > ta.highest(high[1], 10) and rsi14 >= 55 and rsi14 <= 72 and volRatio >= 1.3
+
+sellPullback = bearTrend and high >= ema21 and close < ema9 and rsi14 >= 22 and rsi14 <= 54 and volRatio >= 1.05
+sellBreakout = bearTrend and close < ta.lowest(low[1], 10) and rsi14 <= 45 and rsi14 >= 20 and volRatio >= 1.3
+
+buySignal = (buyPullback or buyBreakout) and not (buyPullback[1] or buyBreakout[1])
+sellSignal = (sellPullback or sellBreakout) and not (sellPullback[1] or sellBreakout[1])
+
+// --- Plot Shapes on Chart ---
+plotshape(buySignal, title="SignalAlgo BUY", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.normal, text="BUY [Score: 92]")
+plotshape(sellSignal, title="SignalAlgo SELL", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.normal, text="SELL [Score: 92]")
+
+// --- Alerts ---
+alertcondition(buySignal, title="SignalAlgo BUY Alert", message="⚡ SignalAlgo PRO BUY Signal on {{ticker}} at {{close}}")
+alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlgo PRO SELL Signal on {{ticker}} at {{close}}")
+`;
+
+        copyToClipboard(pineCode, 'SignalAlgo PRO Pine Script v5 copied! Paste into TradingView Pine Editor.');
     }
 
     // ==========================================

@@ -188,7 +188,7 @@ class Trade extends Model
      */
     public function getAmountAddedAttribute(): float
     {
-        return round($this->margin_used, 4);
+        return round((float) ($this->margin_used ?? 0.0), 4);
     }
 
     /**
@@ -198,7 +198,7 @@ class Trade extends Model
     {
         return $this->leverage > 0
             ? round(($this->quantity * $this->entry_price) / $this->leverage, 4)
-            : round($this->margin_used, 4);
+            : round((float) ($this->margin_used ?? 0.0), 4);
     }
 
     /**

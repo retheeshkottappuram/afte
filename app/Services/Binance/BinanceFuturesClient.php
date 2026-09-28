@@ -385,7 +385,8 @@ class BinanceFuturesClient
             ]);
         } catch (\Exception $e) {
             // Code -4046: "No need to change margin type" if already set
-            if (str_contains($e->getMessage(), '-4046')) {
+            // Code -4067: Cannot change if open orders exist
+            if (str_contains($e->getMessage(), '-4046') || str_contains($e->getMessage(), '-4067')) {
                 return ['msg' => 'already_set'];
             }
             throw $e;

@@ -332,6 +332,7 @@ class CheckCryptoSignals extends Command
                         }
 
                         // If no fresh breakout on the exact latest candle, check for active in-progress institutional setups from markers
+                        // Stale signals (> 15 minutes old or price moved > 0.35% from entry) are strictly excluded to ensure only real-time actionable chances
                         if ($signal === null && ! empty($history['markers'])) {
                             $lastMarker = end($history['markers']);
                             $markerScore = (int) ($lastMarker['score'] ?? 0);
@@ -341,15 +342,14 @@ class CheckCryptoSignals extends Command
                             if ($markerScore >= 82 && $isBtcAligned) {
                                 $markerTime = (int) ($lastMarker['time'] ?? 0);
                                 $candleAgeSeconds = now()->timestamp - $markerTime;
+                                // Max freshness: 15 minutes on intraday (1-2 candles max), never hours old
                                 $maxActiveSeconds = match ($interval) {
-                                    '1m' => 900,
-                                    '3m' => 1800,
-                                    '5m' => 3600,
-                                    '15m' => 14400, // 4 hours
-                                    '30m' => 28800, // 8 hours
-                                    '1h' => 43200,  // 12 hours
-                                    '4h' => 172800, // 48 hours
-                                    default => 14400,
+                                    '1m' => 180,
+                                    '3m' => 360,
+                                    '5m' => 600,
+                                    '15m' => 900,  // Exactly 1 candle max (15 mins)
+                                    '30m' => 1800, // 30 mins max
+                                    default => 900,
                                 };
 
                                 if ($candleAgeSeconds <= $maxActiveSeconds) {
@@ -358,14 +358,17 @@ class CheckCryptoSignals extends Command
                                     $sl = (float) ($lastMarker['sl'] ?? 0);
                                     $entry = (float) ($lastMarker['entry'] ?? 0);
                                     $invalidated = ($markerSide === 'BUY' && $lastClose < $sl) || ($markerSide === 'SELL' && $lastClose > $sl);
-                                    $volRatio = (float) ($lastMarker['volume_ratio'] ?? 1.25);
+                                    $volRatio = (float) ($lastMarker['volume_ratio'] ?? 1.15);
 
-                                    if (! $invalidated && $entry > 0 && $volRatio >= 1.25) {
+                                    // Entry Proximity Gate: Current price must still be within 0.35% of signal entry
+                                    $distFromEntryPct = $entry > 0 ? abs($lastClose - $entry) / $entry * 100.0 : 999.0;
+
+                                    if (! $invalidated && $entry > 0 && $volRatio >= 1.15 && $distFromEntryPct <= 0.35) {
                                         $signal = [
                                             'side' => $markerSide,
                                             'is_active_trade' => true,
-                                            'setup_type' => 'ACTIVE INSTITUTIONAL SETUP',
-                                            'setup_label' => 'ACTIVE INSTITUTIONAL SETUP',
+                                            'setup_type' => 'ACTIVE FRESH SETUP',
+                                            'setup_label' => 'ACTIVE FRESH SETUP',
                                             'score' => $markerScore,
                                             'grade' => (string) ($lastMarker['grade'] ?? ($markerScore >= 90 ? 'A' : 'B')),
                                             'entry' => $entry,
@@ -379,9 +382,9 @@ class CheckCryptoSignals extends Command
                                             'atr_pct' => (float) ($lastMarker['atr_pct'] ?? 1.5),
                                             'candle_close_time' => $markerTime * 1000,
                                             'live_price' => $lastClose,
-                                            'age_minutes' => round($candleAgeSeconds / 60),
+                                            'age_minutes' => max(0, round($candleAgeSeconds / 60)),
                                         ];
-                                        $this->info("  -> 🎯 [ACTIVE SETUP FOUND] {$symbol} {$markerSide} (Score: {$markerScore}/100, Vol: {$volRatio}x, Age: {$signal['age_minutes']}m, Entry: {$entry}, SL: {$sl})");
+                                        $this->info("  -> 🎯 [ACTIVE FRESH SETUP FOUND] {$symbol} {$markerSide} (Score: {$markerScore}/100, Vol: {$volRatio}x, Age: {$signal['age_minutes']}m, Entry: {$entry}, SL: {$sl})");
                                     }
                                 }
                             }

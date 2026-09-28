@@ -60,8 +60,16 @@ class OrderExecutor
         if (in_array($mode, ['live', 'testnet'], true)) {
             try {
                 $client = $this->client->forMode($mode);
-                $client->setMarginType($symbol, 'ISOLATED');
-                $client->setLeverage($symbol, $leverage);
+                try {
+                    $client->setMarginType($symbol, 'ISOLATED');
+                } catch (\Throwable) {
+                    // Ignored if margin type cannot be adjusted or is already isolated
+                }
+                try {
+                    $client->setLeverage($symbol, $leverage);
+                } catch (\Throwable) {
+                    // Ignored if leverage is already set
+                }
 
                 $binanceSide = $side === 'LONG' ? 'BUY' : 'SELL';
                 $orderResult = $client->placeOrder([

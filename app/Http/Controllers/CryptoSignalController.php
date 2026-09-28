@@ -94,7 +94,7 @@ class CryptoSignalController extends Controller
                 $interval,
                 $history['markers'],
                 $binanceClient->getMarketLabel(),
-                dispatchTelegram: true
+                dispatchTelegram: false
             );
 
             // Condition 1: Check Bitcoin Macro Trend
