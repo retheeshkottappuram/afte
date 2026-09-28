@@ -1789,8 +1789,8 @@ plotshape(buySignal, title="SignalAlgo BUY", location=location.belowbar, color=c
 plotshape(sellSignal, title="SignalAlgo SELL", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.normal, text="SELL [Score: 92]")
 
 // --- Alerts ---
-alertcondition(buySignal, title="SignalAlgo BUY Alert", message="⚡ SignalAlgo PRO BUY Signal on {{ticker}} at {{close}}")
-alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlgo PRO SELL Signal on {{ticker}} at {{close}}")
+alertcondition(buySignal, title="SignalAlgo BUY Alert", message="⚡ SignalAlgo PRO BUY Signal on @{{ticker}} at @{{close}}")
+alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlgo PRO SELL Signal on @{{ticker}} at @{{close}}")
 `;
 
         copyToClipboard(pineCode, 'SignalAlgo PRO Pine Script v5 copied! Paste into TradingView Pine Editor.');
