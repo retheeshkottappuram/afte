@@ -53,10 +53,13 @@ class SignalValidator
         $candleRange = max(0.0000001, $high - $low);
 
         $direction = $signal['direction'];
+        $setup = $signal['setup'] ?? '';
         $indicators = $signal['indicators'] ?? [];
         $rsi = (float) ($indicators['rsi'] ?? 50.0);
         $adx = (float) ($indicators['adx'] ?? 20.0);
         $volRatio = (float) ($indicators['volume_ratio'] ?? 1.0);
+        $isCompressed = (bool) ($indicators['is_compressed'] ?? false);
+        $isPreBreakout = str_contains($setup, 'COIL') || str_contains($setup, 'SPRING') || str_contains($setup, 'UPTHRUST');
 
         $upperWick = $high - max($open, $close);
         $lowerWick = min($open, $close) - $low;
@@ -68,7 +71,7 @@ class SignalValidator
         $penalties = 0;
         $reasons = [];
 
-        // 1. Check False Breakout Wick Exhaustion
+        // 1. Check False Breakout Wick Exhaustion (Adverse absorption against trade direction)
         if ($direction === 'LONG' && $upperWickPct > 42.0) {
             $penalties += 35;
             $reasons[] = "Severe upper wick rejection ({$upperWickPct}%) indicates profit-taking absorption.";
@@ -79,15 +82,18 @@ class SignalValidator
         }
 
         // 2. Volume Gating
-        if ($volRatio < 0.90) {
+        if (! $isPreBreakout && $volRatio < 0.85) {
             $penalties += 20;
             $reasons[] = "Breakout occurred on below-average volume ({$volRatio}x 20-SMA).";
         }
 
-        // 3. ADX & Trend Quality
+        // 3. ADX & Trend / Compression Quality
         $regime = 'TRENDING_EXPANSION';
         if ($adx >= 25.0 && $volRatio >= 1.25) {
             $regime = 'HIGH_MOMENTUM_EXPANSION';
+        } elseif ($isPreBreakout || $isCompressed) {
+            $regime = 'PRE_BREAKOUT_COMPRESSION';
+            // Pre-breakout compression naturally exhibits low ADX during coil phase. No penalty.
         } elseif ($adx < 18.0) {
             $regime = 'WEAK_TREND_CHOP';
             $penalties += 15;
@@ -95,11 +101,11 @@ class SignalValidator
         }
 
         // 4. Overextension Check
-        if ($direction === 'LONG' && $rsi > 75.0) {
+        if ($direction === 'LONG' && $rsi > 74.0) {
             $penalties += 25;
             $reasons[] = "RSI ({$rsi}) indicates extreme overextension into resistance.";
         }
-        if ($direction === 'SHORT' && $rsi < 25.0) {
+        if ($direction === 'SHORT' && $rsi < 26.0) {
             $penalties += 25;
             $reasons[] = "RSI ({$rsi}) indicates extreme oversold exhaustion.";
         }
@@ -109,7 +115,7 @@ class SignalValidator
         $approved = $confidence >= (int) config('trading.ai.min_confidence_score', 70);
 
         if ($approved) {
-            $reasons[] = "Market structure confirmed. Favorable volume expansion ({$volRatio}x) and aligned momentum.";
+            $reasons[] = "Structure confirmed ({$regime}). Favorable risk-to-reward and aligned momentum.";
         }
 
         return [

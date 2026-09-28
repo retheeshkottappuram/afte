@@ -165,6 +165,7 @@ class TradingDaemonCommand extends Command
 
                 if ($account->canTrade()) {
                     $btcTrend = $marketEngine->getBtcMarketTrend();
+                    $btcBase = $marketEngine->getBtcBaseKlines();
                     $this->logLine('['.date('H:i:s')."] Macro BTC Trend: {$btcTrend['trend']} (\${$btcTrend['btc_price']}) | Scanning setups...");
                     try {
                         $symbols = $marketEngine->getScannableSymbols();
@@ -174,9 +175,9 @@ class TradingDaemonCommand extends Command
                             $totalScannedCount++;
                             try {
                                 $klines = $marketEngine->getMultiTimeframeKlines($sym);
-                                $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
+                                $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
 
-                                if ($eval !== null && $eval['score'] >= 80) {
+                                if ($eval !== null && $eval['score'] >= 82) {
                                     // Macro Market Trend Filter Gate
                                     if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long']) {
                                         $this->logLine("Skipped {$sym} LONG: Counter-trend to Bearish BTC macro.");

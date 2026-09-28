@@ -41,6 +41,7 @@ class BacktestingEngine
     ): array {
         $candles = $this->client->klines($symbol, $interval, $limit);
         $count = count($candles['closes']);
+        $btcCandles = $symbol !== 'BTCUSDT' ? $this->client->klines('BTCUSDT', $interval, $limit) : null;
 
         $balance = $initialBalance;
         $peakBalance = $initialBalance;
@@ -64,6 +65,18 @@ class BacktestingEngine
                 'volumes' => array_slice($candles['volumes'], 0, $idx + 1),
                 'closeTimes' => array_slice($candles['closeTimes'], 0, $idx + 1),
             ];
+
+            $btcSlice = null;
+            if ($btcCandles !== null && count($btcCandles['closes']) >= ($idx + 1)) {
+                $btcSlice = [
+                    'opens' => array_slice($btcCandles['opens'], 0, $idx + 1),
+                    'highs' => array_slice($btcCandles['highs'], 0, $idx + 1),
+                    'lows' => array_slice($btcCandles['lows'], 0, $idx + 1),
+                    'closes' => array_slice($btcCandles['closes'], 0, $idx + 1),
+                    'volumes' => array_slice($btcCandles['volumes'], 0, $idx + 1),
+                    'closeTimes' => array_slice($btcCandles['closeTimes'], 0, $idx + 1),
+                ];
+            }
 
             $currentHigh = $candles['highs'][$idx];
             $currentLow = $candles['lows'][$idx];
@@ -119,19 +132,7 @@ class BacktestingEngine
                     continue;
                 }
 
-                // Check Breakeven Protection Trigger (+0.80%)
-                $gainPct = $isLong
-                    ? (($currentHigh - $activeTrade['entry_price']) / $activeTrade['entry_price']) * 100.0
-                    : (($activeTrade['entry_price'] - $currentLow) / $activeTrade['entry_price']) * 100.0;
-
-                if (! $activeTrade['be_locked'] && $gainPct >= 0.80) {
-                    $activeTrade['be_locked'] = true;
-                    $activeTrade['current_sl'] = $isLong
-                        ? $activeTrade['entry_price'] * 1.0012
-                        : $activeTrade['entry_price'] * 0.9988;
-                }
-
-                // Check TP1 (+1.5% to +1.8%)
+                // Check TP1 (+1.35R / +1.5%) - Priority 1: Bank 50% guaranteed cash
                 $tp1Hit = $isLong
                     ? ($currentHigh >= $activeTrade['tp1_price'])
                     : ($currentLow <= $activeTrade['tp1_price']);
@@ -146,19 +147,31 @@ class BacktestingEngine
                     $activeTrade['remaining_qty'] -= $closeQty;
                     $activeTrade['tp1_hit'] = true;
                     $activeTrade['be_locked'] = true;
-                    // Move SL to Breakeven (+0.12% fee buffer) immediately
+                    // Move SL to Breakeven (+0.12% fee buffer) once TP1 is safely locked
                     $activeTrade['current_sl'] = $isLong
                         ? $activeTrade['entry_price'] * 1.0012
                         : $activeTrade['entry_price'] * 0.9988;
                 }
 
-                // Check TP2 (+3.0% to +3.6%)
+                // Check Breakeven Protection Trigger (+1.30%) if TP1 not yet reached
+                $gainPct = $isLong
+                    ? (($currentHigh - $activeTrade['entry_price']) / $activeTrade['entry_price']) * 100.0
+                    : (($activeTrade['entry_price'] - $currentLow) / $activeTrade['entry_price']) * 100.0;
+
+                if (! $activeTrade['be_locked'] && $gainPct >= 1.30) {
+                    $activeTrade['be_locked'] = true;
+                    $activeTrade['current_sl'] = $isLong
+                        ? $activeTrade['entry_price'] * 1.0012
+                        : $activeTrade['entry_price'] * 0.9988;
+                }
+
+                // Check TP2 (+2.8R / +3.0%) - Priority 2: Bank 30% profits
                 $tp2Hit = $isLong
                     ? ($currentHigh >= $activeTrade['tp2_price'])
                     : ($currentLow <= $activeTrade['tp2_price']);
 
                 if ($activeTrade['tp1_hit'] && ! $activeTrade['tp2_hit'] && $tp2Hit) {
-                    $closeQty = $activeTrade['total_qty'] * 0.25; // Bank 25% at TP2
+                    $closeQty = $activeTrade['total_qty'] * 0.30; // Bank 30% at TP2
                     $partialPnl = $isLong
                         ? ($activeTrade['tp2_price'] - $activeTrade['entry_price']) * $closeQty
                         : ($activeTrade['entry_price'] - $activeTrade['tp2_price']) * $closeQty;
@@ -166,7 +179,7 @@ class BacktestingEngine
                     $activeTrade['realized_pnl'] += $partialPnl;
                     $activeTrade['remaining_qty'] -= $closeQty;
                     $activeTrade['tp2_hit'] = true;
-                    // Move SL to TP1 level
+                    // Elevate SL to TP1 level
                     $activeTrade['current_sl'] = $activeTrade['tp1_price'];
                 }
 
@@ -174,7 +187,7 @@ class BacktestingEngine
             }
 
             // 2. Scan for new signal
-            $eval = $this->signalEngine->evaluate($symbol, $slice);
+            $eval = $this->signalEngine->evaluate($symbol, $slice, null, null, $btcSlice);
             if ($eval === null || $eval['score'] < 82) {
                 continue;
             }
@@ -184,10 +197,10 @@ class BacktestingEngine
                 continue;
             }
 
-            // Size position
+            // Size position according to Stage 1 micro capital rules
             $leverage = 10;
-            $notional = max(5.2, $balance * 5.0); // 5x-10x leverage simulation
-            $margin = $notional / $leverage;
+            $notional = $balance < 25.0 ? 5.25 : max(5.25, ($balance * 0.05) / (abs($eval['price'] - $eval['initial_sl']) / $eval['price']));
+            $margin = round($notional / $leverage, 4);
             $qty = $notional / $eval['price'];
 
             $activeTrade = [

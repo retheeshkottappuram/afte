@@ -525,9 +525,25 @@ class BinanceFuturesClient
                     $this->cancelAlgoOrder($symbol, $order['algoId']);
                 }
             }
+            if (! empty($orders)) {
+                usleep(150000); // 150ms pause to ensure Binance matching engine commits cancellations
+            }
         } catch (\Throwable) {
             // Ignore if no algo orders exist
         }
+    }
+
+    /**
+     * Get recent user trades for a symbol (signed).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getUserTrades(string $symbol, int $limit = 5): array
+    {
+        return $this->signedGet('/fapi/v1/userTrades', [
+            'symbol' => strtoupper($symbol),
+            'limit' => $limit,
+        ]);
     }
 
     /**

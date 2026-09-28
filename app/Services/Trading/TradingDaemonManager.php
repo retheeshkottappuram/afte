@@ -298,6 +298,7 @@ class TradingDaemonManager
 
         if ($account->canTrade()) {
             try {
+                $btcBase = $this->marketEngine->getBtcBaseKlines();
                 $symbols = $this->marketEngine->getScannableSymbols();
                 $candidates = array_slice($symbols, 0, 15);
 
@@ -305,7 +306,7 @@ class TradingDaemonManager
                     $scannedCount++;
                     try {
                         $klines = $this->marketEngine->getMultiTimeframeKlines($sym);
-                        $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
+                        $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
 
                         if ($eval !== null && $eval['score'] >= 82) {
                             $ai = $this->validator->validate($eval, $klines['base']);

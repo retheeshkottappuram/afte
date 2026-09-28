@@ -155,7 +155,7 @@ class RiskManager
 
         // 3. Check real Available Margin Balance
         $availMargin = $this->getAvailableBalance($account);
-        $minRequiredMargin = (float) config('trading.fund_management.min_available_margin', 0.65);
+        $minRequiredMargin = (float) config('trading.fund_management.min_available_margin', 0.45);
 
         if ($availMargin < $minRequiredMargin) {
             return ['allowed' => false, 'reason' => "Insufficient available margin (\${$availMargin}). Minimum \${$minRequiredMargin} free balance required to open an additional trade."];
@@ -185,7 +185,7 @@ class RiskManager
     ): array {
         $stage = $this->getCompoundingStage($account);
         $leverage = (int) ($stage['default_leverage'] ?? 10);
-        $maxRiskPct = (float) ($stage['max_risk_pct'] ?? 6.0);
+        $maxRiskPct = (float) ($stage['max_risk_pct'] ?? 5.0);
 
         $slDistance = abs($entryPrice - $slPrice);
         if ($slDistance <= 0 || $entryPrice <= 0) {
@@ -208,7 +208,7 @@ class RiskManager
             $targetNotional = max($minNotional, ((float) $configuredAmount) * $leverage);
         } elseif ($account->balance < 25.0) {
             // In Stage 1 ($3 - $25), size position close to minimum notional so multiple trades can run safely
-            $targetNotional = (float) config('trading.fund_management.stage1_target_notional', 5.50);
+            $targetNotional = (float) config('trading.fund_management.stage1_target_notional', 5.25);
             $targetNotional = max($minNotional, $targetNotional);
         } else {
             // For larger accounts, scale notional based on risk % and SL distance

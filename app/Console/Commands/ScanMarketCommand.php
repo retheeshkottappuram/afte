@@ -35,6 +35,7 @@ class ScanMarketCommand extends Command
 
         $this->line('Scanning '.count($scanSymbols).' active perpetual pairs...');
 
+        $btcBase = $marketEngine->getBtcBaseKlines();
         $tableData = [];
         $opportunityCount = 0;
 
@@ -44,7 +45,7 @@ class ScanMarketCommand extends Command
         foreach ($scanSymbols as $sym) {
             try {
                 $klines = $marketEngine->getMultiTimeframeKlines($sym);
-                $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
+                $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
 
                 if ($eval !== null) {
                     $ai = $validator->validate($eval, $klines['base']);

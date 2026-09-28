@@ -27,14 +27,14 @@ return [
     |--------------------------------------------------------------------------
     */
     'stages' => [
-        // Stage 1: Seed ($3 to $25) - Multi-Trade enabled with micro notional ($5.2-$6.5)
+        // Stage 1: Seed ($3 to $25) - High-conviction pre-breakout setups, strict risk cap
         'stage_1' => [
             'max_equity' => 25.0,
-            'max_positions' => 3,     // Allows up to 3 concurrent positions
-            'max_unprotected' => 2,   // Allows up to 2 unprotected (at-risk) positions concurrently
+            'max_positions' => 2,     // Allows up to 2 concurrent positions
+            'max_unprotected' => 1,   // Only 1 unprotected (at-risk) position at a time on micro balance
             'default_leverage' => 10,
-            'max_risk_pct' => 6.0,    // Risk ~$0.20-$0.40 on micro balances
-            'min_score' => 80,        // High-conviction setups for short-term opportunities
+            'max_risk_pct' => 5.0,    // Strictly capped risk (~$0.06-$0.08 per trade)
+            'min_score' => 82,        // Elite-grade pre-breakout setups only
         ],
         // Stage 2: Acceleration ($25 to $100)
         'stage_2' => [
@@ -62,9 +62,9 @@ return [
     |--------------------------------------------------------------------------
     */
     'fund_management' => [
-        'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.50),       // Minimum free available margin in USD to open a new trade
+        'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.45),       // Minimum free available margin in USD to open a new trade
         'exempt_protected_positions' => true, // Breakeven or profit-locked trades do not block new trades
-        'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.20),     // Sized for Binance $5 minimum notional at 10x leverage
+        'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.25),     // Sized for Binance $5 minimum notional at 10x leverage
         'amount_per_trade' => env('TRADING_AMOUNT_PER_TRADE') !== null ? (float) env('TRADING_AMOUNT_PER_TRADE') : null, // Fixed margin amount in USD added per trade (e.g. 0.60, 1.00), null for dynamic
     ],
 
@@ -82,24 +82,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Dynamic Trade Management Parameters
+    | Dynamic Trade Management Parameters (Asymmetric Edge)
     |--------------------------------------------------------------------------
     */
     'management' => [
-        // Breakeven lock: Triggered when price moves favorably by +0.80% (+8% ROE at 10x)
-        'be_gain_pct' => 0.80,
+        // Breakeven lock: Triggered ONLY after price expands cleanly (+1.30%) or after TP1
+        'be_gain_pct' => 1.30,
         'be_fee_buffer_pct' => 0.12, // Entry + 0.12% to cover maker/taker round-trip fees
 
         // Partial Profit Booking:
-        'tp1_pct' => 1.60,           // TP1 at +1.6% price gain (+16% ROE at 10x)
-        'tp1_close_ratio' => 0.50,   // Close 50% at TP1 to secure guaranteed profit
+        'tp1_pct' => 1.50,           // TP1 at +1.50% price gain (+15% ROE at 10x)
+        'tp1_close_ratio' => 0.50,   // Close 50% at TP1 to lock guaranteed bank profit
 
-        'tp2_pct' => 3.20,           // TP2 at +3.2% price gain (+32% ROE at 10x)
-        'tp2_close_ratio' => 0.25,   // Close 25% at TP2
+        'tp2_pct' => 3.00,           // TP2 at +3.00% price gain (+30% ROE at 10x)
+        'tp2_close_ratio' => 0.30,   // Close 30% at TP2
 
-        // Remaining 25% runs on Trailing SL:
+        // Remaining 20% runs on Trailing SL to capture home-run trends:
         'trailing_sl_atr_mult' => 2.0,
-        'trailing_sl_trigger_pct' => 2.0, // Start trailing after +2.0% gain
+        'trailing_sl_trigger_pct' => 2.50, // Start trailing after +2.5% gain
     ],
 
     /*

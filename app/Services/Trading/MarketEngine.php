@@ -230,4 +230,20 @@ class MarketEngine
             }
         });
     }
+
+    /**
+     * Get BTC base timeframe (15m) klines for Relative Strength calculations.
+     *
+     * @return array{opens: float[], highs: float[], lows: float[], closes: float[], volumes: float[], closeTimes: int[]}
+     */
+    public function getBtcBaseKlines(int $limit = 120): array
+    {
+        return Cache::remember('binance:btc:base_klines', 20, function () use ($limit): array {
+            try {
+                return $this->client->klines('BTCUSDT', config('trading.scanner.base_interval', '15m'), $limit);
+            } catch (\Throwable) {
+                return ['opens' => [], 'highs' => [], 'lows' => [], 'closes' => [], 'volumes' => [], 'closeTimes' => []];
+            }
+        });
+    }
 }

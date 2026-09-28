@@ -49,17 +49,17 @@ class DynamicTradeManager
                 return $this->closeTrade($trade, $price, $reason);
             }
 
-            // 2. Check Breakeven Protection Trigger
-            $this->checkBreakeven($trade, $price);
-
-            // 3. Check TP1 Partial Booking (+2.0%)
+            // 2. Check TP1 Partial Booking (Secure 50% profit & elevate SL to breakeven)
             $this->checkTp1($trade, $price);
 
-            // 4. Check TP2 Partial Booking (+4.0%)
+            // 3. Check TP2 Partial Booking (Secure 30% profit & trail SL to TP1)
             $this->checkTp2($trade, $price);
 
-            // 5. Update Dynamic Trailing Stop on Runner
+            // 4. Update Dynamic Trailing Stop on Remaining Runner (20%)
             $this->updateTrailingStop($trade, $price);
+
+            // 5. Check Breakeven Protection Fallback (only after substantial favorable move)
+            $this->checkBreakeven($trade, $price);
 
             $trade->save();
 

@@ -287,6 +287,7 @@ class DashboardController extends Controller
 
         $data = Cache::remember($cacheKey, 60, function () use ($limit): array {
             $btcTrend = $this->marketEngine->getBtcMarketTrend();
+            $btcBase = $this->marketEngine->getBtcBaseKlines();
             $symbols = $this->marketEngine->getScannableSymbols();
             $scanSymbols = array_slice($symbols, 0, $limit);
 
@@ -295,7 +296,7 @@ class DashboardController extends Controller
             foreach ($scanSymbols as $sym) {
                 try {
                     $klines = $this->marketEngine->getMultiTimeframeKlines($sym);
-                    $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2']);
+                    $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
 
                     if ($eval !== null) {
                         // Condition 1: Bitcoin Macro Trend Filter
@@ -693,18 +694,39 @@ class DashboardController extends Controller
             foreach ($dbOpenTrades as $dbTrade) {
                 if (! in_array($dbTrade->symbol, $liveSymbolsFound, true)) {
                     $closeMark = $dbTrade->entry_price;
+                    $realizedPnl = 0.0;
+                    $feePaid = 0.0;
+                    $exitReason = 'EXCHANGE_CLOSED';
+
                     try {
-                        $closeMark = $client->getMarkPrice($dbTrade->symbol);
+                        $userTrades = $client->getUserTrades($dbTrade->symbol, 5);
+                        if (! empty($userTrades)) {
+                            $latestFill = end($userTrades);
+                            $closeMark = (float) ($latestFill['price'] ?? $closeMark);
+                            $realizedPnl = (float) ($latestFill['realizedPnl'] ?? 0.0);
+                            $feePaid = (float) ($latestFill['commission'] ?? 0.0);
+                        } else {
+                            $closeMark = $client->getMarkPrice($dbTrade->symbol);
+                            $realizedPnl = $dbTrade->calculateUnrealizedPnl($closeMark);
+                        }
                     } catch (\Throwable) {
-                        // ignore
+                        try {
+                            $closeMark = $client->getMarkPrice($dbTrade->symbol);
+                            $realizedPnl = $dbTrade->calculateUnrealizedPnl($closeMark);
+                        } catch (\Throwable) {
+                            // ignore
+                        }
                     }
-                    $pnl = $dbTrade->calculateUnrealizedPnl($closeMark);
+
                     $dbTrade->status = 'CLOSED';
                     $dbTrade->exit_price = $closeMark;
-                    $dbTrade->exit_reason = 'EXCHANGE_CLOSED';
-                    $dbTrade->realized_pnl = $pnl;
+                    $dbTrade->exit_reason = $exitReason;
+                    $dbTrade->realized_pnl = $realizedPnl;
+                    $dbTrade->fee_paid = round(($dbTrade->fee_paid ?? 0) + $feePaid, 6);
                     $dbTrade->closed_at = now();
                     $dbTrade->save();
+
+                    $this->riskManager->handleTradeClosed($account, $dbTrade);
                 }
             }
 
