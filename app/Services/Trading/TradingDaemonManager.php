@@ -300,6 +300,17 @@ class TradingDaemonManager
         // Record heartbeat timestamp for UI monitoring
         Cache::put(self::CACHE_HEARTBEAT_KEY, time(), 120);
 
+        $currentPid = getmypid() ?: null;
+        if ($currentPid) {
+            Cache::put(self::CACHE_PID_KEY, $currentPid, 120);
+        }
+
+        $stats = (array) Cache::get(self::CACHE_STATS_KEY, []);
+        $stats['loop_count'] = ((int) ($stats['loop_count'] ?? 0)) + 1;
+        $stats['pid'] = $currentPid ?: ($stats['pid'] ?? null);
+        $stats['last_tick_at'] = now()->toIso8601String();
+        Cache::put(self::CACHE_STATS_KEY, $stats, 120);
+
         // 0. Live Binance Position & Balance Sync
         if ($mode === 'live') {
             try {

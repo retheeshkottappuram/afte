@@ -99,11 +99,12 @@ class TradingDaemonCommand extends Command
 
         $lastScanTime = 0;
         $lastSnapshotTime = 0;
-        $loopCount = 0;
-        $totalManagedCount = 0;
-        $totalClosedCount = 0;
-        $totalScannedCount = 0;
-        $totalOpenedCount = 0;
+        $existingStats = (array) Cache::get(TradingDaemonManager::CACHE_STATS_KEY, []);
+        $loopCount = $runOnce ? ((int) ($existingStats['loop_count'] ?? 0)) : 0;
+        $totalManagedCount = $runOnce ? ((int) ($existingStats['managed_positions_count'] ?? 0)) : 0;
+        $totalClosedCount = $runOnce ? ((int) ($existingStats['closed_trades_count'] ?? 0)) : 0;
+        $totalScannedCount = $runOnce ? ((int) ($existingStats['signals_scanned_count'] ?? 0)) : 0;
+        $totalOpenedCount = $runOnce ? ((int) ($existingStats['orders_opened_count'] ?? 0)) : 0;
 
         while (true) {
             $loopCount++;

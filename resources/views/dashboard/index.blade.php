@@ -995,7 +995,7 @@
                 }
                 if (dot) dot.className = 'w-3.5 h-3.5 rounded-full bg-emerald-400 shadow-[0_0_10px_#10b981]';
                 if (ring) ring.className = 'absolute w-8 h-8 rounded-full bg-emerald-400/25 animate-ping';
-                if (desc) desc.textContent = `PID #${daemon.pid || '-'} (${daemon.uptime_human || 'Live'})`;
+                if (desc) desc.textContent = daemon.pid ? `PID #${daemon.pid} (${daemon.uptime_human || 'Live'})` : `Watchdog Cron Engine (${daemon.uptime_human || 'Active'})`;
             } else if (stats && stats.is_running) {
                 if (badge) {
                     badge.textContent = 'SYNCING / REVIVING';
