@@ -423,11 +423,12 @@
                                     <th class="px-3 py-3">RSI</th>
                                     <th class="px-3 py-3">AI Verdict</th>
                                     <th class="px-4 py-3">Reasoning</th>
+                                    <th class="px-3 py-3 text-right">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="scanner-tbody" class="divide-y divide-cyber-border/40 font-mono">
                                 <tr>
-                                    <td colspan="8" class="px-4 py-8 text-center text-slate-400">
+                                    <td colspan="9" class="px-4 py-8 text-center text-slate-400">
                                         Loading market opportunities... Click "Scan Market" to refresh.
                                     </td>
                                 </tr>
@@ -1095,7 +1096,7 @@
             }
 
             if (!opportunities || opportunities.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-slate-400">No high-conviction breakout setup detected right now. Markets are in range; capital protected.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" class="px-4 py-6 text-center text-slate-400">No high-conviction breakout setup detected right now. Markets are in range; capital protected.</td></tr>`;
                 return;
             }
 
@@ -1114,6 +1115,11 @@
                         <td class="px-3 py-2.5 text-slate-300 font-mono">${op.indicators.rsi}</td>
                         <td class="px-3 py-2.5 ${aiBadge}">${op.ai_approved ? '✅ APPROVED' : '❌ REJECTED'}</td>
                         <td class="px-4 py-2.5 text-[11px] text-slate-400 truncate max-w-xs" title="${op.ai_reason}">${op.ai_reason}</td>
+                        <td class="px-3 py-2.5 text-right whitespace-nowrap">
+                            <button onclick="executeRadarTrade('${op.symbol}', '${op.direction}', this)" class="px-2.5 py-1 text-[11px] font-mono font-bold rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition inline-flex items-center space-x-1 shadow-sm shadow-emerald-500/10">
+                                <span>⚡</span><span>Trade Now</span>
+                            </button>
+                        </td>
                     </tr>
                 `;
             }).join('');
@@ -1179,6 +1185,45 @@
                     btn.disabled = false;
                 }
                 isManualScanning = false;
+            }
+        }
+
+        async function executeRadarTrade(symbol, direction, btnEl = null) {
+            const originalHtml = btnEl ? btnEl.innerHTML : null;
+            if (btnEl) {
+                btnEl.innerHTML = `<span class="inline-block animate-spin mr-1">⌛</span> Placing...`;
+                btnEl.disabled = true;
+            }
+
+            try {
+                const res = await fetch('/api/execute-radar-trade', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                    },
+                    body: JSON.stringify({
+                        symbol: symbol,
+                        direction: direction,
+                        mode: currentMode
+                    })
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    alert(`✅ ${data.message}`);
+                    liveSync();
+                } else {
+                    alert(`❌ Trade Failed: ${data.message}`);
+                }
+            } catch (err) {
+                console.error("Execute radar trade error:", err);
+                alert(`Execution error: ${err.message}`);
+            } finally {
+                if (btnEl && originalHtml) {
+                    btnEl.innerHTML = originalHtml;
+                    btnEl.disabled = false;
+                }
             }
         }
 
@@ -1462,13 +1507,42 @@
             });
         }
 
+        let lastAutoTickTime = 0;
+        async function runAutoTickFallback() {
+            if (!window.isAutoTradingRunning) return;
+            const now = Date.now();
+            if (now - lastAutoTickTime < 30000) return;
+            lastAutoTickTime = now;
+
+            try {
+                const res = await fetch('/api/auto-tick', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                    },
+                    body: JSON.stringify({ mode: currentMode })
+                });
+                const data = await res.json();
+                if (data && data.opened_trade) {
+                    console.log("[Auto-Tick] Trade opened:", data.opened_trade);
+                    liveSync();
+                }
+            } catch (e) {
+                // Ignore background tick network issues
+            }
+        }
+
         // Initialize and start live sync & WebSocket streaming
         updateModeUI(currentMode);
         initBinanceWebSocket();
         liveSync();
 
         // Real-time dynamic sync every 3 seconds (updates balance, margin, positions, signals, history & daemon without page refresh)
-        setInterval(liveSync, 3000);
+        setInterval(() => {
+            liveSync();
+            runAutoTickFallback();
+        }, 3000);
     </script>
 </body>
 </html>

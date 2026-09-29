@@ -307,4 +307,32 @@ class DashboardTest extends TestCase
         $stopResponse->assertStatus(200);
         $stopResponse->assertJsonFragment(['success' => true, 'is_running' => false]);
     }
+
+    public function test_user_can_execute_radar_trade_directly_from_scanner(): void
+    {
+        $user = User::factory()->create();
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 20.0,
+            'initial_balance' => 20.0,
+            'is_running' => false,
+            'kill_switch' => false,
+        ]);
+
+        $response = $this->actingAs($user)->postJson('/api/execute-radar-trade', [
+            'symbol' => 'SOLUSDT',
+            'direction' => 'LONG',
+            'mode' => 'paper',
+        ]);
+
+        $response->assertStatus(200);
+        $response->assertJsonFragment(['success' => true]);
+        $this->assertDatabaseHas('trades', [
+            'symbol' => 'SOLUSDT',
+            'side' => 'LONG',
+            'mode' => 'paper',
+            'status' => 'OPEN',
+        ]);
+    }
 }

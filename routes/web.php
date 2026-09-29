@@ -37,6 +37,7 @@ Route::middleware('auth')->group(function (): void {
         Route::get('/history', [DashboardController::class, 'history'])->name('api.history');
         Route::get('/equity-curve', [DashboardController::class, 'equityCurve'])->name('api.equity_curve');
         Route::get('/scan', [DashboardController::class, 'scanMarket'])->name('api.scan');
+        Route::post('/execute-radar-trade', [DashboardController::class, 'executeRadarTrade'])->name('api.execute_radar_trade');
         Route::get('/live-sync', [DashboardController::class, 'liveSync'])->name('api.live_sync');
         Route::post('/lock-breakeven', [DashboardController::class, 'lockBreakeven'])->name('api.lock_breakeven');
         Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');

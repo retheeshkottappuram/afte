@@ -81,7 +81,7 @@ class RiskManager
      *
      * @return array{allowed: bool, reason: string}
      */
-    public function canOpenTrade(TradingAccount $account, string $symbol, int $signalScore): array
+    public function canOpenTrade(TradingAccount $account, string $symbol, int $signalScore, bool $isManual = false): array
     {
         if ($account->mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return ['allowed' => false, 'reason' => 'LIVE trading is disabled in this environment to prevent dual-instance collisions with production.'];
@@ -97,7 +97,7 @@ class RiskManager
             return ['allowed' => false, 'reason' => "Circuit breaker active after consecutive losses. Paused until {$remaining}."];
         }
 
-        if (! $account->is_running) {
+        if (! $isManual && ! $account->is_running) {
             return ['allowed' => false, 'reason' => 'Auto-trading is paused. Enable Auto-Trading to execute new signals.'];
         }
 

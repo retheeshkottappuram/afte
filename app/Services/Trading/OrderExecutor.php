@@ -25,14 +25,14 @@ class OrderExecutor
      * @param  array{approved: bool, confidence: int, regime: string, reason: string}  $aiResult
      * @return array{status: string, trade: ?Trade, message: string}
      */
-    public function executeSignal(array $signal, array $aiResult, string $mode = 'paper'): array
+    public function executeSignal(array $signal, array $aiResult, string $mode = 'paper', bool $isManual = false): array
     {
         $account = TradingAccount::getForMode($mode);
         $symbol = $signal['symbol'];
         $score = (int) $signal['score'];
 
         // 1. Verify Risk Engine permission
-        $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $score);
+        $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $score, $isManual);
         if (! $canOpen['allowed']) {
             return ['status' => 'rejected', 'trade' => null, 'message' => $canOpen['reason']];
         }

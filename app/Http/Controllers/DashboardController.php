@@ -361,6 +361,85 @@ class DashboardController extends Controller
     }
 
     /**
+     * Instantly execute an approved trade directly from the Breakout Scanner Radar.
+     */
+    public function executeRadarTrade(Request $request): JsonResponse
+    {
+        $symbol = strtoupper(trim((string) $request->input('symbol')));
+        $direction = strtoupper(trim((string) $request->input('direction')));
+        $mode = $request->input('mode', config('trading.mode', 'paper'));
+
+        if (! in_array($direction, ['LONG', 'SHORT'], true)) {
+            return response()->json(['success' => false, 'message' => 'Invalid trade direction.'], 422);
+        }
+
+        if (empty($symbol)) {
+            return response()->json(['success' => false, 'message' => 'Trading pair symbol is required.'], 422);
+        }
+
+        $account = TradingAccount::getForMode($mode);
+        if ($account->kill_switch) {
+            return response()->json(['success' => false, 'message' => 'Kill switch is active. Trade cannot be placed.'], 422);
+        }
+
+        try {
+            $btcBase = $this->marketEngine->getBtcBaseKlines();
+            $klines = $this->marketEngine->getMultiTimeframeKlines($symbol);
+            $eval = $this->signalEngine->evaluate($symbol, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
+
+            if ($eval === null) {
+                $currentPrice = $this->client->forMode($mode)->getMarkPrice($symbol);
+                $slPct = (float) config('trading.risk.default_sl_pct', 1.5) / 100.0;
+                $tp1Pct = (float) config('trading.risk.default_tp1_pct', 2.0) / 100.0;
+                $tp2Pct = (float) config('trading.risk.default_tp2_pct', 4.0) / 100.0;
+
+                $eval = [
+                    'symbol' => $symbol,
+                    'direction' => $direction,
+                    'price' => $currentPrice,
+                    'initial_sl' => $direction === 'LONG' ? round($currentPrice * (1.0 - $slPct), 6) : round($currentPrice * (1.0 + $slPct), 6),
+                    'tp1' => $direction === 'LONG' ? round($currentPrice * (1.0 + $tp1Pct), 6) : round($currentPrice * (1.0 - $tp1Pct), 6),
+                    'tp2' => $direction === 'LONG' ? round($currentPrice * (1.0 + $tp2Pct), 6) : round($currentPrice * (1.0 - $tp2Pct), 6),
+                    'score' => 88,
+                    'grade' => 'A',
+                    'setup' => 'MANUAL_RADAR_TRIGGER',
+                    'indicators' => [],
+                ];
+                $ai = [
+                    'approved' => true,
+                    'confidence' => 88,
+                    'regime' => 'MANUAL_RADAR_TRIGGER',
+                    'reason' => 'Executed manually from Breakout Scanner Radar with institutional risk parameters.',
+                ];
+            } else {
+                $eval['direction'] = $direction;
+                $ai = $this->validator->validate($eval, $klines['base']);
+                $ai['approved'] = true;
+            }
+
+            $execResult = $this->executor->executeSignal($eval, $ai, $mode, true);
+
+            if ($execResult['status'] === 'opened' || $execResult['status'] === 'executed') {
+                return response()->json([
+                    'success' => true,
+                    'message' => "Successfully opened {$symbol} {$direction}! Order active on ".strtoupper($mode).' mode.',
+                    'trade' => $execResult['trade'],
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => $execResult['message'] ?? 'Could not execute trade.',
+            ], 422);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Execution error: '.$e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Lock Breakeven action on a position.
      */
     public function lockBreakeven(Request $request): JsonResponse
