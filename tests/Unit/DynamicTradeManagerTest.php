@@ -211,4 +211,88 @@ class DynamicTradeManagerTest extends TestCase
         $this->assertEquals('CLOSED', $trade->status);
         $this->assertEquals('STAGNATION_TIMEOUT_EXIT', $trade->exit_reason);
     }
+
+    public function test_peak_profit_reversal_clawback_protection_locks_green_profit(): void
+    {
+        $manager = app(DynamicTradeManager::class);
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+        ]);
+
+        $trade = Trade::create([
+            'symbol' => 'SOLUSDT',
+            'side' => 'LONG',
+            'mode' => 'paper',
+            'status' => 'OPEN',
+            'stage' => 'ENTRY',
+            'entry_price' => 100.0,
+            'quantity' => 0.5,
+            'remaining_quantity' => 0.5,
+            'margin_used' => 5.0,
+            'leverage' => 10,
+            'initial_sl' => 98.5,
+            'current_sl' => 98.5,
+            'tp1_price' => 102.0,
+            'tp2_price' => 104.0,
+            'be_locked' => false,
+            'tp1_hit' => false,
+            'tp2_hit' => false,
+            'opened_at' => Carbon::now(),
+        ]);
+
+        // 1. Price rallies to 100.70 (+0.70% peak gain)
+        $manager->manageTrade($trade, 100.70);
+        $trade->refresh();
+        $this->assertEquals(100.70, $trade->highest_price);
+
+        // 2. Price retraces to 100.40 (surrendering > 35% of the +0.70% peak gain)
+        // Anti-giveback circuit must close trade immediately with PEAK_PROFIT_PROTECTION
+        $manager->manageTrade($trade, 100.40);
+        $trade->refresh();
+
+        $this->assertEquals('CLOSED', $trade->status);
+        $this->assertEquals('PEAK_PROFIT_PROTECTION', $trade->exit_reason);
+        $this->assertGreaterThan(0.0, $trade->realized_pnl, 'Must close with positive green profit in the bank');
+    }
+
+    public function test_stepped_ratchet_moves_stop_loss_at_point_nine_percent_gain(): void
+    {
+        $manager = app(DynamicTradeManager::class);
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+        ]);
+
+        $trade = Trade::create([
+            'symbol' => 'SOLUSDT',
+            'side' => 'LONG',
+            'mode' => 'paper',
+            'status' => 'OPEN',
+            'stage' => 'ENTRY',
+            'entry_price' => 100.0,
+            'quantity' => 0.5,
+            'remaining_quantity' => 0.5,
+            'margin_used' => 5.0,
+            'leverage' => 10,
+            'initial_sl' => 98.5,
+            'current_sl' => 98.5,
+            'tp1_price' => 102.0,
+            'tp2_price' => 104.0,
+            'be_locked' => false,
+            'tp1_hit' => false,
+            'tp2_hit' => false,
+            'opened_at' => Carbon::now(),
+        ]);
+
+        // Price rises to 100.95 (+0.95% gain, which exceeds Tier 2 ratchet threshold of 0.90%)
+        $manager->manageTrade($trade, 100.95);
+        $trade->refresh();
+
+        $this->assertGreaterThanOrEqual(100.45, $trade->current_sl, 'SL must be ratcheted to lock in +0.45% profit');
+    }
 }

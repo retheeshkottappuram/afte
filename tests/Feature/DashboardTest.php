@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -334,5 +335,57 @@ class DashboardTest extends TestCase
             'mode' => 'paper',
             'status' => 'OPEN',
         ]);
+    }
+
+    public function test_stats_includes_cooldown_and_paused_reason_when_circuit_breaker_active(): void
+    {
+        $user = User::factory()->create();
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+            'consecutive_losses' => 2,
+            'paused_until' => Carbon::now()->addMinutes(25),
+            'is_running' => true,
+        ]);
+
+        $response = $this->actingAs($user)->getJson('/api/stats?mode=paper');
+        $response->assertStatus(200);
+        $response->assertJsonFragment([
+            'is_cooldown_active' => true,
+            'consecutive_losses' => 2,
+        ]);
+
+        $data = $response->json();
+        $this->assertNotEmpty($data['paused_reason']);
+        $this->assertStringContainsString('CIRCUIT BREAKER', $data['paused_reason']);
+        $this->assertGreaterThan(0, $data['cooldown_remaining_minutes']);
+    }
+
+    public function test_admin_can_resume_cooldown_and_reset_consecutive_losses(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+
+        $account = TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 5.0,
+            'initial_balance' => 5.0,
+            'consecutive_losses' => 2,
+            'paused_until' => Carbon::now()->addMinutes(30),
+            'is_running' => false,
+        ]);
+
+        $response = $this->actingAs($admin)->postJson('/api/resume-cooldown', ['mode' => 'paper']);
+        $response->assertStatus(200);
+        $response->assertJson([
+            'success' => true,
+            'can_trade' => true,
+        ]);
+
+        $account->refresh();
+        $this->assertNull($account->paused_until);
+        $this->assertEquals(0, $account->consecutive_losses);
+        $this->assertTrue($account->is_running);
     }
 }

@@ -16,6 +16,7 @@ use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SignalEngine;
 use App\Services\Trading\TradingDaemonManager;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -115,6 +116,22 @@ class DashboardController extends Controller
         $stage1Target = 25.0;
         $stage1Progress = min(100.0, max(0.0, round(($currentEquity / $stage1Target) * 100, 1)));
 
+        // Cooldown and pause telemetry
+        $isCooldownActive = $account->paused_until !== null && $account->paused_until->isFuture();
+        $pausedRemainingMinutes = $isCooldownActive ? max(1, (int) ceil(Carbon::now()->diffInSeconds($account->paused_until, false) / 60)) : 0;
+        $pausedRemainingHuman = $isCooldownActive ? $account->paused_until->diffForHumans() : null;
+        $pausedUntilFormatted = $isCooldownActive ? $account->paused_until->format('h:i A') : null;
+
+        $pausedReason = null;
+        if ($account->kill_switch) {
+            $pausedReason = 'EMERGENCY HALT: Kill Switch is active. All automated trading is suspended.';
+        } elseif ($isCooldownActive) {
+            $maxConsecutive = (int) config('trading.circuit_breakers.max_consecutive_losses', 2);
+            $pausedReason = "CIRCUIT BREAKER: Auto-trading paused after {$account->consecutive_losses}/{$maxConsecutive} consecutive losses to eliminate revenge trading and protect capital. Cooldown active for next {$pausedRemainingMinutes}m (until {$pausedUntilFormatted}).";
+        } elseif (! $account->is_running) {
+            $pausedReason = 'STANDBY: Auto-trading is paused. Start Auto Trading to resume automated execution.';
+        }
+
         return response()->json([
             'mode' => $mode,
             'balance' => $balance,
@@ -130,6 +147,12 @@ class DashboardController extends Controller
             'winning_trades' => $account->winning_trades,
             'losing_trades' => $account->losing_trades,
             'consecutive_losses' => $account->consecutive_losses,
+            'max_consecutive_losses' => (int) config('trading.circuit_breakers.max_consecutive_losses', 2),
+            'is_cooldown_active' => $isCooldownActive,
+            'cooldown_remaining_minutes' => $pausedRemainingMinutes,
+            'cooldown_remaining_human' => $pausedRemainingHuman,
+            'cooldown_until_time' => $pausedUntilFormatted,
+            'paused_reason' => $pausedReason,
             'open_positions_count' => $openPositions->count(),
             'used_margin' => $usedMargin,
             'available_margin' => $availMargin,
@@ -574,6 +597,43 @@ class DashboardController extends Controller
             'is_running' => (bool) $account->is_running,
             'can_trade' => $account->canTrade(),
             'message' => $stateMsg,
+            'daemon' => $daemonResult,
+        ]);
+    }
+
+    /**
+     * Reset circuit breaker cooldown and immediately resume auto-trading.
+     */
+    public function resumeCooldown(Request $request): JsonResponse
+    {
+        if (! $request->user()?->isAdmin()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators can reset the cooldown.',
+            ], 403);
+        }
+
+        $mode = $request->input('mode', session('trading_mode', 'paper'));
+        if (! in_array($mode, ['paper', 'live'], true)) {
+            $mode = 'paper';
+        }
+
+        $account = TradingAccount::getForMode($mode);
+        $account->paused_until = null;
+        $account->consecutive_losses = 0;
+        $account->is_running = true;
+        $account->save();
+
+        $daemonResult = null;
+        if (! ($mode === 'live' && ! config('trading.allow_live_trading', false))) {
+            $daemonResult = $this->daemonManager->start($mode);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Circuit breaker cooldown reset successfully. Auto-trading resumed!',
+            'mode' => $mode,
+            'can_trade' => $account->canTrade(),
             'daemon' => $daemonResult,
         ]);
     }

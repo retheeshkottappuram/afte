@@ -43,6 +43,7 @@ Route::middleware('auth')->group(function (): void {
         Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');
         Route::post('/kill-switch', [DashboardController::class, 'toggleKillSwitch'])->name('api.kill_switch');
         Route::post('/toggle-auto-trading', [DashboardController::class, 'toggleAutoTrading'])->name('api.toggle_auto_trading');
+        Route::post('/resume-cooldown', [DashboardController::class, 'resumeCooldown'])->name('api.resume_cooldown');
         Route::post('/auto-tick', [DashboardController::class, 'autoTick'])->name('api.auto_tick');
         Route::post('/backtest', [DashboardController::class, 'runBacktest'])->name('api.backtest');
 

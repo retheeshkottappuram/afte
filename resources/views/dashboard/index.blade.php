@@ -156,6 +156,35 @@
 
         <!-- Main Workspace -->
         <main class="flex-1 px-4 lg:px-8 py-6 space-y-6 max-w-7xl mx-auto w-full">
+            <!-- Circuit Breaker & Revenge Trading Defense Banner (Dynamic) -->
+            <div id="circuit-breaker-banner" class="hidden rounded-xl p-4 border transition-all duration-300 shadow-xl">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div class="flex items-start sm:items-center space-x-3.5">
+                        <div id="cb-icon-container" class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-xl border">
+                            <span id="cb-icon">🛡️</span>
+                        </div>
+                        <div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span id="cb-title" class="font-bold text-sm text-white font-mono tracking-wide">CIRCUIT BREAKER: REVENGE TRADING DEFENSE ACTIVE</span>
+                                <span id="cb-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold"></span>
+                            </div>
+                            <p id="cb-message" class="text-xs text-slate-300 font-mono mt-1 leading-relaxed">
+                                Auto-trading is paused after consecutive losses to eliminate emotional revenge trading and protect capital.
+                            </p>
+                        </div>
+                    </div>
+
+                    @if (Auth::user()?->isAdmin())
+                        <div class="flex items-center space-x-2.5 flex-shrink-0 self-end sm:self-center">
+                            <button onclick="resumeCooldown()" id="btn-resume-cooldown" class="px-3.5 py-2 text-xs font-mono font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg transition flex items-center space-x-1.5 shadow-sm shadow-amber-500/10">
+                                <span>⚡</span>
+                                <span>Reset Cooldown & Resume Trading Now</span>
+                            </button>
+                        </div>
+                    @endif
+                </div>
+            </div>
+
             <!-- 24/7 Background Trading Daemon Status Bar -->
             <div id="daemon-banner" class="glass-panel rounded-xl p-4 border border-cyan-500/30 bg-cyber-800/90 shadow-[0_0_20px_rgba(6,182,212,0.08)]">
                 <div class="flex flex-wrap items-center justify-between gap-4">
@@ -594,14 +623,49 @@
                                 <div class="p-2.5 rounded bg-cyber-800 border border-cyber-border">
                                     <span class="text-amber-400 font-bold block text-[11px]">STAGE 3: COMPOUNDING</span>
                                     <span class="text-slate-400 text-[10px] block">$100 – $500 Balance</span>
-                                    <p class="text-[10px] text-slate-300 mt-1">2.5% risk per trade, trailing stop-losses, breakeven locks (+1.2%), and multi-tier profit taking.</p>
+                                    <p class="text-[10px] text-slate-300 mt-1">2.5% risk per trade, trailing stop-losses, and multi-tier institutional profit taking.</p>
                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- Profit Lock & Anti-Giveback Circuit Section -->
+                        <div class="p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-500/40 text-[11px] space-y-2">
+                            <div class="flex items-center space-x-1.5 text-cyan-300 font-bold">
+                                <span>🛡️</span>
+                                <span>Asymmetric Profit Ratchet & Anti-Giveback Circuit (Portfolio Protection)</span>
+                            </div>
+                            <p class="text-slate-300 leading-normal">
+                                Designed specifically to prevent profitable trades from retracing into red or flat breakeven, targeting consistent daily portfolio growth:
+                            </p>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[10px]">
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
+                                    <strong class="text-emerald-400 block font-bold">Step 1: Early Micro-BE</strong>
+                                    <span>Gain reaches +0.30% (+3% ROE) ➔ SL moved to Entry + 0.08% (covers fees + dust profit). 100% Risk-Free.</span>
+                                </div>
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
+                                    <strong class="text-emerald-400 block font-bold">Step 2: Tier 1 Profit Lock</strong>
+                                    <span>Gain reaches +0.45% (+4.5% ROE) ➔ SL ratcheted to +0.18% profit (+1.8% ROE locked in cash).</span>
+                                </div>
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
+                                    <strong class="text-emerald-400 block font-bold">Step 3: Fast TP1 Cash Bank</strong>
+                                    <span>Gain reaches +0.65% (+6.5% ROE) ➔ 40% of position banked into cash! SL ratcheted to +0.18%.</span>
+                                </div>
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
+                                    <strong class="text-emerald-400 block font-bold">Step 4: Tier 2 Profit Lock</strong>
+                                    <span>Gain reaches +0.90% (+9% ROE) ➔ SL ratcheted to +0.45% profit (+4.5% ROE locked in cash).</span>
+                                </div>
+                            </div>
+                            <div class="p-2 rounded bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-[10px]">
+                                <strong class="font-bold">Anti-Giveback Circuit:</strong> If a position peaked &ge; +0.40% gain (+4% ROE) and pulls back by &ge; 35% of that peak gain, the engine executes an immediate market exit (<code class="text-white">PEAK_PROFIT_PROTECTION</code>) to lock in green profits before market reversal!
+                            </div>
+                            <div class="p-2 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300 text-[10px]">
+                                <strong class="font-bold">Revenge Trading Defense:</strong> If 2 consecutive losses occur, a 30-minute cooldown pauses auto-trading to break loss spirals and protect capital. You can monitor the cooldown or reset it instantly anytime from the dashboard.
                             </div>
                         </div>
 
                         <div class="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-[11px]">
                             <span class="text-emerald-300 font-bold">24/7 Autonomous Operation:</span>
-                            The background daemon service executes continuously on the server independently of your browser session, monitoring breakout signals, moving stop-losses to breakeven, and booking profits 24/7.
+                            The background daemon service executes continuously on the server independently of your browser session, monitoring breakout signals, moving stop-losses to breakeven, ratcheting profits, and booking gains 24/7.
                         </div>
                     </div>
                     <div class="px-5 py-3 border-t border-cyber-border bg-cyber-800/60 text-right">
@@ -901,13 +965,17 @@
                     guard.innerHTML = '<span class="w-2 h-2 rounded-full bg-slate-400 mr-2"></span>AUTO-TRADING STOPPED';
                     guard.className = 'inline-flex items-center text-xs font-mono text-slate-400 font-medium';
                 } else if (!stats.can_trade) {
-                    guard.innerHTML = '<span class="w-2 h-2 rounded-full bg-amber-400 mr-2 animate-pulse"></span>COOLDOWN PAUSED';
+                    const cooldownInfo = stats.cooldown_remaining_minutes ? ` (${stats.cooldown_remaining_minutes}m left)` : '';
+                    guard.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 mr-2 animate-pulse"></span>COOLDOWN PAUSED${cooldownInfo}`;
                     guard.className = 'inline-flex items-center text-xs font-mono text-amber-400 font-bold';
                 } else {
-                    guard.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span>ACTIVE (${stats.consecutive_losses}/2 Losses)`;
+                    guard.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span>ACTIVE (${stats.consecutive_losses}/${stats.max_consecutive_losses || 2} Losses)`;
                     guard.className = 'inline-flex items-center text-xs font-mono text-emerald-400 font-medium';
                 }
             }
+
+            // Update Dynamic Circuit Breaker Warning Banner
+            updateCircuitBreakerUI(stats);
         }
 
         function updateDaemonUI(daemon, stats) {
@@ -1295,6 +1363,92 @@
                 }
             } catch (err) {
                 console.error("Auto-trading toggle error:", err);
+            }
+        }
+
+        function updateCircuitBreakerUI(stats) {
+            const banner = document.getElementById('circuit-breaker-banner');
+            if (!banner) return;
+
+            const iconContainer = document.getElementById('cb-icon-container');
+            const icon = document.getElementById('cb-icon');
+            const title = document.getElementById('cb-title');
+            const badge = document.getElementById('cb-badge');
+            const message = document.getElementById('cb-message');
+            const resumeBtn = document.getElementById('btn-resume-cooldown');
+
+            if (stats.kill_switch) {
+                banner.classList.remove('hidden');
+                banner.className = 'rounded-xl p-4 border border-rose-500/50 bg-rose-950/40 shadow-lg shadow-rose-950/50';
+                if (iconContainer) iconContainer.className = 'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-xl border border-rose-500/40 bg-rose-500/20 text-rose-300';
+                if (icon) icon.textContent = '🛑';
+                if (title) title.textContent = 'EMERGENCY HALT: KILL SWITCH ACTIVE';
+                if (badge) {
+                    badge.textContent = 'TRADING SUSPENDED';
+                    badge.className = 'px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40';
+                }
+                if (message) message.textContent = 'Emergency Kill Switch is active. All open positions were closed and autonomous execution is halted. Deactivate the kill switch to resume.';
+                if (resumeBtn) {
+                    resumeBtn.innerHTML = '<span>⚡</span><span>Deactivate Kill Switch & Resume</span>';
+                    resumeBtn.onclick = toggleKillSwitch;
+                }
+            } else if (stats.is_cooldown_active) {
+                banner.classList.remove('hidden');
+                banner.className = 'rounded-xl p-4 border border-amber-500/50 bg-amber-950/30 shadow-lg shadow-amber-950/30';
+                if (iconContainer) iconContainer.className = 'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-xl border border-amber-500/40 bg-amber-500/20 text-amber-300';
+                if (icon) icon.textContent = '🛡️';
+                if (title) title.textContent = 'CIRCUIT BREAKER: REVENGE TRADING DEFENSE ACTIVE';
+                if (badge) {
+                    badge.textContent = `COOLDOWN: ${stats.cooldown_remaining_minutes}M REMAINING`;
+                    badge.className = 'px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse';
+                }
+                if (message) {
+                    const remainingMins = stats.cooldown_remaining_minutes || 0;
+                    const maxLoss = stats.max_consecutive_losses || 2;
+                    const untilTime = stats.cooldown_until_time ? ` (until ${stats.cooldown_until_time})` : '';
+                    message.innerHTML = `Auto-trading is temporarily paused after <strong class="text-white font-mono">${stats.consecutive_losses}/${maxLoss} consecutive losses</strong> to eliminate emotional revenge trading and protect capital. Cooldown expires in <strong class="text-amber-300 font-mono">${remainingMins} minutes</strong>${untilTime}. Capital is safeguarded. If you have analyzed market conditions and wish to resume auto-trading immediately, click below.`;
+                }
+                if (resumeBtn) {
+                    resumeBtn.innerHTML = '<span>⚡</span><span>Reset Cooldown & Resume Trading Now</span>';
+                    resumeBtn.onclick = resumeCooldown;
+                }
+            } else {
+                banner.classList.add('hidden');
+            }
+        }
+
+        async function resumeCooldown() {
+            const btn = document.getElementById('btn-resume-cooldown');
+            const originalHtml = btn ? btn.innerHTML : null;
+            if (btn) {
+                btn.innerHTML = `<span class="inline-block animate-spin mr-1">⌛</span> Resetting...`;
+                btn.disabled = true;
+            }
+
+            try {
+                const res = await fetch('/api/resume-cooldown', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                    },
+                    body: JSON.stringify({ mode: currentMode })
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    liveSync();
+                } else {
+                    alert(data.message || 'Error resetting cooldown.');
+                }
+            } catch (err) {
+                console.error("Resume cooldown error:", err);
+                alert(`Error: ${err.message}`);
+            } finally {
+                if (btn && originalHtml) {
+                    btn.innerHTML = originalHtml;
+                    btn.disabled = false;
+                }
             }
         }
 
