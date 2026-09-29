@@ -14,11 +14,31 @@ class TelegramNotifier
 
     protected string $chatId;
 
+    protected bool $liveOnly;
+
     public function __construct()
     {
         $this->enabled = (bool) config('trading.telegram.enabled', false);
         $this->botToken = (string) config('trading.telegram.bot_token', '');
         $this->chatId = (string) config('trading.telegram.chat_id', '');
+        $this->liveOnly = (bool) config('trading.telegram.live_only', true);
+    }
+
+    /**
+     * Determine if a notification should be dispatched for this trade.
+     */
+    protected function shouldNotify(Trade $trade): bool
+    {
+        if (! $this->enabled || empty($this->botToken) || empty($this->chatId)) {
+            return false;
+        }
+
+        // Never notify for paper trading
+        if ($trade->mode === 'paper' || ($this->liveOnly && $trade->mode !== 'live')) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -52,6 +72,9 @@ class TelegramNotifier
      */
     public function notifyTradeOpened(Trade $trade, int $score, string $aiReason): void
     {
+        if (! $this->shouldNotify($trade)) {
+            return;
+        }
         $icon = $trade->isLong() ? '🟢' : '🔴';
         $modeTag = strtoupper($trade->mode);
 
@@ -76,6 +99,10 @@ class TelegramNotifier
      */
     public function notifyBreakevenLocked(Trade $trade, float $currentPrice): void
     {
+        if (! $this->shouldNotify($trade)) {
+            return;
+        }
+
         $msg = "🛡️ *BREAKEVEN LOCKED*\n\n"
             ."*{$trade->symbol} {$trade->side}*\n"
             ."• *Current Price:* \${$currentPrice}\n"
@@ -90,6 +117,10 @@ class TelegramNotifier
      */
     public function notifyTp1Hit(Trade $trade, float $closedQty, float $pnl): void
     {
+        if (! $this->shouldNotify($trade)) {
+            return;
+        }
+
         $msg = "🎯 *TP1 HIT — 33% PROFIT BOOKED*\n\n"
             ."*{$trade->symbol} {$trade->side}*\n"
             ."• *Partial Profit:* +\${$pnl}\n"
@@ -104,6 +135,10 @@ class TelegramNotifier
      */
     public function notifyTp2Hit(Trade $trade, float $closedQty, float $pnl): void
     {
+        if (! $this->shouldNotify($trade)) {
+            return;
+        }
+
         $msg = "🎯🎯 *TP2 HIT — 33% PROFIT BOOKED*\n\n"
             ."*{$trade->symbol} {$trade->side}*\n"
             ."• *Partial Profit:* +\${$pnl}\n"
@@ -118,6 +153,10 @@ class TelegramNotifier
      */
     public function notifyTradeClosed(Trade $trade, float $accountBalance): void
     {
+        if (! $this->shouldNotify($trade)) {
+            return;
+        }
+
         $icon = $trade->realized_pnl >= 0 ? '💰' : '🛑';
         $pnlSign = $trade->realized_pnl >= 0 ? '+' : '';
 

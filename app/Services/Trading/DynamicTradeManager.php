@@ -209,7 +209,7 @@ class DynamicTradeManager
 
             $this->notifier->notifyTp1Hit($trade, $closeQty, round($pnl, 2));
 
-            if (in_array($trade->mode, ['live', 'testnet'], true)) {
+            if ($trade->mode === 'live') {
                 try {
                     $client = $this->client->forMode($trade->mode);
                     if ($client->hasCredentials()) {
@@ -272,7 +272,7 @@ class DynamicTradeManager
 
             $this->notifier->notifyTp2Hit($trade, $closeQty, round($pnl, 2));
 
-            if (in_array($trade->mode, ['live', 'testnet'], true)) {
+            if ($trade->mode === 'live') {
                 try {
                     $client = $this->client->forMode($trade->mode);
                     if ($client->hasCredentials()) {
@@ -363,7 +363,7 @@ class DynamicTradeManager
 
         $totalPnl = round($trade->realized_pnl + $remainingPnl, 4);
 
-        if (in_array($trade->mode, ['live', 'testnet'], true)) {
+        if ($trade->mode === 'live') {
             try {
                 $client = $this->client->forMode($trade->mode);
                 if ($client->hasCredentials()) {
@@ -420,7 +420,7 @@ class DynamicTradeManager
      */
     protected function updateExchangeStopLoss(Trade $trade, float $newSl): void
     {
-        if (! in_array($trade->mode, ['live', 'testnet'], true)) {
+        if ($trade->mode !== 'live') {
             return;
         }
 

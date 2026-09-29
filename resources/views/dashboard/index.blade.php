@@ -104,8 +104,6 @@
                     <!-- Mode Selector -->
                     <div class="flex items-center bg-cyber-900 border border-cyber-border rounded-lg p-0.5 sm:p-1 space-x-0.5 sm:space-x-1 flex-shrink-0">
                         <button onclick="switchMode('paper')" id="btn-mode-paper" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">PAPER</button>
-                        <button onclick="switchMode('testnet')" id="btn-mode-testnet" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">TESTNET</button>
-                        <button onclick="switchMode('shadow')" id="btn-mode-shadow" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">SHADOW</button>
                         <button onclick="switchMode('live')" id="btn-mode-live" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">LIVE</button>
                     </div>
 
@@ -660,10 +658,12 @@
         const savedMode = localStorage.getItem('afte_trading_mode');
         
         let currentMode = '{{ $mode }}';
-        if (urlMode && ['paper', 'testnet', 'shadow', 'live'].includes(urlMode)) {
+        if (urlMode && ['paper', 'live'].includes(urlMode)) {
             currentMode = urlMode;
-        } else if (savedMode && ['paper', 'testnet', 'shadow', 'live'].includes(savedMode)) {
+        } else if (savedMode && ['paper', 'live'].includes(savedMode)) {
             currentMode = savedMode;
+        } else {
+            currentMode = 'paper';
         }
 
         // Keep LocalStorage, Cookie, and URL strictly synchronized
@@ -672,7 +672,7 @@
         window.history.replaceState({}, '', `/?mode=${currentMode}`);
 
         function updateModeUI(mode) {
-            ['paper', 'testnet', 'shadow', 'live'].forEach(m => {
+            ['paper', 'live'].forEach(m => {
                 const btn = document.getElementById(`btn-mode-${m}`);
                 if (!btn) return;
                 if (m === mode) {
@@ -832,7 +832,7 @@
                 if (stats.live_synced) {
                     syncIndicator.innerHTML = '● BINANCE LIVE';
                     syncIndicator.className = 'text-emerald-400 font-mono text-[10px] font-bold animate-pulse';
-                } else if (stats.mode === 'live' || stats.mode === 'testnet') {
+                } else if (stats.mode === 'live') {
                     syncIndicator.innerHTML = '○ LOCAL DATA';
                     syncIndicator.className = 'text-amber-400 font-mono text-[10px]';
                 } else {

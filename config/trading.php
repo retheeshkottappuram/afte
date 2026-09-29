@@ -7,8 +7,6 @@ return [
     |--------------------------------------------------------------------------
     | Modes:
     | - 'paper': 100% simulated with seed capital and real live Binance price feed.
-    | - 'testnet': Uses Binance Futures Testnet API.
-    | - 'shadow': Real Binance live feed, logs trades without execution.
     | - 'live': Real Binance Futures account (Requires API keys with trading permission).
     */
     'mode' => env('TRADING_MODE', 'paper'),
@@ -178,6 +176,7 @@ return [
         'enabled' => (bool) env('TELEGRAM_NOTIFICATIONS_ENABLED', false),
         'bot_token' => env('TELEGRAM_BOT_TOKEN', ''),
         'chat_id' => env('TELEGRAM_CHAT_ID', ''),
+        'live_only' => (bool) env('TELEGRAM_LIVE_ONLY', true), // Only dispatch Telegram alerts for real live trading; suppress simulated paper trades
     ],
 
     /*

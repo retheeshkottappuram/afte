@@ -56,9 +56,9 @@ class OrderExecutor
         $side = $signal['direction'];
         $binanceOrderId = null;
 
-        // 3. Live or Testnet Execution
-        if (in_array($mode, ['live', 'testnet'], true)) {
-            if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
+        // 3. Live Execution
+        if ($mode === 'live') {
+            if (! config('trading.allow_live_trading', false)) {
                 Log::warning("OrderExecutor: Blocked LIVE trade for {$symbol}. Live order execution is disabled in this environment (allow_live_trading is false).");
 
                 return [

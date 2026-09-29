@@ -46,7 +46,7 @@ class DashboardController extends Controller
             ?? session('trading_mode')
             ?? config('trading.mode', 'paper');
 
-        if (! in_array($mode, ['paper', 'testnet', 'shadow', 'live'], true)) {
+        if (! in_array($mode, ['paper', 'live'], true)) {
             $mode = 'paper';
         }
 
@@ -72,7 +72,7 @@ class DashboardController extends Controller
             ?? $request->cookie('afte_trading_mode')
             ?? config('trading.mode', 'paper');
 
-        if (! in_array($mode, ['paper', 'testnet', 'shadow', 'live'], true)) {
+        if (! in_array($mode, ['paper', 'live'], true)) {
             $mode = 'paper';
         }
 
@@ -153,6 +153,9 @@ class DashboardController extends Controller
     public function positions(Request $request): JsonResponse
     {
         $mode = $request->query('mode', config('trading.mode', 'paper'));
+        if (! in_array($mode, ['paper', 'live'], true)) {
+            $mode = 'paper';
+        }
         $client = $this->client->forMode($mode);
         $account = TradingAccount::getForMode($mode);
 
@@ -161,7 +164,7 @@ class DashboardController extends Controller
 
         // Fetch open exchange-side algo orders (Stop Loss / Take Profit)
         $openAlgoMap = [];
-        if (in_array($mode, ['live', 'testnet'], true) && $client->hasCredentials()) {
+        if ($mode === 'live' && $client->hasCredentials()) {
             try {
                 $algoOrders = $client->getOpenAlgoOrders();
                 foreach ($algoOrders as $ao) {
@@ -550,7 +553,7 @@ class DashboardController extends Controller
         if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return response()->json([
                 'success' => false,
-                'message' => 'Live auto-trading is disabled in local development to prevent dual-instance collisions with the live server. Please switch to Paper or Shadow mode.',
+                'message' => 'Live auto-trading is disabled in local development to prevent dual-instance collisions with the live server. Please switch to Paper mode.',
             ], 422);
         }
 

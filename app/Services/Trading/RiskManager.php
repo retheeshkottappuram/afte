@@ -52,7 +52,7 @@ class RiskManager
      */
     public function getAvailableBalance(TradingAccount $account): float
     {
-        if (in_array($account->mode, ['live', 'testnet'], true) && $this->client->hasCredentials()) {
+        if ($account->mode === 'live' && $this->client->hasCredentials()) {
             try {
                 $balances = $this->client->forMode($account->mode)->getBalance();
                 foreach ($balances as $b) {

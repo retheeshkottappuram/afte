@@ -16,6 +16,9 @@ class TradeHistoryController extends Controller
     public function index(Request $request): View
     {
         $mode = $request->query('mode', config('trading.mode', 'paper'));
+        if (! in_array($mode, ['paper', 'live'], true)) {
+            $mode = 'paper';
+        }
         $symbol = $request->query('symbol');
         $outcome = $request->query('outcome', 'all');
         $dateRange = $request->query('range', 'all');
@@ -100,6 +103,9 @@ class TradeHistoryController extends Controller
     public function exportCsv(Request $request): StreamedResponse
     {
         $mode = $request->query('mode', config('trading.mode', 'paper'));
+        if (! in_array($mode, ['paper', 'live'], true)) {
+            $mode = 'paper';
+        }
         $symbol = $request->query('symbol');
 
         $query = Trade::where('mode', $mode)->where('status', 'CLOSED');

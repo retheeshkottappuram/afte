@@ -107,7 +107,7 @@ class TradingDaemonManager
         if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return [
                 'success' => false,
-                'message' => 'LIVE trading daemon cannot be started from this environment (ALLOW_LIVE_TRADING is false). Please use Paper or Shadow mode in local development.',
+                'message' => 'LIVE trading daemon cannot be started from this environment (ALLOW_LIVE_TRADING is false). Please use Paper mode in local development.',
                 'is_running' => false,
             ];
         }
@@ -295,7 +295,7 @@ class TradingDaemonManager
         $account = TradingAccount::getForMode($mode);
 
         // 0. Live Binance Position & Balance Sync
-        if (in_array($mode, ['live', 'testnet'], true)) {
+        if ($mode === 'live') {
             try {
                 $this->exchangeSync->syncLiveAccountAndPositions($account, $mode);
                 $account->refresh();

@@ -21,7 +21,7 @@ class ExchangePositionSync
      */
     public function syncLiveAccountAndPositions(TradingAccount $account, string $mode): bool
     {
-        if (! in_array($mode, ['live', 'testnet'], true)) {
+        if ($mode !== 'live') {
             return false;
         }
 

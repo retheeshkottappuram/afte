@@ -104,7 +104,7 @@
                 <div class="flex flex-wrap items-center justify-between lg:justify-end gap-2 sm:gap-2.5 w-full lg:w-auto min-w-0">
                     <!-- Mode Pills -->
                     <div class="flex items-center bg-cyber-900 border border-cyber-border rounded-lg p-0.5 sm:p-1 space-x-0.5 sm:space-x-1 flex-shrink-0">
-                        @foreach (['paper', 'testnet', 'shadow', 'live'] as $m)
+                        @foreach (['paper', 'live'] as $m)
                             <a href="{{ route('history.index', ['mode' => $m]) }}"
                                class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded uppercase transition {{ $mode === $m ? 'bg-cyan-500 text-cyber-900 font-bold' : 'text-slate-400 hover:text-white' }}">
                                 {{ $m }}

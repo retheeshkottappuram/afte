@@ -15,7 +15,7 @@ class KillSwitchCommand extends Command
      * @var string
      */
     protected $signature = 'trade:kill
-                            {--mode=paper : Mode to apply kill switch (paper, testnet, live, all)}
+                            {--mode=paper : Mode to apply kill switch (paper, live, all)}
                             {--resume : Resume trading by deactivating kill switch}';
 
     /**
@@ -33,7 +33,7 @@ class KillSwitchCommand extends Command
         $mode = (string) $this->option('mode');
         $resume = (bool) $this->option('resume');
 
-        $modes = $mode === 'all' ? ['paper', 'testnet', 'shadow', 'live'] : [$mode];
+        $modes = $mode === 'all' ? ['paper', 'live'] : [$mode];
 
         foreach ($modes as $m) {
             $account = TradingAccount::getForMode($m);

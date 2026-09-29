@@ -20,7 +20,7 @@ class BinanceFuturesClient
     protected int $recvWindow;
 
     /**
-     * @param  string|null  $mode  'paper', 'testnet', 'shadow', or 'live'
+     * @param  string|null  $mode  'paper' or 'live'
      */
     public function __construct(?string $mode = null)
     {

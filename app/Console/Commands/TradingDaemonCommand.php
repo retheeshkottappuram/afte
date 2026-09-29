@@ -27,7 +27,7 @@ class TradingDaemonCommand extends Command
      * @var string
      */
     protected $signature = 'trade:daemon
-                            {--mode= : Override mode (paper, testnet, live)}
+                            {--mode= : Override mode (paper, live)}
                             {--interval=2 : Seconds between position management cycles}
                             {--scan-interval=25 : Seconds between market scanner cycles}
                             {--start : Activate auto-trading state}
@@ -157,7 +157,7 @@ class TradingDaemonCommand extends Command
             }
 
             // 1. Live Exchange Synchronization (Reconciles open/closed positions and balances with Binance)
-            if (in_array($mode, ['live', 'testnet'], true)) {
+            if ($mode === 'live') {
                 try {
                     $exchangeSync->syncLiveAccountAndPositions($account, $mode);
                     $account->refresh();
