@@ -164,7 +164,7 @@ return [
         'top_symbols_limit' => 25,
         'priority_symbols' => [
             'SUIUSDT', 'DOGEUSDT', 'NEARUSDT', 'SOLUSDT', 'RENDERUSDT',
-            'PEPEUSDT', '1000PEPEUSDT', 'FETUSDT', 'SEIUSDT',
+            '1000PEPEUSDT', 'FETUSDT', 'SEIUSDT',
             'LINKUSDT', 'XRPUSDT', 'ADAUSDT', 'TIAUSDT', 'INJUSDT',
         ],
     ],

@@ -87,13 +87,15 @@ class SignalEngine
         if ($htf1 && count($htf1['closes']) >= 30) {
             $htfCloses = $htf1['closes'];
             $htfIdx = count($htfCloses) - 2;
-            $htfEma21 = Indicators::ema($htfCloses, 21);
-            $htfEma50 = Indicators::ema($htfCloses, 50);
+            $htfC = $htfCloses[$htfIdx];
+            $htfEma9 = Indicators::ema($htfCloses, 9)[$htfIdx] ?? $htfC;
+            $htfEma21 = Indicators::ema($htfCloses, 21)[$htfIdx] ?? $htfC;
+            $htfEma50 = Indicators::ema($htfCloses, 50)[$htfIdx] ?? $htfC;
 
-            if (($htfEma21[$htfIdx] ?? null) !== null && ($htfEma50[$htfIdx] ?? null) !== null) {
-                $htf1Bullish = $htfEma21[$htfIdx] >= $htfEma50[$htfIdx];
-                $htf1Bearish = $htfEma21[$htfIdx] <= $htfEma50[$htfIdx];
-            }
+            // HTF Bullish: 1h price above 21 EMA OR 1h 9 EMA >= 21 EMA OR 21 EMA >= 50 EMA
+            $htf1Bullish = ($htfC >= $htfEma21 * 0.998) || ($htfEma9 >= $htfEma21) || ($htfEma21 >= $htfEma50);
+            // HTF Bearish: 1h price below 21 EMA OR 1h 9 EMA <= 21 EMA OR 21 EMA <= 50 EMA
+            $htf1Bearish = ($htfC <= $htfEma21 * 1.002) || ($htfEma9 <= $htfEma21) || ($htfEma21 <= $htfEma50);
         }
 
         // 4. Relative Strength vs BTC (over last 24 bars = 6 hours)
@@ -134,8 +136,8 @@ class SignalEngine
         $hasLowerHighs = ($high1 <= $high2 * 1.001 && $high2 <= $high3 * 1.001);
 
         // Trend validation on base timeframe
-        $isBaseUptrend = ($currentClose > $valEma21) && ($valEma9 >= $valEma21) && ($valEma50 === null || $currentClose >= $valEma50 * 0.995);
-        $isBaseDowntrend = ($currentClose < $valEma21) && ($valEma9 <= $valEma21) && ($valEma50 === null || $currentClose <= $valEma50 * 1.005);
+        $isBaseUptrend = ($currentClose > $valEma21) && ($valEma9 >= $valEma21 * 0.999);
+        $isBaseDowntrend = ($currentClose < $valEma21) && ($valEma9 <= $valEma21 * 1.001);
 
         $direction = null;
         $setup = null;
@@ -147,51 +149,61 @@ class SignalEngine
         // ==========================================
         $longScore = 0;
 
-        // Setup 1: Pre-Breakout Ascending Coiling Squeeze (Enter BEFORE the breakout explodes!)
-        $isPreBreakoutLong = $isBaseUptrend
+        // Setup 1: Clean Structure Breakout (New 20-period High expansion)
+        $isCleanBreakoutLong = ($currentClose > $swingHigh)
+            && $isBaseUptrend
             && $htf1Bullish
-            && $rsRatio >= 0.995
-            && ($distToResPct >= 0.12 && $distToResPct <= 1.25)
-            && ($hasHigherLows || $currentClose > $valEma9)
             && ($currentClose > $currentOpen)
-            && ($upperWickPct <= 30.0)
-            && ($valRsi >= 50.0 && $valRsi <= 68.0)
-            && ($volRatio >= 0.95);
+            && ($upperWickPct <= 35.0)
+            && ($valRsi >= 50.0 && $valRsi <= 74.0)
+            && ($volRatio >= 1.05);
 
         // Setup 2: Wyckoff Spring Liquidity Reversal (Trap breakout shorts and pump through highs!)
         $isSpringLong = ($currentLow < $swingLow || $lows[$i - 1] < $swingLow)
             && ($currentClose > $swingLow)
             && ($currentClose > $currentOpen)
-            && ($lowerWickPct >= 38.0)
+            && ($lowerWickPct >= 35.0)
             && ! $htf1Bearish
-            && $rsRatio >= 0.995
-            && ($valRsi >= 38.0 && $valRsi <= 62.0)
-            && ($volRatio >= 1.15);
+            && ($valRsi >= 38.0 && $valRsi <= 64.0)
+            && ($volRatio >= 1.10);
 
-        // Setup 3: Institutional 21-EMA Value Pullback Bounce (Dip buying in strong trend)
+        // Setup 3: Pre-Breakout Ascending Coiling Squeeze (Enter BEFORE the breakout explodes!)
+        $isPreBreakoutLong = $isBaseUptrend
+            && $htf1Bullish
+            && ($distToResPct >= 0.05 && $distToResPct <= 1.80)
+            && ($hasHigherLows || $currentClose > $valEma9)
+            && ($currentClose > $currentOpen)
+            && ($upperWickPct <= 35.0)
+            && ($valRsi >= 48.0 && $valRsi <= 68.0)
+            && ($volRatio >= 0.85);
+
+        // Setup 4: Institutional 21-EMA Value Pullback Bounce (Dip buying in strong trend)
         $isPullbackBounceLong = $isBaseUptrend
             && $htf1Bullish
-            && $rsRatio >= 0.995
-            && ($currentLow <= $valEma21 * 1.002 && $currentClose > $valEma21)
+            && ($currentLow <= $valEma21 * 1.004 && $currentClose > $valEma21)
             && ($currentClose > $currentOpen)
-            && ($lowerWickPct >= 32.0)
-            && ($valRsi >= 48.0 && $valRsi <= 64.0)
-            && ($valPlusDi >= $valMinusDi);
+            && ($lowerWickPct >= 25.0)
+            && ($valRsi >= 46.0 && $valRsi <= 66.0);
 
         if ($isSpringLong) {
             $direction = 'LONG';
             $setup = 'WYCKOFF_SPRING_REVERSAL';
             $longScore = 95;
             $slPrice = min($currentLow, $lows[$i - 1]) * 0.998;
+        } elseif ($isCleanBreakoutLong) {
+            $direction = 'LONG';
+            $setup = 'CLEAN_STRUCTURE_BREAKOUT';
+            $longScore = 92;
+            $slPrice = max($swingLow, min($currentLow, $lows[$i - 1])) * 0.9985;
         } elseif ($isPreBreakoutLong) {
             $direction = 'LONG';
             $setup = 'PRE_BREAKOUT_ASCENDING_COIL';
-            $longScore = 92;
+            $longScore = 88;
             $slPrice = min($low1, $low2) * 0.998;
         } elseif ($isPullbackBounceLong) {
             $direction = 'LONG';
             $setup = 'INSTITUTIONAL_PULLBACK_BOUNCE';
-            $longScore = 88;
+            $longScore = 86;
             $slPrice = $currentLow * 0.998;
         }
 
@@ -200,50 +212,61 @@ class SignalEngine
         // ==========================================
         $shortScore = 0;
 
-        // Setup 1: Pre-Breakdown Descending Coiling Squeeze (Enter BEFORE the dump flushes!)
-        $isPreBreakdownShort = $isBaseDowntrend
+        // Setup 1: Clean Structure Breakdown (New 20-period Low expansion)
+        $isCleanBreakdownShort = ($currentClose < $swingLow)
+            && $isBaseDowntrend
             && $htf1Bearish
-            && $rsRatio <= 1.005
-            && ($distToSupPct >= 0.12 && $distToSupPct <= 1.25)
-            && ($hasLowerHighs || $currentClose < $valEma9)
             && ($currentClose < $currentOpen)
-            && ($lowerWickPct <= 30.0)
-            && ($valRsi <= 50.0 && $valRsi >= 32.0)
-            && ($volRatio >= 0.95);
+            && ($lowerWickPct <= 35.0)
+            && ($valRsi <= 50.0 && $valRsi >= 26.0)
+            && ($volRatio >= 1.05);
 
         // Setup 2: Wyckoff Upthrust Liquidity Reversal (Trap breakout longs and dump through lows!)
         $isUpthrustShort = ($currentHigh > $swingHigh || $highs[$i - 1] > $swingHigh)
             && ($currentClose < $swingHigh)
             && ($currentClose < $currentOpen)
-            && ($upperWickPct >= 38.0)
+            && ($upperWickPct >= 35.0)
             && ! $htf1Bullish
-            && $rsRatio <= 1.005
-            && ($valRsi <= 62.0 && $valRsi >= 38.0)
-            && ($volRatio >= 1.15);
+            && ($valRsi <= 64.0 && $valRsi >= 36.0)
+            && ($volRatio >= 1.10);
 
-        // Setup 3: Institutional 21-EMA Value Pullback Rejection (Rally shorting in strong downtrend)
+        // Setup 3: Pre-Breakdown Descending Coiling Squeeze (Enter BEFORE the dump flushes!)
+        $isPreBreakdownShort = $isBaseDowntrend
+            && $htf1Bearish
+            && ($distToSupPct >= 0.05 && $distToSupPct <= 1.80)
+            && ($hasLowerHighs || $currentClose < $valEma9)
+            && ($currentClose < $currentOpen)
+            && ($lowerWickPct <= 35.0)
+            && ($valRsi <= 52.0 && $valRsi >= 32.0)
+            && ($volRatio >= 0.85);
+
+        // Setup 4: Institutional 21-EMA Value Pullback Rejection (Rally shorting in strong downtrend)
         $isPullbackRejectShort = $isBaseDowntrend
             && $htf1Bearish
-            && ($currentHigh >= $valEma21 * 0.998 && $currentClose < $valEma21)
+            && ($currentHigh >= $valEma21 * 0.996 && $currentClose < $valEma21)
             && ($currentClose < $currentOpen)
-            && ($upperWickPct >= 32.0)
-            && ($valRsi <= 52.0 && $valRsi >= 36.0)
-            && ($valMinusDi >= $valPlusDi);
+            && ($upperWickPct >= 25.0)
+            && ($valRsi <= 54.0 && $valRsi >= 34.0);
 
         if ($isUpthrustShort) {
             $direction = 'SHORT';
             $setup = 'WYCKOFF_UPTHRUST_REVERSAL';
             $shortScore = 95;
             $slPrice = max($currentHigh, $highs[$i - 1]) * 1.002;
+        } elseif ($isCleanBreakdownShort) {
+            $direction = 'SHORT';
+            $setup = 'CLEAN_STRUCTURE_BREAKDOWN';
+            $shortScore = 92;
+            $slPrice = min($swingHigh, max($currentHigh, $highs[$i - 1])) * 1.0015;
         } elseif ($isPreBreakdownShort) {
             $direction = 'SHORT';
             $setup = 'PRE_BREAKDOWN_DESCENDING_COIL';
-            $shortScore = 92;
+            $shortScore = 88;
             $slPrice = max($high1, $high2) * 1.002;
         } elseif ($isPullbackRejectShort) {
             $direction = 'SHORT';
             $setup = 'INSTITUTIONAL_PULLBACK_REJECTION';
-            $shortScore = 88;
+            $shortScore = 86;
             $slPrice = $currentHigh * 1.002;
         }
 
