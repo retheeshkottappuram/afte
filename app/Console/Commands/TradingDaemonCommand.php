@@ -70,6 +70,7 @@ class TradingDaemonCommand extends Command
         if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
             $this->error('🛑 LIVE trading is strictly disabled in this environment (ALLOW_LIVE_TRADING is false).');
             $this->line('To prevent order collisions with your live production server, use --mode=paper or --mode=shadow in local development.');
+            $this->line('If this is your live server, set ALLOW_LIVE_TRADING=true in your .env file or set TRADING_MODE=live.');
 
             return self::FAILURE;
         }
@@ -77,10 +78,14 @@ class TradingDaemonCommand extends Command
         $interval = max(1, (int) $this->option('interval'));
         $scanInterval = max(10, (int) $this->option('scan-interval'));
         $runOnce = (bool) $this->option('once');
+        $daemonStartTimestamp = time();
 
         $account = TradingAccount::getForMode($mode);
 
         if ($this->option('start')) {
+            // Explicit --start voids any previous stop signal
+            Cache::forget(TradingDaemonManager::CACHE_STOP_KEY);
+            @unlink(storage_path('framework/stop-trading-daemon'));
             $account->update(['is_running' => true]);
             $account->refresh();
         }
@@ -103,13 +108,18 @@ class TradingDaemonCommand extends Command
         while (true) {
             $loopCount++;
 
-            // 0. Check stop signals
-            if (Cache::has(TradingDaemonManager::CACHE_STOP_KEY) || file_exists(storage_path('framework/stop-trading-daemon'))) {
-                $this->logInfo('🛑 Stop signal received. Gracefully exiting 24/7 trading daemon.');
-                Cache::forget(TradingDaemonManager::CACHE_STOP_KEY);
-                @unlink(storage_path('framework/stop-trading-daemon'));
-                Cache::put(TradingDaemonManager::CACHE_STATUS_KEY, 'STOPPED', 120);
-                break;
+            // 0. Check stop signals (Runtime manual stops triggered via Web Dashboard / Artisan)
+            $stopFile = storage_path('framework/stop-trading-daemon');
+            $hasFreshStopFile = file_exists($stopFile) && ((int) @filemtime($stopFile) >= $daemonStartTimestamp);
+
+            if ($loopCount > 1 || ! $this->option('start')) {
+                if (Cache::has(TradingDaemonManager::CACHE_STOP_KEY) || $hasFreshStopFile) {
+                    $this->logInfo('🛑 Stop signal received. Gracefully exiting 24/7 trading daemon.');
+                    Cache::forget(TradingDaemonManager::CACHE_STOP_KEY);
+                    @unlink($stopFile);
+                    Cache::put(TradingDaemonManager::CACHE_STATUS_KEY, 'STOPPED', 120);
+                    break;
+                }
             }
 
             try {
