@@ -37,7 +37,7 @@ class BinanceFuturesClient
             $this->apiSecret = (string) config('trading.binance.api_secret', '');
         }
 
-        $this->recvWindow = (int) config('trading.binance.recv_window', 5000);
+        $this->recvWindow = (int) config('trading.binance.recv_window', 30000);
     }
 
     public function getMode(): string
@@ -61,6 +61,46 @@ class BinanceFuturesClient
     }
 
     /**
+     * Get synchronized clock offset between local server and Binance server in milliseconds.
+     */
+    public function getServerTimeOffset(): int
+    {
+        return (int) Cache::remember('binance_server_time_offset_'.$this->mode, 120, function (): int {
+            try {
+                $response = Http::timeout(5)->get("{$this->baseUrl}/fapi/v1/time");
+                if ($response->successful()) {
+                    $serverTime = (int) ($response->json('serverTime') ?? 0);
+                    if ($serverTime > 0) {
+                        $localTime = (int) (microtime(true) * 1000);
+
+                        return $serverTime - $localTime;
+                    }
+                }
+            } catch (\Throwable) {
+                // Fallback to zero offset if time endpoint is unreachable
+            }
+
+            return 0;
+        });
+    }
+
+    /**
+     * Clear cached server time offset (used upon recvWindow errors).
+     */
+    public function clearServerTimeOffset(): void
+    {
+        Cache::forget('binance_server_time_offset_'.$this->mode);
+    }
+
+    /**
+     * Compute timestamp adjusted for clock drift.
+     */
+    protected function getTimestamp(): int
+    {
+        return (int) (microtime(true) * 1000) + $this->getServerTimeOffset();
+    }
+
+    /**
      * Generate HMAC SHA256 signature for signed endpoints.
      *
      * @param  array<string, mixed>  $params
@@ -77,9 +117,9 @@ class BinanceFuturesClient
      *
      * @param  array<string, mixed>  $params
      */
-    protected function signedGet(string $path, array $params = []): array
+    protected function signedGet(string $path, array $params = [], bool $isRetry = false): array
     {
-        $params['timestamp'] = (int) (microtime(true) * 1000);
+        $params['timestamp'] = $this->getTimestamp();
         $params['recvWindow'] = $this->recvWindow;
         $params['signature'] = $this->sign($params);
 
@@ -87,7 +127,17 @@ class BinanceFuturesClient
             ->withHeaders(['X-MBX-APIKEY' => $this->apiKey])
             ->get("{$this->baseUrl}{$path}", $params);
 
-        return $this->handleResponse($response, $path);
+        try {
+            return $this->handleResponse($response, $path);
+        } catch (RuntimeException $e) {
+            if (! $isRetry && str_contains($e->getMessage(), '-1021')) {
+                $this->clearServerTimeOffset();
+                unset($params['timestamp'], $params['recvWindow'], $params['signature']);
+
+                return $this->signedGet($path, $params, true);
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -95,9 +145,9 @@ class BinanceFuturesClient
      *
      * @param  array<string, mixed>  $params
      */
-    protected function signedPost(string $path, array $params = []): array
+    protected function signedPost(string $path, array $params = [], bool $isRetry = false): array
     {
-        $params['timestamp'] = (int) (microtime(true) * 1000);
+        $params['timestamp'] = $this->getTimestamp();
         $params['recvWindow'] = $this->recvWindow;
         $params['signature'] = $this->sign($params);
 
@@ -106,7 +156,17 @@ class BinanceFuturesClient
             ->asForm()
             ->post("{$this->baseUrl}{$path}", $params);
 
-        return $this->handleResponse($response, $path);
+        try {
+            return $this->handleResponse($response, $path);
+        } catch (RuntimeException $e) {
+            if (! $isRetry && str_contains($e->getMessage(), '-1021')) {
+                $this->clearServerTimeOffset();
+                unset($params['timestamp'], $params['recvWindow'], $params['signature']);
+
+                return $this->signedPost($path, $params, true);
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -114,9 +174,9 @@ class BinanceFuturesClient
      *
      * @param  array<string, mixed>  $params
      */
-    protected function signedDelete(string $path, array $params = []): array
+    protected function signedDelete(string $path, array $params = [], bool $isRetry = false): array
     {
-        $params['timestamp'] = (int) (microtime(true) * 1000);
+        $params['timestamp'] = $this->getTimestamp();
         $params['recvWindow'] = $this->recvWindow;
         $params['signature'] = $this->sign($params);
 
@@ -126,7 +186,17 @@ class BinanceFuturesClient
             ->withHeaders(['X-MBX-APIKEY' => $this->apiKey])
             ->delete("{$this->baseUrl}{$path}?{$queryString}");
 
-        return $this->handleResponse($response, $path);
+        try {
+            return $this->handleResponse($response, $path);
+        } catch (RuntimeException $e) {
+            if (! $isRetry && str_contains($e->getMessage(), '-1021')) {
+                $this->clearServerTimeOffset();
+                unset($params['timestamp'], $params['recvWindow'], $params['signature']);
+
+                return $this->signedDelete($path, $params, true);
+            }
+            throw $e;
+        }
     }
 
     /**

@@ -52,84 +52,105 @@
         }
     </style>
 </head>
-<body class="bg-cyber-900 text-slate-200 min-h-screen">
+<body class="bg-cyber-900 text-slate-200 min-h-screen overflow-x-hidden">
     @include('layouts.sidebar')
 
-    <div id="app" class="lg:pl-64 flex flex-col min-h-screen">
+    <div id="app" class="lg:pl-64 flex flex-col min-h-screen w-full max-w-full overflow-x-hidden">
         <!-- Top Navigation Bar -->
-        <header class="border-b border-cyber-border bg-cyber-800/90 sticky top-0 z-20 backdrop-blur-md px-4 lg:px-8 py-3">
-            <div class="flex flex-wrap items-center justify-between gap-4">
-                <div class="flex items-center space-x-3">
-                    <button type="button" onclick="toggleSidebar()" class="lg:hidden p-2 rounded-xl text-slate-300 hover:text-white bg-cyber-700/60 border border-cyber-border focus:outline-none">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
-                        </svg>
-                    </button>
-                    <div class="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 p-1 flex items-center justify-center shadow-[0_0_12px_rgba(6,182,212,0.2)]">
-                        <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
-                    </div>
-                    <div>
-                        <div class="flex items-center space-x-2">
-                            <span class="font-bold text-lg tracking-wider text-white">AFTE</span>
-                            <span class="text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-mono font-medium border border-cyan-500/30">v2.5 PRO</span>
-                            <span id="wss-badge" class="inline-flex items-center text-xs font-mono text-emerald-400">
-                                <span id="wss-dot" class="w-2 h-2 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
-                                <span id="wss-text">WSS: CONNECTING</span>
-                            </span>
-                        </div>
-                        <p class="text-xs text-slate-400">Binance Futures USDS-M • Autonomous Quantitative Engine</p>
-                    </div>
-                </div>
-
-                <!-- Mode Selector -->
-                <div class="flex items-center bg-cyber-900 border border-cyber-border rounded-lg p-1 space-x-1">
-                    <button onclick="switchMode('paper')" id="btn-mode-paper" class="px-3 py-1 text-xs font-mono rounded font-medium transition-all">PAPER</button>
-                    <button onclick="switchMode('testnet')" id="btn-mode-testnet" class="px-3 py-1 text-xs font-mono rounded font-medium transition-all">TESTNET</button>
-                    <button onclick="switchMode('shadow')" id="btn-mode-shadow" class="px-3 py-1 text-xs font-mono rounded font-medium transition-all">SHADOW</button>
-                    <button onclick="switchMode('live')" id="btn-mode-live" class="px-3 py-1 text-xs font-mono rounded font-medium transition-all">LIVE</button>
-                </div>
-
-                <!-- Global Actions & Navigation -->
-                <div class="flex items-center space-x-3">
-                    <a id="link-trade-history" href="{{ route('history.index', ['mode' => $mode]) }}" class="px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-md text-cyan-300 transition flex items-center space-x-1.5">
-                        <span>📜 Trade History</span>
-                    </a>
-                    <button onclick="triggerScan(true)" id="btn-scan" class="px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-md text-slate-200 transition flex items-center space-x-1.5">
-                        <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                        <span>Scan Market</span>
-                    </button>
-
-                    @if (Auth::user()?->isAdmin())
-                        <button onclick="toggleAutoTrading()" id="btn-auto-trading" class="px-3 py-1.5 text-xs font-mono font-bold rounded-md transition flex items-center space-x-1.5 shadow-sm border {{ $account->is_running ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-amber-500/10' : 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/40 shadow-emerald-500/10' }}">
-                            <span id="auto-trading-dot" class="w-2 h-2 rounded-full {{ $account->is_running ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400' }}"></span>
-                            <span id="auto-trading-text">{{ $account->is_running ? 'STOP AUTO TRADING' : 'START AUTO TRADING' }}</span>
+        <header class="border-b border-cyber-border bg-cyber-800/95 sticky top-0 z-20 backdrop-blur-md px-3 sm:px-4 lg:px-8 py-2.5 sm:py-3 w-full max-w-full overflow-hidden">
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 w-full max-w-full">
+                <!-- Top / Left Row: Hamburger + Brand + Live Feed Indicator + Mobile User/Logout Bar -->
+                <div class="flex items-center justify-between w-full lg:w-auto min-w-0">
+                    <div class="flex items-center space-x-2.5 sm:space-x-3 min-w-0">
+                        <button type="button" onclick="toggleSidebar()" class="lg:hidden p-2 rounded-xl text-slate-300 hover:text-white bg-cyber-700/60 border border-cyber-border focus:outline-none flex-shrink-0" aria-label="Toggle Navigation Menu">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                            </svg>
                         </button>
-                    @else
-                        <div id="badge-auto-trading" class="px-3 py-1.5 text-xs font-mono font-medium rounded-md border flex items-center space-x-1.5 {{ $account->is_running ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700' }}" title="Admin permission required to toggle">
-                            <span id="auto-trading-dot" class="w-2 h-2 rounded-full {{ $account->is_running ? 'bg-emerald-400 animate-ping' : 'bg-slate-500' }}"></span>
-                            <span id="auto-trading-text">AUTO: {{ $account->is_running ? 'ACTIVE' : 'STOPPED' }}</span>
+                        <div class="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 p-1 flex items-center justify-center shadow-[0_0_12px_rgba(6,182,212,0.2)] flex-shrink-0">
+                            <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
                         </div>
-                    @endif
-
-                    <button onclick="toggleKillSwitch()" id="btn-kill-switch" class="px-3 py-1.5 text-xs font-mono font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 rounded-md transition flex items-center space-x-1.5">
-                        <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
-                        <span id="kill-switch-text">KILL SWITCH</span>
-                    </button>
-
-                    <!-- Authenticated User & Logout -->
-                    <div class="flex items-center space-x-2 pl-3 border-l border-cyber-border text-xs font-mono">
-                        <div class="flex items-center space-x-1.5">
-                            <span class="text-slate-200 font-medium">{{ Auth::user()->name ?? 'Trader' }}</span>
-                            <span class="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold {{ Auth::user()?->isAdmin() ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' }}">
-                                {{ Auth::user()->role ?? 'TRADER' }}
-                            </span>
+                        <div class="min-w-0">
+                            <div class="flex items-center space-x-1.5 sm:space-x-2">
+                                <span class="font-bold text-base sm:text-lg tracking-wider text-white">AFTE</span>
+                                <span class="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-mono font-medium border border-cyan-500/30">v2.5 PRO</span>
+                                <span id="wss-badge" class="inline-flex items-center text-[11px] sm:text-xs font-mono text-emerald-400">
+                                    <span id="wss-dot" class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-400 mr-1 sm:mr-1.5 animate-pulse"></span>
+                                    <span id="wss-text" class="hidden xs:inline">WSS: CONNECTING</span>
+                                </span>
+                            </div>
+                            <p class="text-xs text-slate-400 hidden sm:block truncate">Binance Futures USDS-M • Autonomous Quantitative Engine</p>
                         </div>
-                        <form method="POST" action="{{ route('logout') }}">
+                    </div>
+
+                    <!-- Mobile-Only User Pill & Fast Logout (< lg screens) -->
+                    <div class="flex lg:hidden items-center space-x-1.5 sm:space-x-2 flex-shrink-0 pl-2">
+                        <span class="px-2 py-0.5 text-[10px] font-mono font-bold uppercase rounded tracking-wider {{ Auth::user()?->isAdmin() ? 'bg-purple-950/90 text-purple-300 border border-purple-700/60 shadow-[0_0_8px_rgba(168,85,247,0.2)]' : 'bg-cyan-950/90 text-cyan-300 border border-cyan-700/60' }}">
+                            {{ Auth::user()->role ?? 'TRADER' }}
+                        </span>
+                        <form method="POST" action="{{ route('logout') }}" class="inline m-0">
                             @csrf
-                            <button type="submit" class="px-2 py-1 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded transition">
-                                Logout
+                            <button type="submit" title="Logout ({{ Auth::user()->name }})" class="p-1.5 sm:p-2 text-rose-400 hover:text-rose-300 bg-rose-950/30 hover:bg-rose-950/60 border border-rose-900/40 rounded-xl transition flex items-center justify-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                                </svg>
                             </button>
                         </form>
+                    </div>
+                </div>
+
+                <!-- Secondary Row / Right Controls: Mode Selector & Global Trading Actions -->
+                <div class="flex flex-wrap items-center justify-between lg:justify-end gap-2 sm:gap-2.5 w-full lg:w-auto min-w-0">
+                    <!-- Mode Selector -->
+                    <div class="flex items-center bg-cyber-900 border border-cyber-border rounded-lg p-0.5 sm:p-1 space-x-0.5 sm:space-x-1 flex-shrink-0">
+                        <button onclick="switchMode('paper')" id="btn-mode-paper" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">PAPER</button>
+                        <button onclick="switchMode('testnet')" id="btn-mode-testnet" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">TESTNET</button>
+                        <button onclick="switchMode('shadow')" id="btn-mode-shadow" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">SHADOW</button>
+                        <button onclick="switchMode('live')" id="btn-mode-live" class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded font-medium transition-all">LIVE</button>
+                    </div>
+
+                    <!-- Trading Action Buttons -->
+                    <div class="flex flex-wrap items-center gap-1.5 sm:gap-2 min-w-0">
+                        <a id="link-trade-history" href="{{ route('history.index', ['mode' => $mode]) }}" class="hidden md:inline-flex px-2.5 sm:px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-lg text-cyan-300 transition items-center space-x-1.5 flex-shrink-0">
+                            <span>📜 Trade History</span>
+                        </a>
+                        <button onclick="triggerScan(true)" id="btn-scan" class="px-2.5 sm:px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-lg text-slate-200 transition flex items-center space-x-1.5 flex-shrink-0">
+                            <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                            <span>Scan Market</span>
+                        </button>
+
+                        @if (Auth::user()?->isAdmin())
+                            <button onclick="toggleAutoTrading()" id="btn-auto-trading" class="px-2.5 sm:px-3 py-1.5 text-xs font-mono font-bold rounded-lg transition flex items-center space-x-1.5 shadow-sm border flex-shrink-0 {{ $account->is_running ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-amber-500/10' : 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/40 shadow-emerald-500/10' }}">
+                                <span id="auto-trading-dot" class="w-2 h-2 rounded-full {{ $account->is_running ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400' }}"></span>
+                                <span id="auto-trading-text">{{ $account->is_running ? 'STOP AUTO TRADING' : 'START AUTO TRADING' }}</span>
+                            </button>
+                        @else
+                            <div id="badge-auto-trading" class="px-2.5 sm:px-3 py-1.5 text-xs font-mono font-medium rounded-lg border flex items-center space-x-1.5 flex-shrink-0 {{ $account->is_running ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700' }}" title="Admin permission required to toggle">
+                                <span id="auto-trading-dot" class="w-2 h-2 rounded-full {{ $account->is_running ? 'bg-emerald-400 animate-ping' : 'bg-slate-500' }}"></span>
+                                <span id="auto-trading-text">AUTO: {{ $account->is_running ? 'ACTIVE' : 'STOPPED' }}</span>
+                            </div>
+                        @endif
+
+                        <button onclick="toggleKillSwitch()" id="btn-kill-switch" class="px-2.5 sm:px-3 py-1.5 text-xs font-mono font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 rounded-lg transition flex items-center space-x-1.5 flex-shrink-0">
+                            <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                            <span id="kill-switch-text">KILL SWITCH</span>
+                        </button>
+
+                        <!-- Desktop Authenticated User & Logout (Visible on lg+ screens) -->
+                        <div class="hidden lg:flex items-center space-x-2 pl-3 border-l border-cyber-border text-xs font-mono min-w-0 flex-shrink-0">
+                            <div class="flex items-center space-x-1.5 min-w-0">
+                                <span class="text-slate-200 font-medium truncate max-w-[130px]" title="{{ Auth::user()->name ?? 'Trader' }}">{{ Auth::user()->name ?? 'Trader' }}</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold {{ Auth::user()?->isAdmin() ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' }}">
+                                    {{ Auth::user()->role ?? 'TRADER' }}
+                                </span>
+                            </div>
+                            <form method="POST" action="{{ route('logout') }}" class="m-0">
+                                @csrf
+                                <button type="submit" class="px-2 py-1 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded transition">
+                                    Logout
+                                </button>
+                            </form>
+                        </div>
                     </div>
                 </div>
             </div>

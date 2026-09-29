@@ -381,6 +381,14 @@ class DaemonController extends Controller
      */
     protected function resolvePhpCliBinary(): string
     {
+        // 1. Explicit configuration or environment override
+        $configuredPhp = config('trading.php_binary', env('PHP_BINARY_PATH'));
+        if (! empty($configuredPhp) && is_string($configuredPhp)) {
+            if ($configuredPhp === 'php' || (file_exists($configuredPhp) && is_executable($configuredPhp))) {
+                return $configuredPhp;
+            }
+        }
+
         if (PHP_OS_FAMILY === 'Windows') {
             $laragonPhps = glob('C:\\laragon\\bin\\php\\php*\\php.exe');
             if (! empty($laragonPhps)) {
@@ -405,6 +413,12 @@ class DaemonController extends Controller
         }
 
         $candidates = [
+            '/usr/php84/usr/bin/php', // ServerByt / StackCP PHP 8.4
+            '/usr/php83/usr/bin/php', // ServerByt / StackCP PHP 8.3
+            '/usr/local/bin/ea-php84',
+            '/opt/cpanel/ea-php84/root/usr/bin/php',
+            '/usr/local/bin/ea-php83',
+            '/opt/cpanel/ea-php83/root/usr/bin/php',
             '/usr/bin/php-8.4',
             '/usr/bin/php8.4',
             '/usr/bin/php84',
@@ -414,8 +428,8 @@ class DaemonController extends Controller
             '/usr/bin/php-cli',
             '/usr/local/bin/php',
             '/usr/bin/php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION,
-            'php',
             '/usr/bin/php',
+            'php',
         ];
 
         foreach ($candidates as $candidate) {

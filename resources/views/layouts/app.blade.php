@@ -59,17 +59,17 @@
     </style>
     @stack('styles')
 </head>
-<body class="bg-cyber-900 text-slate-200 min-h-screen antialiased flex flex-col">
-    <div class="flex-1 flex min-h-screen">
+<body class="bg-cyber-900 text-slate-200 min-h-screen antialiased flex flex-col overflow-x-hidden">
+    <div class="flex-1 flex min-h-screen w-full max-w-full overflow-x-hidden">
         <!-- Unified Left Sidebar -->
         @include('layouts.sidebar')
 
         <!-- Main Wrapper (Shifted right by 16rem / 64 tailwind units on lg screens) -->
-        <div class="lg:pl-64 flex flex-col flex-1 min-w-0">
+        <div class="lg:pl-64 flex flex-col flex-1 min-w-0 w-full max-w-full overflow-x-hidden">
             <!-- Mobile Top Bar with Hamburger -->
             <header class="lg:hidden border-b border-cyber-border bg-cyber-800/90 sticky top-0 z-20 backdrop-blur-md px-4 py-3 flex items-center justify-between">
                 <div class="flex items-center space-x-3">
-                    <button type="button" onclick="toggleSidebar()" class="p-2 rounded-xl text-slate-300 hover:text-white bg-cyber-700/60 border border-cyber-border focus:outline-none">
+                    <button type="button" onclick="toggleSidebar()" class="p-2 rounded-xl text-slate-300 hover:text-white bg-cyber-700/60 border border-cyber-border focus:outline-none" aria-label="Toggle Navigation Menu">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
                         </svg>
@@ -89,6 +89,14 @@
                         @else
                             <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded bg-cyan-950 text-cyan-300 border border-cyan-800">User</span>
                         @endif
+                        <form method="POST" action="{{ route('logout') }}" class="inline m-0">
+                            @csrf
+                            <button type="submit" title="Logout" class="p-1.5 text-rose-400 hover:text-rose-300 bg-rose-950/30 hover:bg-rose-950/60 border border-rose-900/40 rounded-lg transition flex items-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                                </svg>
+                            </button>
+                        </form>
                     @endauth
                 </div>
             </header>

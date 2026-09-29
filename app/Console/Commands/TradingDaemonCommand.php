@@ -7,6 +7,7 @@ use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\AI\SignalValidator;
 use App\Services\Trading\DynamicTradeManager;
+use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\MarketEngine;
 use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\SignalEngine;
@@ -47,7 +48,8 @@ class TradingDaemonCommand extends Command
         SignalEngine $signalEngine,
         SignalValidator $validator,
         DynamicTradeManager $tradeManager,
-        OrderExecutor $executor
+        OrderExecutor $executor,
+        ExchangePositionSync $exchangeSync
     ): int {
         // Fortify PHP execution environment for continuous 24/7 background operation
         @set_time_limit(0);
@@ -144,7 +146,17 @@ class TradingDaemonCommand extends Command
                 continue;
             }
 
-            // 1. High-Frequency Active Position Management Loop
+            // 1. Live Exchange Synchronization (Reconciles open/closed positions and balances with Binance)
+            if (in_array($mode, ['live', 'testnet'], true)) {
+                try {
+                    $exchangeSync->syncLiveAccountAndPositions($account, $mode);
+                    $account->refresh();
+                } catch (Throwable $syncEx) {
+                    Log::warning("[TradingDaemon] Live exchange sync notice: {$syncEx->getMessage()}");
+                }
+            }
+
+            // 2. High-Frequency Active Position Management Loop
             try {
                 $openTrades = Trade::where('mode', $mode)
                     ->where('status', 'OPEN')

@@ -15,6 +15,15 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | PHP CLI Binary & Shared Hosting Controls
+    |--------------------------------------------------------------------------
+    */
+    'php_binary' => env('PHP_BINARY_PATH', '/usr/php84/usr/bin/php'),
+    'daemon_heartbeat_timeout' => (int) env('DAEMON_HEARTBEAT_TIMEOUT', 90),
+    'daemon_auto_spawn' => (bool) env('DAEMON_AUTO_SPAWN', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Live Trading Safety Gate
     |--------------------------------------------------------------------------
     | Strictly prevents real live Binance order execution from local or dev
@@ -133,7 +142,7 @@ return [
         'api_secret' => env('BINANCE_API_SECRET', ''),
         'testnet_key' => env('BINANCE_TESTNET_KEY', ''),
         'testnet_secret' => env('BINANCE_TESTNET_SECRET', ''),
-        'recv_window' => (int) env('BINANCE_RECV_WINDOW', 5000),
+        'recv_window' => (int) env('BINANCE_RECV_WINDOW', 30000),
         'endpoints' => [
             'live_rest' => 'https://fapi.binance.com',
             'testnet_rest' => 'https://testnet.binancefuture.com',

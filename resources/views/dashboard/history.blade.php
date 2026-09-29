@@ -46,75 +46,95 @@
         }
     </style>
 </head>
-<body class="bg-cyber-900 text-slate-200 min-h-screen">
+<body class="bg-cyber-900 text-slate-200 min-h-screen overflow-x-hidden">
     @include('layouts.sidebar')
 
-    <div class="lg:pl-64 flex flex-col min-h-screen">
+    <div class="lg:pl-64 flex flex-col min-h-screen w-full max-w-full overflow-x-hidden">
         <!-- Top Navigation -->
-        <header class="border-b border-cyber-border bg-cyber-800/90 sticky top-0 z-20 backdrop-blur-md px-4 lg:px-8 py-3">
-            <div class="flex flex-wrap items-center justify-between gap-4">
-                <div class="flex items-center space-x-3">
-                    <button type="button" onclick="toggleSidebar()" class="lg:hidden p-2 rounded-xl text-slate-300 hover:text-white bg-cyber-700/60 border border-cyber-border focus:outline-none">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
-                        </svg>
-                    </button>
-                    <a href="{{ route('dashboard') }}" class="flex items-center space-x-3 group">
-                        <div class="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 p-1 flex items-center justify-center group-hover:bg-cyan-500/20 transition shadow-[0_0_12px_rgba(6,182,212,0.2)]">
-                            <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
-                        </div>
-                        <div>
-                            <div class="flex items-center space-x-2">
-                                <span class="font-bold text-lg tracking-wider text-white">AFTE</span>
-                                <span class="text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-mono font-medium border border-cyan-500/30">LEDGER</span>
+        <header class="border-b border-cyber-border bg-cyber-800/95 sticky top-0 z-20 backdrop-blur-md px-3 sm:px-4 lg:px-8 py-2.5 sm:py-3 w-full max-w-full overflow-hidden">
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 w-full max-w-full">
+                <!-- Top / Left Row: Hamburger + Brand + Mobile User/Logout Bar -->
+                <div class="flex items-center justify-between w-full lg:w-auto min-w-0">
+                    <div class="flex items-center space-x-2.5 sm:space-x-3 min-w-0">
+                        <button type="button" onclick="toggleSidebar()" class="lg:hidden p-2 rounded-xl text-slate-300 hover:text-white bg-cyber-700/60 border border-cyber-border focus:outline-none flex-shrink-0" aria-label="Toggle Navigation Menu">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                            </svg>
+                        </button>
+                        <a href="{{ route('dashboard') }}" class="flex items-center space-x-2.5 sm:space-x-3 group min-w-0">
+                            <div class="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 p-1 flex items-center justify-center group-hover:bg-cyan-500/20 transition shadow-[0_0_12px_rgba(6,182,212,0.2)] flex-shrink-0">
+                                <img src="{{ asset('asset/logo.png') }}" alt="AFTE Logo" class="w-full h-full object-contain">
                             </div>
-                            <p class="text-xs text-slate-400">Complete Execution History & Profit Audit</p>
-                        </div>
-                    </a>
-
-                    <nav class="hidden md:flex items-center space-x-2 border-l border-cyber-border pl-4">
-                        <a href="{{ route('dashboard', ['mode' => $mode]) }}" class="px-3 py-1.5 rounded-md text-xs font-mono text-slate-400 hover:text-white hover:bg-cyber-700 transition">
-                            ← Live Terminal
+                            <div class="min-w-0">
+                                <div class="flex items-center space-x-1.5 sm:space-x-2">
+                                    <span class="font-bold text-base sm:text-lg tracking-wider text-white">AFTE</span>
+                                    <span class="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-mono font-medium border border-cyan-500/30">LEDGER</span>
+                                </div>
+                                <p class="text-xs text-slate-400 hidden sm:block truncate">Complete Execution History & Profit Audit</p>
+                            </div>
                         </a>
-                        <span class="px-3 py-1.5 rounded-md text-xs font-mono text-cyan-400 bg-cyber-700/60 font-bold border border-cyan-500/30">
-                            Trade History
+
+                        <nav class="hidden md:flex items-center space-x-2 border-l border-cyber-border pl-4">
+                            <a href="{{ route('dashboard', ['mode' => $mode]) }}" class="px-3 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-white hover:bg-cyber-700 transition">
+                                ← Live Terminal
+                            </a>
+                            <span class="px-3 py-1.5 rounded-lg text-xs font-mono text-cyan-400 bg-cyber-700/60 font-bold border border-cyan-500/30">
+                                Trade History
+                            </span>
+                        </nav>
+                    </div>
+
+                    <!-- Mobile-Only User Pill & Fast Logout (< lg screens) -->
+                    <div class="flex lg:hidden items-center space-x-1.5 sm:space-x-2 flex-shrink-0 pl-2">
+                        <span class="px-2 py-0.5 text-[10px] font-mono font-bold uppercase rounded tracking-wider {{ Auth::user()?->isAdmin() ? 'bg-purple-950/90 text-purple-300 border border-purple-700/60 shadow-[0_0_8px_rgba(168,85,247,0.2)]' : 'bg-cyan-950/90 text-cyan-300 border border-cyan-700/60' }}">
+                            {{ Auth::user()->role ?? 'TRADER' }}
                         </span>
-                    </nav>
+                        <form method="POST" action="{{ route('logout') }}" class="inline m-0">
+                            @csrf
+                            <button type="submit" title="Logout ({{ Auth::user()->name }})" class="p-1.5 sm:p-2 text-rose-400 hover:text-rose-300 bg-rose-950/30 hover:bg-rose-950/60 border border-rose-900/40 rounded-xl transition flex items-center justify-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                                </svg>
+                            </button>
+                        </form>
+                    </div>
                 </div>
 
-                <!-- Mode & User Navigation -->
-                <div class="flex items-center space-x-4">
+                <!-- Secondary Row / Right Controls: Mode Selector & CSV Export -->
+                <div class="flex flex-wrap items-center justify-between lg:justify-end gap-2 sm:gap-2.5 w-full lg:w-auto min-w-0">
                     <!-- Mode Pills -->
-                    <div class="flex items-center bg-cyber-900 border border-cyber-border rounded-lg p-1 space-x-1">
+                    <div class="flex items-center bg-cyber-900 border border-cyber-border rounded-lg p-0.5 sm:p-1 space-x-0.5 sm:space-x-1 flex-shrink-0">
                         @foreach (['paper', 'testnet', 'shadow', 'live'] as $m)
                             <a href="{{ route('history.index', ['mode' => $m]) }}"
-                               class="px-2.5 py-1 text-xs font-mono rounded uppercase transition {{ $mode === $m ? 'bg-cyan-500 text-cyber-900 font-bold' : 'text-slate-400 hover:text-white' }}">
+                               class="px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-mono rounded uppercase transition {{ $mode === $m ? 'bg-cyan-500 text-cyber-900 font-bold' : 'text-slate-400 hover:text-white' }}">
                                 {{ $m }}
                             </a>
                         @endforeach
                     </div>
 
-                    <!-- CSV Export Button -->
-                    <a href="{{ route('history.export', ['mode' => $mode, 'symbol' => $selectedSymbol]) }}"
-                       class="px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-md text-slate-200 transition flex items-center space-x-1.5">
-                        <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                        <span>Export CSV</span>
-                    </a>
+                    <div class="flex items-center space-x-2 min-w-0">
+                        <!-- CSV Export Button -->
+                        <a href="{{ route('history.export', ['mode' => $mode, 'symbol' => $selectedSymbol]) }}"
+                           class="px-2.5 sm:px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-lg text-slate-200 transition flex items-center space-x-1.5 flex-shrink-0">
+                            <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                            <span>Export CSV</span>
+                        </a>
 
-                    <!-- User / Logout -->
-                    <div class="flex items-center space-x-2 pl-3 border-l border-cyber-border text-xs font-mono">
-                        <div class="flex items-center space-x-1.5">
-                            <span class="text-slate-200 font-medium">{{ Auth::user()->name ?? 'Trader' }}</span>
-                            <span class="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold {{ Auth::user()?->isAdmin() ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' }}">
-                                {{ Auth::user()->role ?? 'TRADER' }}
-                            </span>
+                        <!-- Desktop User / Logout (Visible on lg+ screens) -->
+                        <div class="hidden lg:flex items-center space-x-2 pl-3 border-l border-cyber-border text-xs font-mono min-w-0 flex-shrink-0">
+                            <div class="flex items-center space-x-1.5 min-w-0">
+                                <span class="text-slate-200 font-medium truncate max-w-[130px]" title="{{ Auth::user()->name ?? 'Trader' }}">{{ Auth::user()->name ?? 'Trader' }}</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold {{ Auth::user()?->isAdmin() ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' }}">
+                                    {{ Auth::user()->role ?? 'TRADER' }}
+                                </span>
+                            </div>
+                            <form method="POST" action="{{ route('logout') }}" class="m-0">
+                                @csrf
+                                <button type="submit" class="px-2 py-1 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded transition">
+                                    Logout
+                                </button>
+                            </form>
                         </div>
-                        <form method="POST" action="{{ route('logout') }}">
-                            @csrf
-                            <button type="submit" class="px-2 py-1 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded transition">
-                                Logout
-                            </button>
-                        </form>
                     </div>
                 </div>
             </div>

@@ -29,7 +29,8 @@ class TradingDaemonManager
         protected SignalEngine $signalEngine,
         protected SignalValidator $validator,
         protected DynamicTradeManager $tradeManager,
-        protected OrderExecutor $executor
+        protected OrderExecutor $executor,
+        protected ExchangePositionSync $exchangeSync
     ) {}
 
     /**
@@ -45,11 +46,13 @@ class TradingDaemonManager
         $heartbeat = (int) Cache::get(self::CACHE_HEARTBEAT_KEY, 0);
         $diffSeconds = $heartbeat > 0 ? (now()->timestamp - $heartbeat) : 9999;
 
-        // Daemon writes heartbeat every 3-5 seconds. Active if heartbeat is within 45s.
-        $isRunning = ($diffSeconds <= 45);
+        // Daemon writes heartbeat in continuous mode (every 2-5s) or scheduled cron mode (every 60s)
+        $maxHeartbeatAge = (int) config('trading.daemon_heartbeat_timeout', 90);
+        $isRunning = ($diffSeconds <= $maxHeartbeatAge);
 
-        // Auto-Revive Watchdog: If auto trading is active on account but daemon stopped unexpectedly
-        if ($account->is_running && $diffSeconds > 45) {
+        // Auto-Revive Watchdog: Only trigger background process spawning if daemon_auto_spawn is explicitly enabled
+        $autoSpawn = (bool) config('trading.daemon_auto_spawn', false);
+        if ($autoSpawn && $account->is_running && $diffSeconds > $maxHeartbeatAge) {
             if (Cache::add(self::CACHE_REVIVE_LOCK, true, 30)) {
                 Log::warning("[TradingDaemon] Auto-Revive triggered: daemon silent for {$diffSeconds}s while auto-trading is enabled.");
                 $this->launchBackgroundProcess($mode);
@@ -130,6 +133,17 @@ class TradingDaemonManager
             ];
         }
 
+        // On shared hosting environments without persistent background process permissions:
+        if (! config('trading.daemon_auto_spawn', false)) {
+            Cache::put(self::CACHE_STATUS_KEY, 'RUNNING', 120);
+
+            return [
+                'success' => true,
+                'message' => 'Auto-trading activated. Scheduled cron engine will execute on the next cycle.',
+                'is_running' => true,
+            ];
+        }
+
         return $this->launchBackgroundProcess($mode);
     }
 
@@ -161,13 +175,13 @@ class TradingDaemonManager
                     $launched = true;
                 } else {
                     $basePath = base_path();
-                    $cmd = "cmd /c \"cd /d \"{$basePath}\" && start /B \"\" \"{$phpCli}\" artisan trade:daemon --mode={$mode} >> \"{$logPath}\" 2>&1\"";
+                    $cmd = "cmd /c \"cd /d \"{$basePath}\" && start /B \"\" \"{$phpCli}\" artisan trade:daemon --mode={$mode} --start >> \"{$logPath}\" 2>&1\"";
                     pclose(popen($cmd, 'r'));
                     $launched = true;
                 }
             } else {
                 $cmd = sprintf(
-                    '(%s %s trade:daemon --mode=%s >> %s 2>&1 &) && echo $!',
+                    '(%s %s trade:daemon --mode=%s --start >> %s 2>&1 &) && echo $!',
                     escapeshellarg($phpCli),
                     escapeshellarg($artisanPath),
                     escapeshellarg($mode),
@@ -280,6 +294,16 @@ class TradingDaemonManager
     {
         $account = TradingAccount::getForMode($mode);
 
+        // 0. Live Binance Position & Balance Sync
+        if (in_array($mode, ['live', 'testnet'], true)) {
+            try {
+                $this->exchangeSync->syncLiveAccountAndPositions($account, $mode);
+                $account->refresh();
+            } catch (Throwable $e) {
+                Log::warning("Tick live sync error: {$e->getMessage()}");
+            }
+        }
+
         // 1. Position management always protects open trades
         $openTrades = Trade::where('mode', $mode)
             ->where('status', 'OPEN')
@@ -372,6 +396,14 @@ class TradingDaemonManager
      */
     public function resolvePhpCliBinary(): string
     {
+        // 1. Explicit configuration or environment override
+        $configuredPhp = config('trading.php_binary', env('PHP_BINARY_PATH'));
+        if (! empty($configuredPhp) && is_string($configuredPhp)) {
+            if ($configuredPhp === 'php' || (file_exists($configuredPhp) && is_executable($configuredPhp))) {
+                return $configuredPhp;
+            }
+        }
+
         if (PHP_OS_FAMILY === 'Windows') {
             $laragonPhps = glob('C:\\laragon\\bin\\php\\php*\\php.exe');
             if (! empty($laragonPhps)) {
@@ -395,6 +427,12 @@ class TradingDaemonManager
         }
 
         $candidates = [
+            '/usr/php84/usr/bin/php', // ServerByt / StackCP PHP 8.4
+            '/usr/php83/usr/bin/php', // ServerByt / StackCP PHP 8.3
+            '/usr/local/bin/ea-php84',
+            '/opt/cpanel/ea-php84/root/usr/bin/php',
+            '/usr/local/bin/ea-php83',
+            '/opt/cpanel/ea-php83/root/usr/bin/php',
             '/usr/bin/php-8.4',
             '/usr/bin/php8.4',
             '/usr/bin/php84',
@@ -403,7 +441,9 @@ class TradingDaemonManager
             '/usr/bin/php83',
             '/usr/bin/php-cli',
             '/usr/local/bin/php',
+            '/usr/bin/php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION,
             'php',
+            '/usr/bin/php',
         ];
 
         foreach ($candidates as $candidate) {
