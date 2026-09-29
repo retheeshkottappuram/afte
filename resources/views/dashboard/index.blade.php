@@ -947,11 +947,15 @@
             }
 
             if (hb) {
-                if (daemon.heartbeat_ago_sec !== null && daemon.heartbeat_ago_sec !== undefined) {
-                    hb.textContent = `${daemon.heartbeat_ago_sec}s ago`;
-                    hb.className = daemon.heartbeat_ago_sec <= 10 ? 'text-cyan-300 font-bold' : 'text-amber-400 font-bold';
+                const hbAge = (daemon.heartbeat_ago_sec !== null && daemon.heartbeat_ago_sec !== undefined)
+                    ? daemon.heartbeat_ago_sec
+                    : (daemon.heartbeat_age_seconds !== undefined && daemon.last_heartbeat ? daemon.heartbeat_age_seconds : null);
+
+                if (hbAge !== null && hbAge < 9999) {
+                    hb.textContent = `${hbAge}s ago`;
+                    hb.className = hbAge <= 30 ? 'text-cyan-300 font-bold' : 'text-amber-400 font-bold';
                 } else {
-                    hb.textContent = 'Never';
+                    hb.textContent = 'Never (Worker Inactive)';
                     hb.className = 'text-slate-400';
                 }
             }

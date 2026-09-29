@@ -73,10 +73,13 @@ class TradingDaemonManager
             'is_running' => $isRunning,
             'is_active' => $isRunning,
             'status' => $isRunning ? ($cachedStatus === 'STOPPED' ? 'RUNNING' : $cachedStatus) : 'STOPPED',
+            'heartbeat_ago_sec' => $heartbeat > 0 ? $diffSeconds : null,
             'heartbeat_age_seconds' => $diffSeconds,
             'heartbeat' => $diffSeconds,
             'last_heartbeat' => $heartbeat > 0 ? Carbon::createFromTimestamp($heartbeat)->toIso8601String() : null,
             'pid' => $isRunning ? $pid : null,
+            'uptime_human' => isset($stats['started_at']) ? Carbon::parse($stats['started_at'])->diffForHumans(null, true) : ($isRunning ? 'Active' : null),
+            'cycles_count' => (int) ($stats['loop_count'] ?? 0),
             'mode' => $mode,
             'account_is_running' => (bool) $account->is_running,
             'can_trade' => $account->canTrade(),
@@ -293,6 +296,9 @@ class TradingDaemonManager
     public function tickOnce(string $mode = 'paper'): array
     {
         $account = TradingAccount::getForMode($mode);
+
+        // Record heartbeat timestamp for UI monitoring
+        Cache::put(self::CACHE_HEARTBEAT_KEY, time(), 120);
 
         // 0. Live Binance Position & Balance Sync
         if ($mode === 'live') {
