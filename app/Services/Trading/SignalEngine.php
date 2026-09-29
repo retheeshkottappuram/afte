@@ -268,7 +268,7 @@ class SignalEngine
             return null;
         }
 
-        if ($score < 85) {
+        if ($score < 80) {
             return null;
         }
 

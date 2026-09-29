@@ -201,7 +201,7 @@ class TradingDaemonCommand extends Command
                     $this->logLine('['.date('H:i:s')."] Macro BTC Trend: {$btcTrend['trend']} (\${$btcTrend['btc_price']}) | Scanning setups...");
                     try {
                         $symbols = $marketEngine->getScannableSymbols();
-                        $candidates = array_slice($symbols, 0, 15);
+                        $candidates = array_slice($symbols, 0, 20);
 
                         foreach ($candidates as $sym) {
                             $totalScannedCount++;
@@ -240,6 +240,10 @@ class TradingDaemonCommand extends Command
                             } catch (Throwable $symEx) {
                                 // Ignore transient per-symbol errors
                             }
+                        }
+
+                        if ($totalOpenedCount === 0) {
+                            $this->logLine('['.date('H:i:s')."] Scan complete: {$totalScannedCount} pairs checked. No setups met score >= 80 entry criteria on this candle.");
                         }
                     } catch (Throwable $scanEx) {
                         Log::error("[TradingDaemon] Scanner cycle error: {$scanEx->getMessage()}");
