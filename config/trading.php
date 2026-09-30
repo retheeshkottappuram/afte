@@ -9,25 +9,24 @@ return [
     | - 'paper': 100% simulated with seed capital and real live Binance price feed.
     | - 'live': Real Binance Futures account (Requires API keys with trading permission).
     */
-    'mode' => env('TRADING_MODE', 'paper'),
+    'mode' => env('TRADING_MODE', 'live'),
 
     /*
     |--------------------------------------------------------------------------
     | PHP CLI Binary & Shared Hosting Controls
     |--------------------------------------------------------------------------
     */
-    'php_binary' => env('PHP_BINARY_PATH', '/usr/php84/usr/bin/php'),
+    'php_binary' => env('PHP_BINARY_PATH', 'php'),
     'daemon_heartbeat_timeout' => (int) env('DAEMON_HEARTBEAT_TIMEOUT', 90),
-    'daemon_auto_spawn' => (bool) env('DAEMON_AUTO_SPAWN', false),
+    'daemon_auto_spawn' => (bool) env('DAEMON_AUTO_SPAWN', true),
 
     /*
     |--------------------------------------------------------------------------
     | Live Trading Safety Gate
     |--------------------------------------------------------------------------
-    | Strictly prevents real live Binance order execution from local or dev
-    | environments to protect against dual-instance collisions with production.
+    | Permits live trading when configured in .env.
     */
-    'allow_live_trading' => (bool) env('ALLOW_LIVE_TRADING', env('APP_ENV') === 'production' || env('TRADING_MODE') === 'live'),
+    'allow_live_trading' => (bool) env('ALLOW_LIVE_TRADING', true),
 
     /*
     |--------------------------------------------------------------------------
@@ -96,8 +95,8 @@ return [
     |--------------------------------------------------------------------------
     */
     'circuit_breakers' => [
-        'max_consecutive_losses' => (int) env('TRADING_MAX_CONSECUTIVE_LOSSES', 2),
-        'loss_cooldown_minutes' => (int) env('TRADING_LOSS_COOLDOWN_MINUTES', 30), // 30 minutes cooldown (reduced from 120m)
+        'max_consecutive_losses' => (int) env('TRADING_MAX_CONSECUTIVE_LOSSES', 4),
+        'loss_cooldown_minutes' => (int) env('TRADING_LOSS_COOLDOWN_MINUTES', 20), // 20 minutes cooldown (reduced from 120m)
         'max_daily_loss_pct' => (float) env('TRADING_MAX_DAILY_LOSS_PCT', 15.0),    // 15% daily drawdown cap
         'emergency_kill_switch' => (bool) env('TRADING_KILL_SWITCH', false),
     ],
@@ -108,40 +107,37 @@ return [
     |--------------------------------------------------------------------------
     */
     'management' => [
-        // Fast Breakeven Lock: Triggered at +0.30% gain (+3.0% ROE at 10x) OR +3.0% ROE
-        // Guarantees winning positions NEVER turn into red losses!
-        'be_gain_pct' => 0.30,
-        'be_roe_threshold' => 3.0,
-        'be_fee_buffer_pct' => 0.08, // Entry + 0.08% covers taker fees + micro profit
+        // Breakeven Lock: Triggered at +0.45% gain (+4.5% ROE at 10x)
+        'be_gain_pct' => (float) env('TRADING_BE_GAIN_PCT', 0.45),
+        'be_roe_threshold' => (float) env('TRADING_BE_ROE_THRESHOLD', 4.5),
+        'be_fee_buffer_pct' => (float) env('TRADING_BE_FEE_BUFFER_PCT', 0.08),
 
         // Tier 1 Stepped Ratchet: At +0.45% gain (+4.5% ROE), lock SL at +0.18% profit (+1.8% ROE)
         'lock1_gain_pct' => 0.45,
         'lock1_sl_pct' => 0.18,
 
         // Partial Profit Booking:
-        'tp1_pct' => 0.65,           // Fast TP1 at +0.65% price gain (+6.5% ROE at 10x)
-        'tp1_close_ratio' => 0.40,   // Close 40% at TP1 to bank guaranteed cash into balance
+        'tp1_pct' => (float) env('TRADING_TP1_PCT', 1.50),           // Harvest 35% at +1.50% price gain (+15% ROE at 10x)
+        'tp1_close_ratio' => (float) env('TRADING_TP1_CLOSE_RATIO', 0.35),
 
         // Tier 2 Stepped Ratchet: At +0.90% gain (+9.0% ROE), lock SL at +0.45% profit (+4.5% ROE)
         'lock2_gain_pct' => 0.90,
         'lock2_sl_pct' => 0.45,
 
-        'tp2_pct' => 1.25,           // TP2 at +1.25% price gain (+12.5% ROE at 10x)
-        'tp2_close_ratio' => 0.30,   // Close 30% at TP2
+        'tp2_pct' => (float) env('TRADING_TP2_PCT', 3.00),           // Harvest 30% at +3.00% price gain (+30% ROE at 10x)
+        'tp2_close_ratio' => (float) env('TRADING_TP2_CLOSE_RATIO', 0.30),
 
-        // Remaining 30% runs on Trailing SL to capture explosive breakouts:
-        'trailing_sl_atr_mult' => 1.4,
-        'trailing_sl_trigger_pct' => 1.00, // Start trailing after +1.00% gain
+        // Remaining 35% runs on AI structural & trailing SL to capture multi-dollar breakouts
+        'trailing_sl_atr_mult' => (float) env('TRADING_TRAILING_SL_ATR_MULT', 2.0),
+        'trailing_sl_trigger_pct' => (float) env('TRADING_TRAILING_SL_TRIGGER_PCT', 1.50),
 
-        // Anti-Giveback Circuit (Peak Reversal Exit):
-        // If a trade peaked >= +0.40% gain (+4.0% ROE) and pulls back by >= 35% of peak gain,
-        // execute immediate market exit to preserve green profit!
-        'peak_profit_min_gain_pct' => 0.40,
-        'peak_profit_giveback_pct' => 35.0,
+        // Anti-Giveback Circuit:
+        'peak_profit_min_gain_pct' => (float) env('TRADING_PEAK_PROFIT_MIN_GAIN_PCT', 0.60),
+        'peak_profit_giveback_pct' => (float) env('TRADING_PEAK_PROFIT_GIVEBACK_PCT', 35.0),
 
-        // Trade Stagnation & Dead-Position Timeout Pruner (Micro-Account Capital Velocity):
-        'stagnation_timeout_minutes' => 30, // Close if holding > 30m with positive profit without hitting TP1
-        'max_hold_minutes' => 60,           // Hard exit after 60m for stagnant flat trades to free margin
+        // Stagnation & Dead-Position Timeout Pruner (0 disables time-based forced closures)
+        'stagnation_timeout_minutes' => (int) env('TRADING_STAGNATION_TIMEOUT_MINUTES', 0),
+        'max_hold_minutes' => (int) env('TRADING_MAX_HOLD_MINUTES', 0),
     ],
 
     /*

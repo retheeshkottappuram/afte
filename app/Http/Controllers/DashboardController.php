@@ -42,13 +42,14 @@ class DashboardController extends Controller
      */
     public function index(Request $request): View
     {
+        $defaultMode = config('trading.mode', 'live');
         $mode = $request->query('mode')
             ?? $request->cookie('afte_trading_mode')
             ?? session('trading_mode')
-            ?? config('trading.mode', 'paper');
+            ?? $defaultMode;
 
         if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = 'paper';
+            $mode = $defaultMode;
         }
 
         session(['trading_mode' => $mode]);
@@ -68,13 +69,14 @@ class DashboardController extends Controller
      */
     public function stats(Request $request): JsonResponse
     {
+        $defaultMode = config('trading.mode', 'live');
         $mode = $request->query('mode')
             ?? session('trading_mode')
             ?? $request->cookie('afte_trading_mode')
-            ?? config('trading.mode', 'paper');
+            ?? $defaultMode;
 
         if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = 'paper';
+            $mode = $defaultMode;
         }
 
         session(['trading_mode' => $mode]);
@@ -175,7 +177,7 @@ class DashboardController extends Controller
      */
     public function positions(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'paper'));
+        $mode = $request->query('mode', config('trading.mode', 'live'));
         if (! in_array($mode, ['paper', 'live'], true)) {
             $mode = 'paper';
         }
@@ -250,6 +252,7 @@ class DashboardController extends Controller
                 'has_exchange_tp' => $tpAlgo !== null,
                 'exchange_tp_price' => $tpAlgo ? (float) ($tpAlgo['triggerPrice'] ?? 0) : null,
                 'opened_at' => $pos->opened_at?->diffForHumans(),
+                'ai_monitor' => $pos->meta['ai_monitor'] ?? null,
             ];
         }
 
@@ -273,7 +276,7 @@ class DashboardController extends Controller
      */
     public function history(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'paper'));
+        $mode = $request->query('mode', config('trading.mode', 'live'));
 
         $closedTrades = Trade::where('mode', $mode)
             ->where('status', 'CLOSED')
@@ -289,7 +292,7 @@ class DashboardController extends Controller
      */
     public function equityCurve(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'paper'));
+        $mode = $request->query('mode', config('trading.mode', 'live'));
 
         $snapshots = EquitySnapshot::where('mode', $mode)
             ->orderBy('created_at')
@@ -393,7 +396,7 @@ class DashboardController extends Controller
     {
         $symbol = strtoupper(trim((string) $request->input('symbol')));
         $direction = strtoupper(trim((string) $request->input('direction')));
-        $mode = $request->input('mode', config('trading.mode', 'paper'));
+        $mode = $request->input('mode', config('trading.mode', 'live'));
 
         if (! in_array($direction, ['LONG', 'SHORT'], true)) {
             return response()->json(['success' => false, 'message' => 'Invalid trade direction.'], 422);
@@ -514,7 +517,7 @@ class DashboardController extends Controller
      */
     public function toggleKillSwitch(Request $request): JsonResponse
     {
-        $mode = $request->input('mode', config('trading.mode', 'paper'));
+        $mode = $request->input('mode', config('trading.mode', 'live'));
         $account = TradingAccount::getForMode($mode);
 
         $account->kill_switch = ! $account->kill_switch;
@@ -571,7 +574,7 @@ class DashboardController extends Controller
             ], 403);
         }
 
-        $mode = $request->input('mode', config('trading.mode', 'paper'));
+        $mode = $request->input('mode', config('trading.mode', 'live'));
 
         if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return response()->json([
@@ -643,7 +646,7 @@ class DashboardController extends Controller
      */
     public function autoTick(Request $request): JsonResponse
     {
-        $mode = $request->input('mode', config('trading.mode', 'paper'));
+        $mode = $request->input('mode', config('trading.mode', 'live'));
         $tickResult = $this->daemonManager->tickOnce($mode);
 
         return response()->json(array_merge(['success' => true], $tickResult));
@@ -654,7 +657,7 @@ class DashboardController extends Controller
      */
     public function daemonStatus(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'paper'));
+        $mode = $request->query('mode', config('trading.mode', 'live'));
 
         return response()->json($this->daemonManager->status($mode));
     }
@@ -668,7 +671,7 @@ class DashboardController extends Controller
             return response()->json(['success' => false, 'message' => 'Administrator access required.'], 403);
         }
 
-        $mode = $request->input('mode', config('trading.mode', 'paper'));
+        $mode = $request->input('mode', config('trading.mode', 'live'));
 
         if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return response()->json([
@@ -689,7 +692,7 @@ class DashboardController extends Controller
             return response()->json(['success' => false, 'message' => 'Administrator access required.'], 403);
         }
 
-        $mode = $request->input('mode', config('trading.mode', 'paper'));
+        $mode = $request->input('mode', config('trading.mode', 'live'));
 
         return response()->json($this->daemonManager->stop($mode));
     }
@@ -712,7 +715,7 @@ class DashboardController extends Controller
      */
     public function liveSync(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'paper'));
+        $mode = $request->query('mode', config('trading.mode', 'live'));
 
         $statsData = $this->stats($request)->getData(true);
         $positionsData = $this->positions($request)->getData(true);

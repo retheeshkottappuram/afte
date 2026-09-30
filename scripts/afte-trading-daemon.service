@@ -1,0 +1,24 @@
+[Unit]
+Description=AFTE 24/7 Autonomous Crypto Trading Daemon
+After=network.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/afte
+ExecStart=/usr/bin/php /var/www/afte/artisan trade:daemon --mode=live --start
+Restart=always
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=append:/var/www/afte/storage/logs/trading_daemon.log
+StandardError=append:/var/www/afte/storage/logs/trading_daemon.log
+
+# Resource limits & stability
+LimitNOFILE=65535
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,7 @@ namespace App\Services\Trading;
 
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\AI\ActiveTradeMonitorAgent;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
 use Carbon\Carbon;
@@ -14,7 +15,8 @@ class DynamicTradeManager
     public function __construct(
         protected BinanceFuturesClient $client,
         protected RiskManager $riskManager,
-        protected TelegramNotifier $notifier
+        protected TelegramNotifier $notifier,
+        protected ActiveTradeMonitorAgent $aiMonitor
     ) {}
 
     /**
@@ -42,35 +44,63 @@ class DynamicTradeManager
                 $trade->lowest_price = $price;
             }
 
-            // 1. Check Stop Loss Execution
+            // 1. Check Hard Stop Loss Breach
             if ($this->isStopLossTriggered($trade, $price)) {
                 $reason = $trade->stage === 'TRAILING' ? 'TRAILING_STOP' : ($trade->be_locked ? 'BREAKEVEN_STOP' : 'STOP_LOSS');
 
                 return $this->closeTrade($trade, $price, $reason);
             }
 
-            // 2. Anti-Giveback Circuit: Check Peak Reversal Exit (Locks green profit before retracement)
-            $peakExit = $this->checkPeakReversalExit($trade, $price);
-            if ($peakExit !== null) {
-                return $peakExit;
+            // 2. Active AI Sentinel Trade Monitor (Watches trend, volume, and momentum on every tick)
+            $aiResult = $this->aiMonitor->monitorTrade($trade, $price);
+            $meta = $trade->meta ?? [];
+            $meta['ai_monitor'] = [
+                'action' => $aiResult['action'],
+                'decision' => $aiResult['decision'],
+                'reason' => $aiResult['reason'],
+                'target_price' => $aiResult['target_price'] ?? null,
+                'metrics' => $aiResult['metrics'] ?? [],
+                'updated_at' => now()->toIso8601String(),
+            ];
+            $trade->meta = $meta;
+
+            // If AI detects high-confidence structural trend invalidation (high volume breakdown through support):
+            if ($aiResult['action'] === 'EMERGENCY_EXIT') {
+                return $this->closeTrade($trade, $price, 'AI_TREND_INVALIDATION');
             }
 
-            // 3. Check Breakeven Protection (Locks early at +0.30% gain or +3.0% ROE to guarantee no loss)
+            // If AI recommends elevated structural trailing stop behind swing pivot:
+            if ($aiResult['action'] === 'TRAIL_SL' && ! empty($aiResult['suggested_sl'])) {
+                $this->applyElevatedStopLoss($trade, (float) $aiResult['suggested_sl']);
+            }
+
+            // 3. Anti-Giveback Circuit: Check Peak Reversal Exit
+            // If the active AI monitor has confirmed the trend is intact and is letting the winner run
+            // toward extended targets, protect the runner from premature noise exit.
+            $aiHoldingWinner = ($aiResult['action'] ?? '') === 'HOLD' && ($aiResult['decision'] ?? '') === 'LET_WINNER_RUN';
+            if (! $aiHoldingWinner) {
+                $peakExit = $this->checkPeakReversalExit($trade, $price);
+                if ($peakExit !== null) {
+                    return $peakExit;
+                }
+            }
+
+            // 4. Check Breakeven Protection
             $this->checkBreakeven($trade, $price);
 
-            // 4. Check Stagnation & Dead-Position Timeout Pruner (Releases trapped margin on slow trades)
+            // 5. Check Stagnant Dead-Position Timeout (Does NOT kill profitable trades)
             $stagnationExit = $this->checkStagnationExit($trade, $price);
             if ($stagnationExit !== null) {
                 return $stagnationExit;
             }
 
-            // 5. Check TP1 Partial Booking (Close 40% at +0.65% gain / +6.5% ROE and lock guaranteed profit)
+            // 6. Check TP1 Partial Booking
             $this->checkTp1($trade, $price);
 
-            // 6. Check TP2 Partial Booking (Close 30% at +1.25% gain / +12.5% ROE and trail SL to TP1)
+            // 7. Check TP2 Partial Booking
             $this->checkTp2($trade, $price);
 
-            // 7. Dynamic Trailing Stop & Stepped Ratchet Profit Protection on Runner
+            // 8. Dynamic Trailing Stop & Stepped Ratchet Profit Protection on Runner
             $this->updateTrailingStop($trade, $price);
 
             $trade->save();
@@ -97,15 +127,14 @@ class DynamicTradeManager
 
     /**
      * Anti-Giveback Circuit: Peak Reversal Exit.
-     * Prevents profitable trades from retracing into red or breakeven.
-     * If price reached at least +0.40% gain (+4.0% ROE) and pulls back by >= 35% of peak gain,
-     * or if gain falls to <= 0.15% after peaking >= +0.40%, execute immediate profit-take exit.
+     * Prevents large accumulated profits from turning into losses, while giving normal
+     * pullbacks ample room to breathe.
      *
      * @return array{status: string, message: string}|null
      */
     protected function checkPeakReversalExit(Trade $trade, float $currentPrice): ?array
     {
-        $minPeakGainPct = (float) config('trading.management.peak_profit_min_gain_pct', 0.40);
+        $minPeakGainPct = (float) config('trading.management.peak_profit_min_gain_pct', 0.60);
         $maxGivebackPct = (float) config('trading.management.peak_profit_giveback_pct', 35.0);
 
         if ($trade->entry_price <= 0) {
@@ -139,8 +168,8 @@ class DynamicTradeManager
     }
 
     /**
-     * Breakeven logic: locks in Entry + fee buffer when price reaches +0.30% gain or +3.0% ROE.
-     * Prevents winning positions from ever turning into losses.
+     * Breakeven logic: locks in Entry + fee buffer when price reaches safe threshold.
+     * Prevents winning positions from ever turning into losses without choking on noise.
      */
     protected function checkBreakeven(Trade $trade, float $currentPrice): void
     {
@@ -148,9 +177,9 @@ class DynamicTradeManager
             return;
         }
 
-        $gainPctThreshold = (float) config('trading.management.be_gain_pct', 0.30);
+        $gainPctThreshold = (float) config('trading.management.be_gain_pct', 0.45);
         $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.08);
-        $roeThreshold = (float) config('trading.management.be_roe_threshold', 3.0);
+        $roeThreshold = (float) config('trading.management.be_roe_threshold', 4.5);
 
         $gainPct = $trade->isLong()
             ? (($currentPrice - $trade->entry_price) / $trade->entry_price) * 100.0
@@ -175,8 +204,9 @@ class DynamicTradeManager
     }
 
     /**
-     * Stagnation & Dead-Position Timeout Pruner.
-     * Closes trades holding longer than timeout to recycle margin for explosive setups.
+     * Dead-Position Timeout Pruner.
+     * Only closes flat, inactive positions that never gained traction, freeing capital.
+     * Never closes winning trades with positive momentum.
      *
      * @return array{status: string, message: string}|null
      */
@@ -186,15 +216,18 @@ class DynamicTradeManager
             return null;
         }
 
-        $timeoutMinutes = (int) config('trading.management.stagnation_timeout_minutes', 30);
-        $hardTimeout = (int) config('trading.management.max_hold_minutes', 60);
-
-        if ($timeoutMinutes <= 0) {
+        $hardTimeout = (int) config('trading.management.max_hold_minutes', 0);
+        if ($hardTimeout <= 0) {
             return null;
         }
 
         $ageMinutes = $trade->opened_at->diffInMinutes(Carbon::now());
-        if ($ageMinutes < $timeoutMinutes) {
+        if ($ageMinutes < $hardTimeout) {
+            return null;
+        }
+
+        // Never kill trades if AI Sentinel is actively monitoring or letting winner run
+        if ($this->aiMonitor !== null && $this->aiMonitor->shouldLetWinnerRun($trade, $currentPrice)) {
             return null;
         }
 
@@ -202,13 +235,9 @@ class DynamicTradeManager
             ? (($currentPrice - $trade->entry_price) / $trade->entry_price) * 100.0
             : (($trade->entry_price - $currentPrice) / $trade->entry_price) * 100.0;
 
-        // Positive profit stagnation: Holding > 30m with positive profit (+0.10% or more), take the banked win!
-        if ($gainPct >= 0.10) {
-            return $this->closeTrade($trade, $currentPrice, 'STAGNATION_PROFIT_TAKE');
-        }
-
-        // Hard timeout: Holding > 60m without reaching TP1, exit to prevent blocking capital
-        if ($ageMinutes >= $hardTimeout && ! $trade->tp1_hit) {
+        // Only exit if trade has not hit TP1, is strictly non-profitable (gain <= 0.0%), and hard timeout is explicitly enabled
+        // Winning trades and consolidations with positive momentum are NEVER closed by time!
+        if (! $trade->tp1_hit && $gainPct <= 0.0) {
             return $this->closeTrade($trade, $currentPrice, 'STAGNATION_TIMEOUT_EXIT');
         }
 

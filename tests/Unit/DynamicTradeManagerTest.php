@@ -175,6 +175,8 @@ class DynamicTradeManagerTest extends TestCase
 
     public function test_stagnation_timeout_closes_trade_after_hard_timeout(): void
     {
+        config(['trading.management.max_hold_minutes' => 90]);
+
         $manager = app(DynamicTradeManager::class);
 
         TradingAccount::create([

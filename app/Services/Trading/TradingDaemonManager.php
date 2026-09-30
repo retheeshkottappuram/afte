@@ -40,7 +40,7 @@ class TradingDaemonManager
      */
     public function status(?string $mode = null): array
     {
-        $mode = $mode ?: config('trading.mode', 'paper');
+        $mode = $mode ?: config('trading.mode', 'live');
         $account = TradingAccount::getForMode($mode);
 
         $heartbeat = (int) Cache::get(self::CACHE_HEARTBEAT_KEY, 0);
@@ -51,7 +51,7 @@ class TradingDaemonManager
         $isRunning = ($diffSeconds <= $maxHeartbeatAge);
 
         // Auto-Revive Watchdog: Only trigger background process spawning if daemon_auto_spawn is explicitly enabled
-        $autoSpawn = (bool) config('trading.daemon_auto_spawn', false);
+        $autoSpawn = (bool) config('trading.daemon_auto_spawn', true);
         if ($autoSpawn && $account->is_running && $diffSeconds > $maxHeartbeatAge) {
             if (Cache::add(self::CACHE_REVIVE_LOCK, true, 30)) {
                 Log::warning("[TradingDaemon] Auto-Revive triggered: daemon silent for {$diffSeconds}s while auto-trading is enabled.");
@@ -105,12 +105,12 @@ class TradingDaemonManager
      *
      * @return array{success: bool, message: string, is_running: bool}
      */
-    public function start(string $mode = 'paper'): array
+    public function start(string $mode = 'live'): array
     {
-        if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
+        if ($mode === 'live' && ! config('trading.allow_live_trading', true)) {
             return [
                 'success' => false,
-                'message' => 'LIVE trading daemon cannot be started from this environment (ALLOW_LIVE_TRADING is false). Please use Paper mode in local development.',
+                'message' => 'LIVE trading daemon cannot be started from this environment (ALLOW_LIVE_TRADING is false).',
                 'is_running' => false,
             ];
         }
@@ -136,8 +136,8 @@ class TradingDaemonManager
             ];
         }
 
-        // On shared hosting environments without persistent background process permissions:
-        if (! config('trading.daemon_auto_spawn', false)) {
+        // On environments where background auto-spawning is disabled:
+        if (! config('trading.daemon_auto_spawn', true)) {
             Cache::put(self::CACHE_STATUS_KEY, 'RUNNING', 120);
 
             return [
@@ -172,8 +172,12 @@ class TradingDaemonManager
 
         try {
             if ($isWindows) {
+                $headlessVbs = base_path('start-trading-daemon-headless.vbs');
                 $bgBat = base_path('start-trading-daemon-bg.bat');
-                if (file_exists($bgBat)) {
+                if (file_exists($headlessVbs)) {
+                    pclose(popen("wscript.exe \"{$headlessVbs}\" {$mode}", 'r'));
+                    $launched = true;
+                } elseif (file_exists($bgBat)) {
                     pclose(popen("start /B \"\" \"{$bgBat}\" {$mode}", 'r'));
                     $launched = true;
                 } else {
@@ -183,8 +187,9 @@ class TradingDaemonManager
                     $launched = true;
                 }
             } else {
+                // Production Linux VPS: use nohup with stdin closed (/dev/null) so PHP-FPM worker recycling never kills the daemon!
                 $cmd = sprintf(
-                    '(%s %s trade:daemon --mode=%s --start >> %s 2>&1 &) && echo $!',
+                    'nohup %s %s trade:daemon --mode=%s --start </dev/null >> %s 2>&1 & echo $!',
                     escapeshellarg($phpCli),
                     escapeshellarg($artisanPath),
                     escapeshellarg($mode),
@@ -204,7 +209,7 @@ class TradingDaemonManager
                         1 => ['file', $logPath, 'a'],
                         2 => ['file', $logPath, 'a'],
                     ];
-                    $proc = proc_open("({$phpCli} {$artisanPath} trade:daemon --mode={$mode} &)", $descriptorspec, $pipes);
+                    $proc = proc_open("nohup {$phpCli} {$artisanPath} trade:daemon --mode={$mode} --start </dev/null >> {$logPath} 2>&1 &", $descriptorspec, $pipes);
                     if (is_resource($proc)) {
                         $st = proc_get_status($proc);
                         $capturedPid = $st['pid'] ?? null;
@@ -262,7 +267,7 @@ class TradingDaemonManager
      *
      * @return array{success: bool, message: string, is_running: bool}
      */
-    public function stop(string $mode = 'paper'): array
+    public function stop(string $mode = 'live'): array
     {
         $account = TradingAccount::getForMode($mode);
         $account->is_running = false;
@@ -293,7 +298,7 @@ class TradingDaemonManager
      *
      * @return array<string, mixed>
      */
-    public function tickOnce(string $mode = 'paper'): array
+    public function tickOnce(string $mode = 'live'): array
     {
         $account = TradingAccount::getForMode($mode);
 
@@ -440,6 +445,18 @@ class TradingDaemonManager
             $binName = strtolower(basename(PHP_BINARY));
             if (! str_contains($binName, 'fpm') && ! str_contains($binName, 'cgi')) {
                 return PHP_BINARY;
+            }
+        }
+
+        // On Linux VPS: dynamically detect PHP CLI via system PATH
+        if (function_exists('exec')) {
+            $whichPhp = trim((string) @exec('which php 2>/dev/null'));
+            if (! empty($whichPhp) && file_exists($whichPhp) && is_executable($whichPhp)) {
+                return $whichPhp;
+            }
+            $whichPhp84 = trim((string) @exec('which php8.4 2>/dev/null'));
+            if (! empty($whichPhp84) && file_exists($whichPhp84) && is_executable($whichPhp84)) {
+                return $whichPhp84;
             }
         }
 

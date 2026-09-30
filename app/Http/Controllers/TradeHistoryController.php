@@ -15,9 +15,9 @@ class TradeHistoryController extends Controller
      */
     public function index(Request $request): View
     {
-        $mode = $request->query('mode', config('trading.mode', 'paper'));
+        $mode = $request->query('mode', config('trading.mode', 'live'));
         if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = 'paper';
+            $mode = (string) config('trading.mode', 'live');
         }
         $symbol = $request->query('symbol');
         $outcome = $request->query('outcome', 'all');
@@ -102,9 +102,9 @@ class TradeHistoryController extends Controller
      */
     public function exportCsv(Request $request): StreamedResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'paper'));
+        $mode = $request->query('mode', config('trading.mode', 'live'));
         if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = 'paper';
+            $mode = (string) config('trading.mode', 'live');
         }
         $symbol = $request->query('symbol');
 

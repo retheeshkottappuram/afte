@@ -306,17 +306,17 @@ class SignalEngine
         $maxSlDist = $entryPrice * 0.0125;
         $slDist = max($minSlDist, min($maxSlDist, $rawSlDist));
 
-        // Asymmetric micro-compounding targets:
-        // TP1: Rapid cash capture (1:0.95 R:R, ~0.65% - 0.85% price move, +6.5% to +8.5% ROE at 10x)
-        // TP2: Trend expansion (1:1.85 R:R, ~1.25% - 1.80% price move, +12.5% to +18% ROE)
+        // Asymmetric compounding targets with true positive mathematical expectancy:
+        // TP1: Solid cash harvest (1:1.35 R:R, ~1.00% - 1.50% price move, +10.0% to +15.0% ROE at 10x)
+        // TP2: Major trend expansion (1:2.65 R:R, ~2.00% - 3.20% price move, +20.0% to +32.0% ROE)
         if ($direction === 'LONG') {
             $initialSl = round($entryPrice - $slDist, 6);
-            $tp1 = round($entryPrice + ($slDist * 0.95), 6); // Rapid 40% profit booking
-            $tp2 = round($entryPrice + ($slDist * 1.85), 6); // 30% trend harvest
+            $tp1 = round($entryPrice + ($slDist * 1.35), 6); // 35% profit harvest
+            $tp2 = round($entryPrice + ($slDist * 2.65), 6); // 30% trend harvest
         } else {
             $initialSl = round($entryPrice + $slDist, 6);
-            $tp1 = round($entryPrice - ($slDist * 0.95), 6);
-            $tp2 = round($entryPrice - ($slDist * 1.85), 6);
+            $tp1 = round($entryPrice - ($slDist * 1.35), 6);
+            $tp2 = round($entryPrice - ($slDist * 2.65), 6);
         }
 
         $slPct = round(($slDist / $entryPrice) * 100, 2);

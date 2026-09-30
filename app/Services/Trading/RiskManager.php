@@ -309,13 +309,17 @@ class RiskManager
             $account->consecutive_losses = 0;
         } else {
             $account->losing_trades += 1;
-            $account->consecutive_losses += 1;
             $account->consecutive_wins = 0;
 
+            // Only increment consecutive losses if it was a genuine adverse loss (not tiny fee friction <= $0.015)
+            if ($pnl < -0.015) {
+                $account->consecutive_losses += 1;
+            }
+
             // Circuit breaker: Check consecutive loss limit
-            $maxConsecutive = (int) config('trading.circuit_breakers.max_consecutive_losses', 2);
+            $maxConsecutive = (int) config('trading.circuit_breakers.max_consecutive_losses', 4);
             if ($account->consecutive_losses >= $maxConsecutive) {
-                $cooldownMinutes = (int) config('trading.circuit_breakers.loss_cooldown_minutes', 120);
+                $cooldownMinutes = (int) config('trading.circuit_breakers.loss_cooldown_minutes', 20);
                 $account->paused_until = Carbon::now()->addMinutes($cooldownMinutes);
             }
         }

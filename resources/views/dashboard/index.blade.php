@@ -1116,6 +1116,15 @@
                                 <span class="px-1.5 py-0.5 rounded text-[10px] border ${sideColor}">${pos.side}</span>
                             </div>
                             <span class="text-[10px] text-slate-400">${pos.opened_at || 'just now'}</span>
+                            ${pos.ai_monitor && pos.ai_monitor.decision ? `
+                                <div class="mt-1.5" title="${pos.ai_monitor.reason || ''}">
+                                    <span class="px-1.5 py-0.5 rounded text-[9px] bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold inline-flex items-center gap-1">
+                                        🤖 AI: ${(pos.ai_monitor.decision || '').replace(/_/g, ' ')}
+                                    </span>
+                                    ${pos.ai_monitor.target_price ? `<span class="text-[9px] text-purple-400 font-mono ml-1">🎯 $${pos.ai_monitor.target_price}</span>` : ''}
+                                    ${pos.ai_monitor.reason ? `<div class="text-[9px] text-slate-400 italic mt-0.5 max-w-[220px] truncate">${pos.ai_monitor.reason}</div>` : ''}
+                                </div>
+                            ` : ''}
                         </td>
                         <td class="px-4 py-3">${stageBadge}</td>
                         <td class="px-4 py-3">

@@ -129,13 +129,36 @@ class ExchangePositionSync
                 }
             }
 
-            // 3. Close trades in DB that are no longer active on Binance
+            // Guard: If exchange positions response is completely empty or invalid, skip reconciliation to prevent false closes
+            if (empty($exchangePositions) || ! is_array($exchangePositions)) {
+                Log::warning('[ExchangePositionSync] Received empty or invalid positions payload from Binance. Skipping position reconciliation to prevent false closes.');
+
+                return true;
+            }
+
+            // Map all symbols that Binance explicitly reported on with their amounts
+            $allReportedSymbols = [];
+            foreach ($exchangePositions as $p) {
+                if (! empty($p['symbol'])) {
+                    $allReportedSymbols[$p['symbol']] = (float) ($p['positionAmt'] ?? 0);
+                }
+            }
+
+            // 3. Close trades in DB that are confirmed closed on Binance (positionAmt explicitly == 0)
             $dbOpenTrades = Trade::where('mode', $mode)
                 ->where('status', 'OPEN')
                 ->get();
 
             foreach ($dbOpenTrades as $dbTrade) {
-                if (! in_array($dbTrade->symbol, $liveSymbolsFound, true)) {
+                // Grace period: allow 20 seconds after opening for Binance position propagation
+                if ($dbTrade->opened_at && $dbTrade->opened_at->diffInSeconds(now()) < 20) {
+                    continue;
+                }
+
+                $hasExplicitZeroAmt = isset($allReportedSymbols[$dbTrade->symbol]) && $allReportedSymbols[$dbTrade->symbol] == 0.0;
+                $isNotInLiveSymbols = ! in_array($dbTrade->symbol, $liveSymbolsFound, true);
+
+                if ($isNotInLiveSymbols && $hasExplicitZeroAmt) {
                     $closeMark = $dbTrade->entry_price;
                     $realizedPnl = 0.0;
                     $feePaid = 0.0;

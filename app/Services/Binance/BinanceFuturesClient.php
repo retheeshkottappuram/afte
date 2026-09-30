@@ -24,7 +24,7 @@ class BinanceFuturesClient
      */
     public function __construct(?string $mode = null)
     {
-        $this->mode = $mode ?? (string) config('trading.mode', 'paper');
+        $this->mode = $mode ?? (string) config('trading.mode', 'live');
 
         if ($this->mode === 'testnet') {
             $this->baseUrl = (string) config('trading.binance.endpoints.testnet_rest', 'https://testnet.binancefuture.com');
