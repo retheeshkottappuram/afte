@@ -517,22 +517,43 @@ class BinanceFuturesClient
      */
     public function placeStopLoss(string $symbol, string $side, float $stopPrice, ?float $quantity = null, bool $closePosition = true): array
     {
-        $params = [
-            'algoType' => 'CONDITIONAL',
-            'symbol' => strtoupper($symbol),
-            'side' => strtoupper($side),
-            'type' => 'STOP_MARKET',
-            'triggerPrice' => (string) $this->formatPrice($symbol, $stopPrice),
-        ];
+        $formattedPrice = (string) $this->formatPrice($symbol, $stopPrice);
 
-        if ($closePosition) {
-            $params['closePosition'] = 'true';
-        } else {
-            $params['quantity'] = (string) $this->formatQuantity($symbol, $quantity ?? 0.0);
-            $params['reduceOnly'] = 'true';
+        try {
+            $params = [
+                'algoType' => 'CONDITIONAL',
+                'symbol' => strtoupper($symbol),
+                'side' => strtoupper($side),
+                'type' => 'STOP_MARKET',
+                'triggerPrice' => $formattedPrice,
+            ];
+
+            if ($closePosition) {
+                $params['closePosition'] = 'true';
+            } else {
+                $params['quantity'] = (string) $this->formatQuantity($symbol, $quantity ?? 0.0);
+                $params['reduceOnly'] = 'true';
+            }
+
+            return $this->placeAlgoOrder($params);
+        } catch (\Throwable $e) {
+            // Robust fallback to classic conditional order endpoint (/fapi/v1/order)
+            $fallbackParams = [
+                'symbol' => strtoupper($symbol),
+                'side' => strtoupper($side),
+                'type' => 'STOP_MARKET',
+                'stopPrice' => $formattedPrice,
+            ];
+
+            if ($closePosition) {
+                $fallbackParams['closePosition'] = 'true';
+            } else {
+                $fallbackParams['quantity'] = (string) $this->formatQuantity($symbol, $quantity ?? 0.0);
+                $fallbackParams['reduceOnly'] = 'true';
+            }
+
+            return $this->placeOrder($fallbackParams);
         }
-
-        return $this->placeAlgoOrder($params);
     }
 
     /**

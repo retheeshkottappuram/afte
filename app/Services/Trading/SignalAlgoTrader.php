@@ -16,13 +16,18 @@ use Throwable;
 
 class SignalAlgoTrader
 {
+    protected RiskManager $riskManager;
+
     public function __construct(
         protected BinanceClient $binanceClient,
         protected SignalEngine $signalEngine,
         protected OrderExecutor $orderExecutor,
         protected DynamicTradeManager $tradeManager,
-        protected TelegramNotifier $notifier
-    ) {}
+        protected TelegramNotifier $notifier,
+        ?RiskManager $riskManager = null
+    ) {
+        $this->riskManager = $riskManager ?? app(RiskManager::class);
+    }
 
     /**
      * Execute a complete SignalAlgo PRO autonomous cycle on the target coin.
@@ -211,18 +216,43 @@ class SignalAlgoTrader
                 $maxFreshnessSeconds = $interval === '15m' ? 1800 : 4500; // 30m for 15m, 75m for 1h
 
                 if ($candleAgeSeconds >= -60 && $candleAgeSeconds <= $maxFreshnessSeconds) {
+                    $entryPrice = (float) ($latestMarker['entry'] ?? 0.0);
+                    $direction = $markerSide === 'BUY' ? 'LONG' : 'SHORT';
+                    $rawSl = (float) ($latestMarker['sl'] ?? 0.0);
+
+                    // Guarantee proper Stop Loss for Asset Protection (tightly bounded 0.80% - 1.60%)
+                    $sanitizedSl = $this->riskManager->calculateAssetProtectionStopLoss(
+                        $direction,
+                        $entryPrice,
+                        $rawSl > 0 ? $rawSl : null
+                    );
+                    $riskDist = abs($entryPrice - $sanitizedSl);
+
+                    $tp1 = (float) ($latestMarker['tp1'] ?? 0.0);
+                    if ($tp1 <= 0) {
+                        $tp1 = $direction === 'LONG' ? round($entryPrice + ($riskDist * 1.35), 6) : round($entryPrice - ($riskDist * 1.35), 6);
+                    }
+                    $tp2 = (float) ($latestMarker['tp2'] ?? 0.0);
+                    if ($tp2 <= 0) {
+                        $tp2 = $direction === 'LONG' ? round($entryPrice + ($riskDist * 2.80), 6) : round($entryPrice - ($riskDist * 2.80), 6);
+                    }
+                    $tp3 = (float) ($latestMarker['tp3'] ?? 0.0);
+                    if ($tp3 <= 0) {
+                        $tp3 = $direction === 'LONG' ? round($entryPrice + ($riskDist * 4.50), 6) : round($entryPrice - ($riskDist * 4.50), 6);
+                    }
+
                     return [
                         'symbol' => $symbol,
                         'interval' => $interval,
                         'side' => $markerSide,
-                        'direction' => $markerSide === 'BUY' ? 'LONG' : 'SHORT',
+                        'direction' => $direction,
                         'score' => $markerScore,
                         'grade' => (string) ($latestMarker['grade'] ?? 'A'),
-                        'price' => (float) ($latestMarker['entry'] ?? 0.0),
-                        'initial_sl' => (float) ($latestMarker['sl'] ?? 0.0),
-                        'tp1' => (float) ($latestMarker['tp1'] ?? 0.0),
-                        'tp2' => (float) ($latestMarker['tp2'] ?? 0.0),
-                        'tp3' => (float) ($latestMarker['tp3'] ?? 0.0),
+                        'price' => $entryPrice,
+                        'initial_sl' => $sanitizedSl,
+                        'tp1' => $tp1,
+                        'tp2' => $tp2,
+                        'tp3' => $tp3,
                         'risk_reward' => (string) ($latestMarker['risk_reward'] ?? '1 : 2.8'),
                         'marker_time' => $markerTime,
                         'setup_type' => (string) ($latestMarker['setup_type'] ?? 'BREAKOUT_CONFIRMED'),

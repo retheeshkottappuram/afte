@@ -96,7 +96,21 @@ return [
         'min_available_margin' => (float) env('TRADING_MIN_AVAILABLE_MARGIN', 0.50),       // Minimum free available margin in USD to open a new trade
         'exempt_protected_positions' => true, // Breakeven or profit-locked trades do not block new trades
         'stage1_target_notional' => (float) env('TRADING_STAGE1_TARGET_NOTIONAL', 5.50),     // Sized for Binance $5 minimum notional (~$0.55 margin at 10x)
+        'single_coin_fund_percent' => (float) env('TRADING_SINGLE_COIN_FUND_PERCENT', 50.0), // Dedicated single-coin margin allocation: at least 50% of available funds
+        'max_fund_allocation_pct' => (float) env('TRADING_MAX_FUND_ALLOCATION_PCT', 75.0),  // Safety cap: leaves at least 25% free margin as collateral cushion
         'amount_per_trade' => env('TRADING_AMOUNT_PER_TRADE') !== null ? (float) env('TRADING_AMOUNT_PER_TRADE') : null, // Fixed margin amount in USD added per trade, null for dynamic
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Asset Protection & Proper Stop Loss Controls
+    |--------------------------------------------------------------------------
+    | Ensures mathematical asset protection against catastrophic drawdowns.
+    */
+    'risk' => [
+        'min_sl_distance_pct' => (float) env('TRADING_MIN_SL_PCT', 0.80),         // Minimum 0.80% SL distance (prevents noise stopouts)
+        'max_sl_distance_pct' => (float) env('TRADING_MAX_SL_PCT', 1.60),         // Maximum 1.60% SL distance (Asset Protection Cap, ~16% ROE max risk)
+        'default_sl_distance_pct' => (float) env('TRADING_DEFAULT_SL_PCT', 1.25), // 1.25% safe default if signal marker SL is missing or inverted
     ],
 
     /*

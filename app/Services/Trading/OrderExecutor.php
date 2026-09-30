@@ -49,19 +49,38 @@ class OrderExecutor
             return ['status' => 'rejected', 'trade' => null, 'message' => $canOpen['reason']];
         }
 
-        // 2. Calculate safe position sizing compliant with Binance minNotional ($5)
+        $entryPrice = (float) $signal['price'];
+        $direction = strtoupper((string) ($signal['direction'] ?? ($signal['side'] === 'BUY' ? 'LONG' : 'SHORT')));
+
+        // Ensure proper Stop Loss for Asset Protection (strictly bounded 0.8% - 1.6%)
+        $initialSl = $this->riskManager->calculateAssetProtectionStopLoss(
+            $direction,
+            $entryPrice,
+            isset($signal['initial_sl']) ? (float) $signal['initial_sl'] : null
+        );
+        $signal['initial_sl'] = $initialSl;
+
+        // Align Take Profit levels if missing or compressed
+        $slDist = abs($entryPrice - $initialSl);
+        if (empty($signal['tp1']) || (float) $signal['tp1'] <= 0) {
+            $signal['tp1'] = $direction === 'LONG' ? round($entryPrice + ($slDist * 1.35), 6) : round($entryPrice - ($slDist * 1.35), 6);
+        }
+        if (empty($signal['tp2']) || (float) $signal['tp2'] <= 0) {
+            $signal['tp2'] = $direction === 'LONG' ? round($entryPrice + ($slDist * 2.80), 6) : round($entryPrice - ($slDist * 2.80), 6);
+        }
+
+        // 2. Calculate safe position sizing (>= 50% fund utilization in single-coin mode, Binance minNotional $5 compliant)
         $sizing = $this->riskManager->calculatePositionSize(
             $account,
             $symbol,
-            (float) $signal['price'],
-            (float) $signal['initial_sl']
+            $entryPrice,
+            $initialSl
         );
 
         if (! $sizing['allowed']) {
             return ['status' => 'rejected', 'trade' => null, 'message' => $sizing['reason']];
         }
 
-        $entryPrice = (float) $signal['price'];
         $quantity = (float) $sizing['quantity'];
         $margin = (float) $sizing['margin'];
         $leverage = (int) $sizing['leverage'];
@@ -104,6 +123,7 @@ class OrderExecutor
                 $binanceOrderId = (string) ($orderResult['orderId'] ?? null);
                 if (isset($orderResult['avgPrice']) && (float) $orderResult['avgPrice'] > 0) {
                     $entryPrice = (float) $orderResult['avgPrice'];
+                    $signal['initial_sl'] = $this->riskManager->calculateAssetProtectionStopLoss($direction, $entryPrice, $initialSl);
                 }
 
                 // Place Native Exchange Stop Loss & Take Profit on Binance via Algo Orders API
@@ -113,7 +133,8 @@ class OrderExecutor
 
                 try {
                     $slRes = $client->placeStopLoss($symbol, $closeSide, (float) $signal['initial_sl'], $quantity, true);
-                    $slAlgoId = (string) ($slRes['algoId'] ?? null);
+                    $slAlgoId = (string) ($slRes['algoId'] ?? ($slRes['orderId'] ?? null));
+                    Log::info("Placed exchange-side asset protection SL for {$symbol} at \${$signal['initial_sl']} (ID: {$slAlgoId})");
                 } catch (\Throwable $slEx) {
                     Log::warning("Failed to place native SL on Binance for {$symbol}: {$slEx->getMessage()}");
                 }

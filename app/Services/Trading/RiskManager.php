@@ -173,7 +173,60 @@ class RiskManager
     }
 
     /**
+     * Compute a strictly bounded Stop Loss price guaranteeing mathematical asset protection.
+     * Prevents catastrophic capital loss on high-allocation single coin positions.
+     */
+    public function calculateAssetProtectionStopLoss(
+        string $direction,
+        float $entryPrice,
+        ?float $proposedSl = null
+    ): float {
+        if ($entryPrice <= 0) {
+            return 0.0;
+        }
+
+        $isLong = in_array(strtoupper($direction), ['LONG', 'BUY'], true);
+        $minSlPct = (float) config('trading.risk.min_sl_distance_pct', 0.80);
+        $maxSlPct = (float) config('trading.risk.max_sl_distance_pct', 1.60);
+        $defaultSlPct = (float) config('trading.risk.default_sl_distance_pct', 1.25);
+
+        $defaultSl = $isLong
+            ? round($entryPrice * (1.0 - ($defaultSlPct / 100.0)), 6)
+            : round($entryPrice * (1.0 + ($defaultSlPct / 100.0)), 6);
+
+        if ($proposedSl === null || $proposedSl <= 0) {
+            return $defaultSl;
+        }
+
+        // Direction sanity check: Long SL must be strictly below entry, Short SL must be strictly above entry
+        if ($isLong && $proposedSl >= $entryPrice) {
+            return $defaultSl;
+        }
+        if (! $isLong && $proposedSl <= $entryPrice) {
+            return $defaultSl;
+        }
+
+        $distancePct = (abs($entryPrice - $proposedSl) / $entryPrice) * 100.0;
+
+        // Clamp within asset protection bounds
+        if ($distancePct < $minSlPct) {
+            return $isLong
+                ? round($entryPrice * (1.0 - ($minSlPct / 100.0)), 6)
+                : round($entryPrice * (1.0 + ($minSlPct / 100.0)), 6);
+        }
+
+        if ($distancePct > $maxSlPct) {
+            return $isLong
+                ? round($entryPrice * (1.0 - ($maxSlPct / 100.0)), 6)
+                : round($entryPrice * (1.0 + ($maxSlPct / 100.0)), 6);
+        }
+
+        return round($proposedSl, 6);
+    }
+
+    /**
      * Compute safe position size, margin, and leverage for $5 -> $500 challenge.
+     * Enforces >= 50% available fund utilization in single-coin mode.
      *
      * @return array{
      *     allowed: bool,
@@ -197,7 +250,12 @@ class RiskManager
 
         $slDistance = abs($entryPrice - $slPrice);
         if ($slDistance <= 0 || $entryPrice <= 0) {
-            return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => 'Invalid SL or entry price.'];
+            if ($entryPrice > 0) {
+                $slPrice = $this->calculateAssetProtectionStopLoss('LONG', $entryPrice, null);
+                $slDistance = abs($entryPrice - $slPrice);
+            } else {
+                return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => 'Invalid SL or entry price.'];
+            }
         }
 
         $slPct = $slDistance / $entryPrice;
@@ -210,12 +268,22 @@ class RiskManager
 
         // Check if an explicit amount added per trade (in USD) is configured
         $configuredAmount = config('trading.fund_management.amount_per_trade');
+        $isSingleCoin = (bool) config('trading.single_coin_strict', true);
+        $singleCoinFundPct = (float) config('trading.fund_management.single_coin_fund_percent', 50.0);
+        $maxAllocPct = (float) config('trading.fund_management.max_fund_allocation_pct', 75.0);
 
         if ($configuredAmount !== null && (float) $configuredAmount > 0) {
             // User-configured exact margin amount added per trade
-            $targetNotional = max($minNotional, ((float) $configuredAmount) * $leverage);
+            $targetMargin = max((float) $configuredAmount, $minNotional / $leverage);
+            $targetNotional = $targetMargin * $leverage;
+        } elseif ($isSingleCoin) {
+            // Dedicated Single-Coin Strategy: At least 50% of available funds utilized for the trade
+            $targetMargin = max($minNotional / $leverage, $availMargin * ($singleCoinFundPct / 100.0));
+            // Cap at maximum allocation safety ceiling (e.g. 75% margin, ensuring >= 25% liquidation shield)
+            $targetMargin = min($targetMargin, $availMargin * ($maxAllocPct / 100.0));
+            $targetNotional = max($minNotional, $targetMargin * $leverage);
         } elseif ($account->balance < 25.0) {
-            // In Stage 1 ($3 - $25), size position close to minimum notional so multiple trades can run safely
+            // In Stage 1 ($3 - $25) multi-coin mode, size position close to minimum notional so multiple trades can run safely
             $targetNotional = (float) config('trading.fund_management.stage1_target_notional', 5.25);
             $targetNotional = max($minNotional, $targetNotional);
         } else {
@@ -226,8 +294,8 @@ class RiskManager
 
         $marginRequired = $targetNotional / $leverage;
 
-        // Ensure margin does not exceed available free margin (keep at least 15% buffer)
-        $maxAffordableMargin = $availMargin * 0.85;
+        // Ensure margin does not exceed available free margin (keep at least 25% safety buffer in single-coin mode, 15% in multi-coin)
+        $maxAffordableMargin = $availMargin * ($maxAllocPct / 100.0);
 
         if ($marginRequired > $maxAffordableMargin) {
             $targetNotional = $maxAffordableMargin * $leverage;

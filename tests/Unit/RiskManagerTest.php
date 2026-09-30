@@ -155,4 +155,52 @@ class RiskManagerTest extends TestCase
         $this->assertFalse($canOpenNear['allowed']);
         $this->assertStringContainsString('Trading is strictly restricted', $canOpenNear['reason']);
     }
+
+    public function test_single_coin_utilizes_at_least_50_percent_of_available_fund(): void
+    {
+        config(['trading.single_coin_strict' => true]);
+        config(['trading.fund_management.single_coin_fund_percent' => 50.0]);
+        config(['trading.fund_management.amount_per_trade' => null]);
+
+        $riskManager = app(RiskManager::class);
+
+        $account = TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 10.0,
+            'initial_balance' => 10.0,
+            'is_running' => true,
+        ]);
+
+        $sizing = $riskManager->calculatePositionSize($account, 'NEARUSDT', 2.50, 2.46);
+
+        $this->assertTrue($sizing['allowed']);
+        $this->assertGreaterThanOrEqual(5.00, $sizing['margin'], 'Single-coin position must utilize at least 50% of available funds ($5.00 of $10.00)');
+        $this->assertLessThanOrEqual(7.50, $sizing['margin'], 'Single-coin position margin must not exceed 75% safety cap');
+        $this->assertGreaterThanOrEqual(50.0, $sizing['notional'], 'Position notional at 10x leverage must be at least $50.00');
+    }
+
+    public function test_asset_protection_stop_loss_clamping(): void
+    {
+        $riskManager = app(RiskManager::class);
+
+        // 1. Long: Dangerously wide SL (5% away) clamped to max 1.60%
+        $wideLongSl = $riskManager->calculateAssetProtectionStopLoss('LONG', 100.0, 95.0);
+        $this->assertEquals(98.40, $wideLongSl, 'Wide Long SL must be clamped to 1.6% max distance for asset protection');
+
+        // 2. Long: Too tight SL (0.2% away) clamped to min 0.80%
+        $tightLongSl = $riskManager->calculateAssetProtectionStopLoss('LONG', 100.0, 99.80);
+        $this->assertEquals(99.20, $tightLongSl, 'Tight Long SL must be clamped to 0.8% min distance');
+
+        // 3. Long: Inverted SL (above entry price) healed to safe default (1.25%)
+        $invertedLongSl = $riskManager->calculateAssetProtectionStopLoss('LONG', 100.0, 105.0);
+        $this->assertEquals(98.75, $invertedLongSl, 'Inverted Long SL must be healed to default 1.25% distance');
+
+        // 4. Short: Dangerously wide SL (5% away) clamped to max 1.60%
+        $wideShortSl = $riskManager->calculateAssetProtectionStopLoss('SHORT', 100.0, 105.0);
+        $this->assertEquals(101.60, $wideShortSl, 'Wide Short SL must be clamped to 1.6% max distance');
+
+        // 5. Short: Inverted SL (below entry price) healed to safe default (1.25%)
+        $invertedShortSl = $riskManager->calculateAssetProtectionStopLoss('SHORT', 100.0, 95.0);
+        $this->assertEquals(101.25, $invertedShortSl, 'Inverted Short SL must be healed to default 1.25% distance');
+    }
 }

@@ -139,6 +139,19 @@ class DashboardController extends Controller
             $pausedReason = 'STANDBY: Auto-trading is paused. Start Auto Trading to resume automated execution.';
         }
 
+        $isSingleCoin = (bool) config('trading.single_coin_strict', true);
+        $singleCoinFundPct = (float) config('trading.fund_management.single_coin_fund_percent', 50.0);
+        $configuredAmount = config('trading.fund_management.amount_per_trade');
+
+        if ($configuredAmount !== null && (float) $configuredAmount > 0) {
+            $amountPerTrade = (float) $configuredAmount;
+        } elseif ($isSingleCoin) {
+            $minNotionalMargin = 5.20 / ($stageInfo['default_leverage'] ?? 10);
+            $amountPerTrade = round(min($availMargin * 0.75, max($availMargin * ($singleCoinFundPct / 100.0), $minNotionalMargin)), 2);
+        } else {
+            $amountPerTrade = round(5.20 / ($stageInfo['default_leverage'] ?? 10), 2);
+        }
+
         return response()->json([
             'mode' => $mode,
             'balance' => $balance,
@@ -171,7 +184,9 @@ class DashboardController extends Controller
             'stage' => $stageInfo['stage'],
             'max_positions' => $stageInfo['max_positions'],
             'default_leverage' => $stageInfo['default_leverage'],
-            'amount_per_trade' => config('trading.fund_management.amount_per_trade') ?? round(5.20 / ($stageInfo['default_leverage'] ?? 10), 2),
+            'amount_per_trade' => $amountPerTrade,
+            'single_coin_fund_percent' => $singleCoinFundPct,
+            'is_single_coin' => $isSingleCoin,
             'live_synced' => $liveSynced,
             'daemon' => $daemonStatus,
         ]);
