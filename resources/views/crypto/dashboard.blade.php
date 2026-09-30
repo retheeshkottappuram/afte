@@ -2392,19 +2392,48 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         let html = '';
         signals.forEach(s => {
             const isBuy = s.side === 'BUY';
-            const borderCls = isBuy ? 'border-emerald-500/30 hover:border-emerald-500/60' : 'border-rose-500/30 hover:border-rose-500/60';
+            const borderCls = isBuy ? 'border-emerald-500/40 hover:border-emerald-500/70 shadow-emerald-950/20' : 'border-rose-500/40 hover:border-rose-500/70 shadow-rose-950/20';
             const tagCls = isBuy ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
             const scoreCls = isBuy ? 'text-emerald-400' : 'text-rose-400';
             const sideIcon = isBuy ? '🟢 LONG (BUY)' : '🔴 SHORT (SELL)';
-            const gradeBadge = s.grade === 'A'
-                ? '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-amber-400/20 text-amber-300 border border-amber-400/40">GRADE A</span>'
-                : '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">GRADE B</span>';
-            const setupTypeBadge = (s.setup_label === 'ACTIVE INSTITUTIONAL SETUP' || s.setup_type === 'ACTIVE INSTITUTIONAL SETUP')
-                ? `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">ACTIVE SETUP${s.age_minutes ? ` (${s.age_minutes}m ago)` : ''}</span>`
-                : '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40">FRESH BREAKOUT</span>';
+            const gradeBadge = (s.grade === 'A+' || s.grade === 'A')
+                ? `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-amber-400/20 text-amber-300 border border-amber-400/40">GRADE ${s.grade}</span>`
+                : `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">GRADE ${s.grade || 'B'}</span>`;
+
+            // High-probability institutional setup badges
+            let setupTypeBadge = '';
+            if (s.setup_type === 'PRE_BREAKOUT_COIL') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/50 animate-pulse flex items-center gap-1">⚡ PRE-BREAKOUT COIL</span>';
+            } else if (s.setup_type === 'WYCKOFF_SPRING') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 flex items-center gap-1">💎 WYCKOFF SPRING</span>';
+            } else if (s.setup_type === 'WYCKOFF_UPTHRUST') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-orange-500/20 text-orange-300 border border-orange-500/50 flex items-center gap-1">⚡ WYCKOFF UPTHRUST</span>';
+            } else if (s.setup_type === 'BREAKOUT_CONFIRMED') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 flex items-center gap-1">🔥 MOMENTUM BREAKOUT</span>';
+            } else if (s.setup_type === 'RETEST_ENTRY') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-teal-500/20 text-teal-300 border border-teal-500/50 flex items-center gap-1">🔄 BREAKOUT RETEST</span>';
+            } else if (s.setup_type === 'ACTIVE_SETUP' || s.setup_label === 'ACTIVE SETUP') {
+                setupTypeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">ACTIVE SETUP${s.age_minutes ? ` (${s.age_minutes}m ago)` : ''}</span>`;
+            } else {
+                setupTypeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40">${s.setup_label || 'HIGH PROBABILITY'}</span>`;
+            }
+
+            const breakoutInfoHtml = (s.breakout_level) ? `
+                <div class="mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between text-xs font-mono">
+                    <span class="text-amber-400 font-bold flex items-center gap-1">🎯 Breakout Level: <span class="text-white">${s.breakout_level}</span></span>
+                    <span class="text-amber-300 font-bold bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/30">${s.distance_pct !== undefined ? `${s.distance_pct}% away` : 'Imminent'}</span>
+                </div>
+            ` : '';
+
+            const profitMetricsHtml = `
+                <div class="mb-3 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between text-[11px] font-mono">
+                    <span class="text-slate-400">Target Profit: <strong class="text-emerald-400 font-bold">+${s.target_profit_pct || '2.8'}%</strong> <span class="text-emerald-300/80">(${s.target_profit_leveraged_pct ? `+${s.target_profit_leveraged_pct}% 10x` : '+28% 10x'})</span></span>
+                    <span class="text-slate-400">R:R: <strong class="text-cyan-300 font-bold">${s.risk_reward || '1 : 2.8'}</strong></span>
+                </div>
+            `;
 
             html += `
-                <div class="p-4 rounded-xl bg-slate-950/80 border ${borderCls} transition shadow-lg relative flex flex-col justify-between">
+                <div class="p-4 rounded-xl bg-slate-950/80 border ${borderCls} transition shadow-xl relative flex flex-col justify-between hover:bg-slate-900/60">
                     <div>
                         <div class="flex items-center justify-between mb-2">
                             <div class="flex items-center space-x-1.5 flex-wrap gap-y-1">
@@ -2415,7 +2444,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                             <span class="text-[11px] font-mono text-slate-400">${s.time || ''}</span>
                         </div>
 
-                        <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center justify-between mb-2">
                             <span class="text-xs font-bold px-2.5 py-1 rounded-lg border ${tagCls}">
                                 ${sideIcon}
                             </span>
@@ -2423,6 +2452,9 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                                 Score: <strong class="${scoreCls}">${s.score}/100</strong>
                             </span>
                         </div>
+
+                        ${breakoutInfoHtml}
+                        ${profitMetricsHtml}
 
                         <!-- Price targets -->
                         <div class="grid grid-cols-2 gap-1.5 text-xs font-mono mb-3 bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
@@ -2452,15 +2484,71 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                         </div>
                     </div>
 
-                    <button type="button" onclick="loadFuturesChart('${s.symbol}', true)"
-                        class="w-full mt-2 py-2 px-3 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white border border-slate-700 transition flex items-center justify-center space-x-1 cursor-pointer touch-manipulation">
-                        <span>📊 Inspect Chart</span>
-                    </button>
+                    <!-- Action buttons -->
+                    <div class="mt-3 flex items-center gap-2">
+                        <button type="button" onclick="executeManualScanTrade('${s.symbol}', '${isBuy ? 'LONG' : 'SHORT'}', this)"
+                            class="flex-1 py-2 px-3 text-xs font-black rounded-lg ${isBuy ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/50' : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950/50'} shadow-md transition flex items-center justify-center space-x-1.5 cursor-pointer touch-manipulation active:scale-[0.98]">
+                            <span>⚡ Place ${isBuy ? 'LONG' : 'SHORT'} Trade</span>
+                        </button>
+                        <button type="button" onclick="loadFuturesChart('${s.symbol}', true)"
+                            class="py-2 px-3 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white border border-slate-700 transition flex items-center justify-center space-x-1 cursor-pointer touch-manipulation">
+                            <span>📊 Chart</span>
+                        </button>
+                    </div>
                 </div>
             `;
         });
 
         grid.innerHTML = html;
+    }
+
+    async function executeManualScanTrade(symbol, direction, btnEl) {
+        const confirmed = confirm(`⚡ Execute Binance Futures ${direction} trade on ${symbol} with institutional risk management?`);
+        if (!confirmed) return;
+
+        const originalHtml = btnEl ? btnEl.innerHTML : null;
+        if (btnEl) {
+            btnEl.innerHTML = `<span class="inline-block animate-spin mr-1">⌛</span> Placing ${direction}...`;
+            btnEl.disabled = true;
+        }
+
+        try {
+            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '{{ csrf_token() }}';
+            const res = await fetch('/api/execute-radar-trade', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': token,
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    symbol: symbol,
+                    direction: direction
+                })
+            });
+
+            const data = await res.json();
+            if (res.ok && data.success) {
+                showToast(`✅ ${data.message || `Successfully opened ${symbol} ${direction} trade!`}`, true);
+                if (btnEl) {
+                    btnEl.innerHTML = `<span>✅ Order Placed!</span>`;
+                    btnEl.classList.remove('bg-emerald-600', 'bg-rose-600');
+                    btnEl.classList.add('bg-cyan-700');
+                }
+            } else {
+                showToast(`❌ Trade Failed: ${data.message || 'Execution rejected by exchange'}`, false);
+                if (btnEl && originalHtml) {
+                    btnEl.innerHTML = originalHtml;
+                    btnEl.disabled = false;
+                }
+            }
+        } catch (err) {
+            showToast(`❌ Network/Execution Error: ${err.message}`, false);
+            if (btnEl && originalHtml) {
+                btnEl.innerHTML = originalHtml;
+                btnEl.disabled = false;
+            }
+        }
     }
 
     function toggleTerminalConsole() {

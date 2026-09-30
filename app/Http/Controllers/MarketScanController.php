@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\Trading\PhpCliResolver;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -51,26 +52,27 @@ class MarketScanController extends Controller
         ], 1800);
 
         // 3. Prepare log file
+        // 3. Prepare log file & resolve PHP CLI
         $logPath = storage_path('logs/manual_scan.log');
         if (! is_dir(storage_path('logs'))) {
             @mkdir(storage_path('logs'), 0755, true);
         }
+        $phpCli = $this->resolvePhpCliBinary();
+        $artisanPath = base_path('artisan');
+        $basePath = base_path();
+        $isWindows = (PHP_OS_FAMILY === 'Windows');
+        $capturedPid = null;
+
         $initTime = Carbon::now('Asia/Kolkata')->format('d-M-Y H:i:s \I\S\T');
         file_put_contents(
             $logPath,
             "================================================================================\n"
             ."⚡ SignalAlgo PRO™ On-Demand Whole-Market Scan Initiated\n"
             ."• Time: {$initTime}\n"
-            ."• Executing: php artisan crypto:check-signals --all --dry-run\n"
+            ."• PHP CLI: {$phpCli}\n"
+            ."• Executing: {$phpCli} artisan crypto:check-signals --all --dry-run\n"
             ."================================================================================\n\n"
         );
-
-        // 4. Resolve PHP CLI path and launch process in background
-        $phpCli = $this->resolvePhpCliBinary();
-        $artisanPath = base_path('artisan');
-        $basePath = base_path();
-        $isWindows = (PHP_OS_FAMILY === 'Windows');
-        $capturedPid = null;
 
         try {
             if ($isWindows) {
@@ -84,7 +86,7 @@ class MarketScanController extends Controller
                 pclose(popen("start \"\" /B \"{$batPath}\" > NUL 2>&1", 'r'));
             } else {
                 $cmd = sprintf(
-                    '(cd %s && %s %s crypto:check-signals --all --dry-run >> %s 2>&1 & echo $!)',
+                    '(cd %s && nohup %s %s crypto:check-signals --all --dry-run </dev/null >> %s 2>&1 & echo $!)',
                     escapeshellarg($basePath),
                     escapeshellarg($phpCli),
                     escapeshellarg($artisanPath),
@@ -234,66 +236,6 @@ class MarketScanController extends Controller
      */
     protected function resolvePhpCliBinary(): string
     {
-        // 1. Explicit configuration or environment override
-        $configuredPhp = config('trading.php_binary', env('PHP_BINARY_PATH'));
-        if (! empty($configuredPhp) && is_string($configuredPhp)) {
-            if ($configuredPhp === 'php' || (file_exists($configuredPhp) && is_executable($configuredPhp))) {
-                return $configuredPhp;
-            }
-        }
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            $laragonPhps = glob('C:\\laragon\\bin\\php\\php*\\php.exe');
-            if (! empty($laragonPhps)) {
-                rsort($laragonPhps);
-
-                return $laragonPhps[0];
-            }
-
-            if (defined('PHP_BINARY') && file_exists(PHP_BINARY) && ! str_contains(strtolower(PHP_BINARY), 'httpd')) {
-                return PHP_BINARY;
-            }
-
-            return 'php';
-        }
-
-        // Linux / Unix / macOS
-        if (defined('PHP_BINARY') && file_exists(PHP_BINARY)) {
-            $binName = strtolower(basename(PHP_BINARY));
-            if (! str_contains($binName, 'fpm') && ! str_contains($binName, 'cgi')) {
-                return PHP_BINARY;
-            }
-        }
-
-        $candidates = [
-            '/usr/php84/usr/bin/php', // ServerByt / StackCP PHP 8.4
-            '/usr/php83/usr/bin/php', // ServerByt / StackCP PHP 8.3
-            '/usr/local/bin/ea-php84',
-            '/opt/cpanel/ea-php84/root/usr/bin/php',
-            '/usr/local/bin/ea-php83',
-            '/opt/cpanel/ea-php83/root/usr/bin/php',
-            '/usr/bin/php-8.4',
-            '/usr/bin/php8.4',
-            '/usr/bin/php84',
-            '/usr/bin/php-8.3',
-            '/usr/bin/php8.3',
-            '/usr/bin/php83',
-            '/usr/bin/php-cli',
-            '/usr/local/bin/php',
-            '/usr/bin/php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION,
-            '/usr/bin/php',
-            'php',
-        ];
-
-        foreach ($candidates as $candidate) {
-            if ($candidate === 'php' || (file_exists($candidate) && is_executable($candidate))) {
-                $verOutput = @shell_exec(escapeshellcmd($candidate).' -r "echo PHP_VERSION;" 2>/dev/null');
-                if ($verOutput && version_compare(trim($verOutput), '8.3.0', '>=')) {
-                    return $candidate;
-                }
-            }
-        }
-
-        return 'php';
+        return PhpCliResolver::resolve();
     }
 }

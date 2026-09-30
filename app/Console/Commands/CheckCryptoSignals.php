@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\CryptoSignal;
 use App\Services\Crypto\BinanceClient;
+use App\Services\Crypto\BreakoutDetector;
 use App\Services\Crypto\MarketScanner;
 use App\Services\Crypto\SignalEngine;
 use App\Services\Crypto\SignalRecorder;
@@ -45,8 +46,11 @@ class CheckCryptoSignals extends Command
     /**
      * Execute the console command.
      */
-    public function handle(BinanceClient $binanceClient, MarketScanner $marketScanner): int
-    {
+    public function handle(
+        BinanceClient $binanceClient,
+        MarketScanner $marketScanner,
+        BreakoutDetector $breakoutDetector
+    ): int {
         @set_time_limit(0);
         @ini_set('max_execution_time', '0');
         @ini_set('memory_limit', '512M');
@@ -299,57 +303,109 @@ class CheckCryptoSignals extends Command
                             $this->line("  -> <fg=green>Persisted {$syncResult['persisted_count']} chart marker(s) for {$symbol} to Alert History table.</>");
                         }
 
-                        // 4. Evaluate detailed diagnostics on the latest closed candle
-                        $evalResult = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandlesForSym);
-                        $signal = $evalResult['signal'];
-                        $diag = $evalResult['diagnostics'] ?? [];
+                        // 4. Primary: Evaluate High-Probability Breakout & Pre-Breakout Coiling Setups
+                        $signal = null;
                         $isFreshBreakout = false;
 
-                        if ($signal !== null) {
-                            // Condition 1: Bitcoin Macro Trend Filter
-                            if ($signal['side'] === 'BUY' && ! $btcTrend['allow_long']) {
-                                $this->line("  -> <fg=yellow>Filtered out {$symbol} BUY setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
-                                $signal = null;
-                            } elseif ($signal['side'] === 'SELL' && ! $btcTrend['allow_short']) {
-                                $this->line("  -> <fg=yellow>Filtered out {$symbol} SELL setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
-                                $signal = null;
-                            } elseif ($signal['score'] < 82) {
-                                $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$signal['score']} below institutional conviction threshold (82)</>");
-                                $signal = null;
-                            } else {
-                                $volRatio = (float) ($signal['volume_ratio'] ?? 1.0);
-                                if ($volRatio < 1.25) {
-                                    $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Volume ratio {$volRatio}x below minimum threshold (1.25x)</>");
-                                    $signal = null;
+                        $breakoutResult = $breakoutDetector->evaluate(
+                            $baseCandles,
+                            $htf1Candles,
+                            $htf2Candles,
+                            null,
+                            $btcCandlesForSym
+                        );
+
+                        if ($breakoutResult !== null) {
+                            $bSide = $breakoutResult['side'];
+                            $bRs = (float) ($breakoutResult['rs_ratio'] ?? 1.0);
+                            $bScore = (int) ($breakoutResult['score'] ?? 85);
+                            $bType = $breakoutResult['type'] ?? 'PRE_BREAKOUT_COIL';
+
+                            // Macro Alignment or Strong Relative Strength / Early Liquidity Coiling
+                            $isBtcAligned = ($bSide === 'BUY' && $btcTrend['allow_long']) || ($bSide === 'SELL' && $btcTrend['allow_short']);
+                            $isDecoupledLeader = ($bSide === 'BUY' && ($bRs >= 1.01 || $bScore >= 90 || in_array($bType, ['PRE_BREAKOUT_COIL', 'WYCKOFF_SPRING'])))
+                                || ($bSide === 'SELL' && ($bRs <= 0.99 || $bScore >= 90 || in_array($bType, ['PRE_BREAKDOWN_DESCENDING_COIL', 'WYCKOFF_UPTHRUST'])));
+
+                            if ($isBtcAligned || $isDecoupledLeader) {
+                                $signal = [
+                                    'side' => $bSide,
+                                    'score' => $bScore,
+                                    'grade' => $breakoutResult['grade'] ?? ($bScore >= 90 ? 'A+' : 'A'),
+                                    'entry' => $breakoutResult['entry'],
+                                    'sl' => $breakoutResult['sl'],
+                                    'tp1' => $breakoutResult['tp1'],
+                                    'tp2' => $breakoutResult['tp2'],
+                                    'tp3' => $breakoutResult['tp3'],
+                                    'breakout_level' => $breakoutResult['breakout_level'] ?? null,
+                                    'distance_pct' => $breakoutResult['distance_pct'] ?? 0.0,
+                                    'risk_reward' => $breakoutResult['risk_reward'] ?? '1 : 2.8',
+                                    'rsi' => $breakoutResult['rsi'] ?? null,
+                                    'adx' => $breakoutResult['adx'] ?? null,
+                                    'volume_ratio' => $breakoutResult['volume_ratio'] ?? 1.0,
+                                    'atr_pct' => $breakoutResult['atr_pct'] ?? null,
+                                    'setup_type' => $bType,
+                                    'setup_label' => $breakoutResult['setup_label'] ?? 'BREAKOUT SETUP',
+                                    'candle_close_time' => $breakoutResult['candle_close_time'] ?? (now()->timestamp * 1000),
+                                    'perpetual_options' => $breakoutResult['perpetual_options'] ?? null,
+                                    'age_minutes' => 0,
+                                    'is_active_trade' => false,
+                                ];
+                                $isFreshBreakout = true;
+                                $this->info("  -> ⚡ [BREAKOUT SETUP DETECTED] {$symbol} {$bSide} - {$signal['setup_label']} (Score: {$bScore}/100, Dist: {$signal['distance_pct']}%, R:R: {$signal['risk_reward']})");
+                            }
+                        }
+
+                        // 5. Secondary: Evaluate Detailed Multi-Factor Momentum Setups from SignalEngine
+                        $diag = [];
+                        if ($signal === null) {
+                            $evalResult = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandlesForSym);
+                            $engineSignal = $evalResult['signal'];
+                            $diag = $evalResult['diagnostics'] ?? [];
+
+                            if ($engineSignal !== null) {
+                                $eSide = $engineSignal['side'];
+                                $eScore = (int) ($engineSignal['score'] ?? 0);
+                                $eVolRatio = (float) ($engineSignal['volume_ratio'] ?? 1.0);
+                                $eRs = (float) ($engineSignal['rs_ratio'] ?? 1.0);
+
+                                $isBtcAligned = ($eSide === 'BUY' && $btcTrend['allow_long']) || ($eSide === 'SELL' && $btcTrend['allow_short']);
+                                $isDecoupled = ($eSide === 'BUY' && $eRs >= 1.015) || ($eSide === 'SELL' && $eRs <= 0.985);
+
+                                if (! $isBtcAligned && ! $isDecoupled) {
+                                    $this->line("  -> <fg=yellow>Filtered out {$symbol} {$eSide} setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+                                } elseif ($eScore < 76) {
+                                    $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$eScore} below quality threshold (76)</>");
+                                } elseif ($eVolRatio < 1.05 && $eScore < 85) {
+                                    $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Volume ratio {$eVolRatio}x below minimum threshold (1.05x)</>");
                                 } else {
-                                    $isFreshBreakout = true;
-                                    $signal['setup_type'] = 'FRESH BREAKOUT';
-                                    $signal['setup_label'] = 'FRESH BREAKOUT';
+                                    $signal = $engineSignal;
+                                    $signal['setup_type'] = 'MOMENTUM_TREND';
+                                    $signal['setup_label'] = 'MOMENTUM TREND';
                                     $signal['age_minutes'] = 0;
                                     $signal['is_active_trade'] = false;
+                                    $isFreshBreakout = true;
+                                    $this->info("  -> 🚀 [MOMENTUM SETUP DETECTED] {$symbol} {$eSide} (Score: {$eScore}/100, Vol: {$eVolRatio}x)");
                                 }
                             }
                         }
 
-                        // If no fresh breakout on the exact latest candle, check for active in-progress institutional setups from markers
-                        // Stale signals (> 15 minutes old or price moved > 0.35% from entry) are strictly excluded to ensure only real-time actionable chances
+                        // 6. Tertiary: Check Active In-Progress Setups from Recent Chart Markers
                         if ($signal === null && ! empty($history['markers'])) {
                             $lastMarker = end($history['markers']);
                             $markerScore = (int) ($lastMarker['score'] ?? 0);
                             $markerSide = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
                             $isBtcAligned = ($markerSide === 'BUY' && $btcTrend['allow_long']) || ($markerSide === 'SELL' && $btcTrend['allow_short']);
 
-                            if ($markerScore >= 82 && $isBtcAligned) {
+                            if ($markerScore >= 78 && $isBtcAligned) {
                                 $markerTime = (int) ($lastMarker['time'] ?? 0);
                                 $candleAgeSeconds = now()->timestamp - $markerTime;
-                                // Max freshness: 15 minutes on intraday (1-2 candles max), never hours old
                                 $maxActiveSeconds = match ($interval) {
-                                    '1m' => 180,
-                                    '3m' => 360,
-                                    '5m' => 600,
-                                    '15m' => 900,  // Exactly 1 candle max (15 mins)
-                                    '30m' => 1800, // 30 mins max
-                                    default => 900,
+                                    '1m' => 300,
+                                    '3m' => 600,
+                                    '5m' => 900,
+                                    '15m' => 1800, // 2 candles max (30 mins)
+                                    '30m' => 3600,
+                                    default => 1800,
                                 };
 
                                 if ($candleAgeSeconds <= $maxActiveSeconds) {
@@ -358,19 +414,16 @@ class CheckCryptoSignals extends Command
                                     $sl = (float) ($lastMarker['sl'] ?? 0);
                                     $entry = (float) ($lastMarker['entry'] ?? 0);
                                     $invalidated = ($markerSide === 'BUY' && $lastClose < $sl) || ($markerSide === 'SELL' && $lastClose > $sl);
-                                    $volRatio = (float) ($lastMarker['volume_ratio'] ?? 1.15);
-
-                                    // Entry Proximity Gate: Current price must still be within 0.35% of signal entry
                                     $distFromEntryPct = $entry > 0 ? abs($lastClose - $entry) / $entry * 100.0 : 999.0;
 
-                                    if (! $invalidated && $entry > 0 && $volRatio >= 1.15 && $distFromEntryPct <= 0.35) {
+                                    if (! $invalidated && $entry > 0 && $distFromEntryPct <= 0.65) {
                                         $signal = [
                                             'side' => $markerSide,
                                             'is_active_trade' => true,
-                                            'setup_type' => 'ACTIVE FRESH SETUP',
-                                            'setup_label' => 'ACTIVE FRESH SETUP',
+                                            'setup_type' => 'ACTIVE_SETUP',
+                                            'setup_label' => 'ACTIVE SETUP',
                                             'score' => $markerScore,
-                                            'grade' => (string) ($lastMarker['grade'] ?? ($markerScore >= 90 ? 'A' : 'B')),
+                                            'grade' => (string) ($lastMarker['grade'] ?? ($markerScore >= 90 ? 'A+' : ($markerScore >= 82 ? 'A' : 'B'))),
                                             'entry' => $entry,
                                             'sl' => $sl,
                                             'tp1' => (float) ($lastMarker['tp1'] ?? 0),
@@ -378,13 +431,13 @@ class CheckCryptoSignals extends Command
                                             'tp3' => (float) ($lastMarker['tp3'] ?? 0),
                                             'rsi' => (float) ($lastMarker['rsi'] ?? 50.0),
                                             'adx' => (float) ($lastMarker['adx'] ?? 25.0),
-                                            'volume_ratio' => $volRatio,
+                                            'volume_ratio' => (float) ($lastMarker['volume_ratio'] ?? 1.1),
                                             'atr_pct' => (float) ($lastMarker['atr_pct'] ?? 1.5),
                                             'candle_close_time' => $markerTime * 1000,
                                             'live_price' => $lastClose,
                                             'age_minutes' => max(0, round($candleAgeSeconds / 60)),
                                         ];
-                                        $this->info("  -> 🎯 [ACTIVE FRESH SETUP FOUND] {$symbol} {$markerSide} (Score: {$markerScore}/100, Vol: {$volRatio}x, Age: {$signal['age_minutes']}m, Entry: {$entry}, SL: {$sl})");
+                                        $this->info("  -> 🎯 [ACTIVE FRESH SETUP FOUND] {$symbol} {$markerSide} (Score: {$markerScore}/100, Age: {$signal['age_minutes']}m, Entry: {$entry}, SL: {$sl})");
                                     }
                                 }
                             }
@@ -405,17 +458,42 @@ class CheckCryptoSignals extends Command
                             continue;
                         }
 
+                        $entryVal = (float) ($signal['entry'] ?? 0);
+                        $slVal = (float) ($signal['sl'] ?? 0);
+                        $tp1Val = (float) ($signal['tp1'] ?? 0);
+                        $tp2Val = (float) ($signal['tp2'] ?? 0);
+                        $tp3Val = (float) ($signal['tp3'] ?? 0);
+                        $slDist = abs($entryVal - $slVal);
+                        $tp2Dist = abs($tp2Val - $entryVal);
+                        $slPct = $entryVal > 0 ? round(($slDist / $entryVal) * 100, 2) : 1.0;
+                        $tp1Pct = $entryVal > 0 ? round((abs($tp1Val - $entryVal) / $entryVal) * 100, 2) : 1.5;
+                        $tp2Pct = $entryVal > 0 ? round(($tp2Dist / $entryVal) * 100, 2) : 3.0;
+                        $tp3Pct = $entryVal > 0 ? round((abs($tp3Val - $entryVal) / $entryVal) * 100, 2) : 4.5;
+                        $calculatedRr = $slDist > 0 ? '1 : '.round($tp2Dist / $slDist, 1) : '1 : 2.8';
+                        $rrRatio = $signal['risk_reward'] ?? $calculatedRr;
+                        $levMult = 10;
+                        $tp2LevPct = round($tp2Pct * $levMult, 1);
+
                         $sideEmoji = $signal['side'] === 'BUY' ? '🟢' : '🔴';
                         $foundSignals[] = [
                             'symbol' => $symbol,
                             'side' => $signal['side'],
                             'score' => $signal['score'],
-                            'grade' => $signal['grade'] ?? ($signal['score'] >= 90 ? 'A' : 'B'),
+                            'grade' => $signal['grade'] ?? ($signal['score'] >= 90 ? 'A+' : ($signal['score'] >= 82 ? 'A' : 'B')),
                             'entry' => $signal['entry'],
                             'sl' => $signal['sl'],
                             'tp1' => $signal['tp1'],
                             'tp2' => $signal['tp2'],
                             'tp3' => $signal['tp3'],
+                            'sl_pct' => $slPct,
+                            'tp1_pct' => $tp1Pct,
+                            'tp2_pct' => $tp2Pct,
+                            'tp3_pct' => $tp3Pct,
+                            'risk_reward' => $rrRatio,
+                            'target_profit_pct' => $tp2Pct,
+                            'target_profit_leveraged_pct' => $tp2LevPct,
+                            'breakout_level' => $signal['breakout_level'] ?? null,
+                            'distance_pct' => $signal['distance_pct'] ?? 0.0,
                             'rsi' => $signal['rsi'] ?? null,
                             'adx' => $signal['adx'] ?? null,
                             'volume_ratio' => $signal['volume_ratio'] ?? null,
@@ -423,6 +501,7 @@ class CheckCryptoSignals extends Command
                             'setup_type' => $signal['setup_type'] ?? 'INSTITUTIONAL SETUP',
                             'setup_label' => $signal['setup_label'] ?? 'ACTIVE SETUP',
                             'age_minutes' => $signal['age_minutes'] ?? 0,
+                            'perpetual_options' => $signal['perpetual_options'] ?? null,
                             'time' => Carbon::now('Asia/Kolkata')->format('H:i:s \I\S\T'),
                         ];
                         Cache::put('crypto:manual_scan:signals', $foundSignals, 86400);
@@ -432,18 +511,19 @@ class CheckCryptoSignals extends Command
                                 ['Field', 'Value'],
                                 [
                                     ['Symbol', $symbol],
-                                    ['Type', $signal['setup_label'] ?? 'SETUP'],
+                                    ['Setup Type', $signal['setup_label'] ?? 'SETUP'],
                                     ['Side', "{$sideEmoji} {$signal['side']}"],
-                                    ['Score', "{$signal['score']}/100"],
+                                    ['Score', "{$signal['score']}/100 [Grade: ".($signal['grade'] ?? 'A').']'],
                                     ['Entry Price', $signal['entry']],
-                                    ['Stop Loss (SL)', $signal['sl']],
-                                    ['Take Profit 1 (TP1)', $signal['tp1']],
-                                    ['Take Profit 2 (TP2)', $signal['tp2']],
-                                    ['Take Profit 3 (TP3)', $signal['tp3']],
-                                    ['RSI(14)', $signal['rsi']],
-                                    ['ADX(14)', $signal['adx']],
-                                    ['Volume Ratio', "{$signal['volume_ratio']}x"],
-                                    ['ATR %', "{$signal['atr_pct']}%"],
+                                    ['Stop Loss (SL)', "{$signal['sl']} (-{$slPct}%)"],
+                                    ['Take Profit 1 (TP1)', "{$signal['tp1']} (+{$tp1Pct}%)"],
+                                    ['Take Profit 2 (TP2)', "{$signal['tp2']} (+{$tp2Pct}% | +{$tp2LevPct}% 10x ROE)"],
+                                    ['Risk / Reward', $rrRatio],
+                                    ['Breakout Level', $signal['breakout_level'] ?? 'N/A'],
+                                    ['Distance to Breakout', isset($signal['distance_pct']) ? "{$signal['distance_pct']}%" : 'At Entry'],
+                                    ['RSI / ADX', ($signal['rsi'] ?? '-').' / '.($signal['adx'] ?? '-')],
+                                    ['Volume Ratio', isset($signal['volume_ratio']) ? "{$signal['volume_ratio']}x" : '-'],
+                                    ['ATR %', isset($signal['atr_pct']) ? "{$signal['atr_pct']}%" : '-'],
                                     ['Candle Closed At', Carbon::createFromTimestampMs($signal['candle_close_time'])->toDateTimeString().' UTC'],
                                 ]
                             );

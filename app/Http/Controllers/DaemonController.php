@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\Crypto\MarketScanner;
+use App\Services\Trading\PhpCliResolver;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -381,66 +382,6 @@ class DaemonController extends Controller
      */
     protected function resolvePhpCliBinary(): string
     {
-        // 1. Explicit configuration or environment override
-        $configuredPhp = config('trading.php_binary', env('PHP_BINARY_PATH'));
-        if (! empty($configuredPhp) && is_string($configuredPhp)) {
-            if ($configuredPhp === 'php' || (file_exists($configuredPhp) && is_executable($configuredPhp))) {
-                return $configuredPhp;
-            }
-        }
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            $laragonPhps = glob('C:\\laragon\\bin\\php\\php*\\php.exe');
-            if (! empty($laragonPhps)) {
-                rsort($laragonPhps);
-
-                return $laragonPhps[0];
-            }
-
-            if (defined('PHP_BINARY') && file_exists(PHP_BINARY) && ! str_contains(strtolower(PHP_BINARY), 'httpd')) {
-                return PHP_BINARY;
-            }
-
-            return 'php';
-        }
-
-        // Linux / Unix / macOS
-        if (defined('PHP_BINARY') && file_exists(PHP_BINARY)) {
-            $binName = strtolower(basename(PHP_BINARY));
-            if (! str_contains($binName, 'fpm') && ! str_contains($binName, 'cgi')) {
-                return PHP_BINARY;
-            }
-        }
-
-        $candidates = [
-            '/usr/php84/usr/bin/php', // ServerByt / StackCP PHP 8.4
-            '/usr/php83/usr/bin/php', // ServerByt / StackCP PHP 8.3
-            '/usr/local/bin/ea-php84',
-            '/opt/cpanel/ea-php84/root/usr/bin/php',
-            '/usr/local/bin/ea-php83',
-            '/opt/cpanel/ea-php83/root/usr/bin/php',
-            '/usr/bin/php-8.4',
-            '/usr/bin/php8.4',
-            '/usr/bin/php84',
-            '/usr/bin/php-8.3',
-            '/usr/bin/php8.3',
-            '/usr/bin/php83',
-            '/usr/bin/php-cli',
-            '/usr/local/bin/php',
-            '/usr/bin/php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION,
-            '/usr/bin/php',
-            'php',
-        ];
-
-        foreach ($candidates as $candidate) {
-            if ($candidate === 'php' || (file_exists($candidate) && is_executable($candidate))) {
-                $verOutput = @shell_exec(escapeshellcmd($candidate).' -r "echo PHP_VERSION;" 2>/dev/null');
-                if ($verOutput && version_compare(trim($verOutput), '8.3.0', '>=')) {
-                    return $candidate;
-                }
-            }
-        }
-
-        return 'php';
+        return PhpCliResolver::resolve();
     }
 }
