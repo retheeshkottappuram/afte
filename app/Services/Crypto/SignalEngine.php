@@ -129,25 +129,26 @@ class SignalEngine
      * @param  array<string, mixed>|null  $btcCandles
      * @return array{signal: array<string, mixed>|null, diagnostics: array<string, mixed>}
      */
-    public function evaluateDetailed(array $candles, ?array $htf1 = null, ?array $htf2 = null, ?array $btcCandles = null): array
+    public function evaluateDetailed(array $candles, ?array $htf1 = null, ?array $htf2 = null, ?array $btcCandles = null, ?int $referenceTimeMs = null): array
     {
         $c = $this->config;
-        $closes = $candles['closes'] ?? [];
-        $highs = $candles['highs'] ?? [];
-        $lows = $candles['lows'] ?? [];
-        $opens = $candles['opens'] ?? [];
-        $volumes = $candles['volumes'] ?? [];
-        $closeTimes = $candles['closeTimes'] ?? [];
+        $clean = CandleSanitizer::onlyClosedCandles($candles, $referenceTimeMs, true);
+        $closes = $clean['closes'] ?? [];
+        $highs = $clean['highs'] ?? [];
+        $lows = $clean['lows'] ?? [];
+        $opens = $clean['opens'] ?? [];
+        $volumes = $clean['volumes'] ?? [];
+        $closeTimes = $clean['closeTimes'] ?? [];
 
         $count = count($closes);
-        $i = $count - 2;
+        $i = $count - 1;
 
         $minHistory = max((int) $c['trend_len'], (int) $c['structure_len'] + 2, (int) $c['adx_len'] * 2, (int) $c['divergence_lookback'] + 2);
         if ($i < $minHistory) {
             return [
                 'signal' => null,
                 'diagnostics' => [
-                    'rejection' => "Insufficient candles (need at least {$minHistory}, got {$count})",
+                    'rejection' => "Insufficient closed candles (need at least {$minHistory}, got {$count})",
                 ],
             ];
         }
@@ -168,7 +169,8 @@ class SignalEngine
 
         $rsRatio = 1.0;
         if ($btcCandles && ! empty($btcCandles['closes'])) {
-            $rsRatio = Indicators::relativeStrength($closes, $btcCandles['closes'], 24);
+            $cleanBtc = CandleSanitizer::onlyClosedCandles($btcCandles, $referenceTimeMs, true);
+            $rsRatio = Indicators::relativeStrength($closes, $cleanBtc['closes'], 24, true);
         }
 
         if (
@@ -839,9 +841,10 @@ class SignalEngine
         if ($htf === null || empty($htf['closes'])) {
             return [true, true];
         }
-        $closes = $htf['closes'];
+        $clean = CandleSanitizer::onlyClosedCandles($htf, null, true);
+        $closes = $clean['closes'] ?? [];
         $n = count($closes);
-        $idx = $n - 2;
+        $idx = $n - 1;
         if ($idx < 21) {
             return [true, true];
         }

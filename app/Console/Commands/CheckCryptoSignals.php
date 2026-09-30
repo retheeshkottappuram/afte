@@ -72,7 +72,7 @@ class CheckCryptoSignals extends Command
         $testAlert = (bool) $this->option('test-alert');
         $limitOption = $this->option('limit');
 
-        $minVolume = (float) config('crypto.min_24h_volume', 5000000.0);
+        $minVolume = (float) config('crypto.universe.min_24h_volume', config('crypto.min_24h_volume', 100000000.0));
         $configuredSymbols = (array) config('crypto.symbols', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
         $isConfiguredAll = in_array('ALL', array_map('strtoupper', $configuredSymbols), true) || (bool) config('crypto.all_symbols', false);
 
@@ -317,16 +317,15 @@ class CheckCryptoSignals extends Command
 
                         if ($breakoutResult !== null) {
                             $bSide = $breakoutResult['side'];
-                            $bRs = (float) ($breakoutResult['rs_ratio'] ?? 1.0);
                             $bScore = (int) ($breakoutResult['score'] ?? 85);
                             $bType = $breakoutResult['type'] ?? 'PRE_BREAKOUT_COIL';
 
-                            // Macro Alignment or Strong Relative Strength / Early Liquidity Coiling
+                            // Strict Macro Alignment: Longs require bullish, shorts require bearish
                             $isBtcAligned = ($bSide === 'BUY' && $btcTrend['allow_long']) || ($bSide === 'SELL' && $btcTrend['allow_short']);
-                            $isDecoupledLeader = ($bSide === 'BUY' && ($bRs >= 1.01 || $bScore >= 90 || in_array($bType, ['PRE_BREAKOUT_COIL', 'WYCKOFF_SPRING'])))
-                                || ($bSide === 'SELL' && ($bRs <= 0.99 || $bScore >= 90 || in_array($bType, ['PRE_BREAKDOWN_DESCENDING_COIL', 'WYCKOFF_UPTHRUST'])));
 
-                            if ($isBtcAligned || $isDecoupledLeader) {
+                            if (! $isBtcAligned) {
+                                $this->line("  -> <fg=yellow>Filtered out {$symbol} {$bSide} setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+                            } else {
                                 $signal = [
                                     'side' => $bSide,
                                     'score' => $bScore,
@@ -366,12 +365,10 @@ class CheckCryptoSignals extends Command
                                 $eSide = $engineSignal['side'];
                                 $eScore = (int) ($engineSignal['score'] ?? 0);
                                 $eVolRatio = (float) ($engineSignal['volume_ratio'] ?? 1.0);
-                                $eRs = (float) ($engineSignal['rs_ratio'] ?? 1.0);
 
                                 $isBtcAligned = ($eSide === 'BUY' && $btcTrend['allow_long']) || ($eSide === 'SELL' && $btcTrend['allow_short']);
-                                $isDecoupled = ($eSide === 'BUY' && $eRs >= 1.015) || ($eSide === 'SELL' && $eRs <= 0.985);
 
-                                if (! $isBtcAligned && ! $isDecoupled) {
+                                if (! $isBtcAligned) {
                                     $this->line("  -> <fg=yellow>Filtered out {$symbol} {$eSide} setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
                                 } elseif ($eScore < 76) {
                                     $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$eScore} below quality threshold (76)</>");

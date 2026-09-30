@@ -297,34 +297,129 @@ class BinanceClient
     }
 
     /**
+     * Fetch all Binance Futures 24hr tickers with caching.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function get24hrTickers(): array
+    {
+        return Cache::remember("binance:tickers:24hr:{$this->market}", 20, function (): array {
+            $url = $this->market === 'spot'
+                ? "{$this->baseUrl}/api/v3/ticker/24hr"
+                : "{$this->baseUrl}/fapi/v1/ticker/24hr";
+
+            $response = Http::timeout(12)->acceptJson()->get($url);
+            if (! $response->successful()) {
+                Log::warning("BinanceClient: Failed to fetch 24hr tickers: HTTP {$response->status()}");
+
+                return [];
+            }
+
+            $data = $response->json();
+
+            return is_array($data) ? $data : [];
+        });
+    }
+
+    /**
+     * Fetch best bid and ask prices (bookTicker) for spread calculations.
+     *
+     * @return array<string, array{bidPrice: float, askPrice: float, bidQty: float, askQty: float}>
+     */
+    public function getBookTickers(): array
+    {
+        return Cache::remember("binance:tickers:book:{$this->market}", 15, function (): array {
+            $url = $this->market === 'spot'
+                ? "{$this->baseUrl}/api/v3/ticker/bookTicker"
+                : "{$this->baseUrl}/fapi/v1/ticker/bookTicker";
+
+            $response = Http::timeout(10)->acceptJson()->get($url);
+            if (! $response->successful()) {
+                Log::warning("BinanceClient: Failed to fetch book tickers: HTTP {$response->status()}");
+
+                return [];
+            }
+
+            $data = $response->json();
+            if (! is_array($data)) {
+                return [];
+            }
+
+            $mapped = [];
+            foreach ($data as $item) {
+                $sym = strtoupper((string) ($item['symbol'] ?? ''));
+                if ($sym !== '') {
+                    $mapped[$sym] = [
+                        'bidPrice' => (float) ($item['bidPrice'] ?? 0.0),
+                        'askPrice' => (float) ($item['askPrice'] ?? 0.0),
+                        'bidQty' => (float) ($item['bidQty'] ?? 0.0),
+                        'askQty' => (float) ($item['askQty'] ?? 0.0),
+                    ];
+                }
+            }
+
+            return $mapped;
+        });
+    }
+
+    /**
+     * Fetch exchange metadata (listing dates, symbols status, filters).
+     *
+     * @return array<string, array{status: string, onboardDate: int}>
+     */
+    public function getExchangeInfo(): array
+    {
+        return Cache::remember("binance:exchange_info:{$this->market}", 3600, function (): array {
+            $url = $this->market === 'spot'
+                ? "{$this->baseUrl}/api/v3/exchangeInfo"
+                : "{$this->baseUrl}/fapi/v1/exchangeInfo";
+
+            $response = Http::timeout(15)->acceptJson()->get($url);
+            if (! $response->successful()) {
+                Log::warning("BinanceClient: Failed to fetch exchangeInfo: HTTP {$response->status()}");
+
+                return [];
+            }
+
+            $data = $response->json();
+            $symbols = $data['symbols'] ?? [];
+            if (! is_array($symbols)) {
+                return [];
+            }
+
+            $mapped = [];
+            foreach ($symbols as $s) {
+                $sym = strtoupper((string) ($s['symbol'] ?? ''));
+                if ($sym !== '') {
+                    $mapped[$sym] = [
+                        'status' => (string) ($s['status'] ?? 'TRADING'),
+                        'onboardDate' => (int) ($s['onboardDate'] ?? 0),
+                    ];
+                }
+            }
+
+            return $mapped;
+        });
+    }
+
+    /**
      * Fetch active liquid USDT perpetual trading pairs from Binance Futures.
      *
-     * @param  float  $minQuoteVolume24h  Minimum 24h quote volume in USDT (e.g., 5,000,000 = $5M)
+     * @param  float  $minQuoteVolume24h  Minimum 24h quote volume in USDT (e.g., 100,000,000 = $100M)
      * @return array<int, string>
      */
-    public function getActiveFuturesSymbols(float $minQuoteVolume24h = 5000000.0): array
+    public function getActiveFuturesSymbols(float $minQuoteVolume24h = 100000000.0): array
     {
-        $url = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
-
-        $response = Http::timeout(15)
-            ->acceptJson()
-            ->get($url);
-
-        if (! $response->successful()) {
-            throw new RuntimeException("Failed to fetch 24hr tickers from Binance Futures: HTTP {$response->status()}");
-        }
-
-        $data = $response->json();
-        if (! is_array($data)) {
+        $tickers = $this->get24hrTickers();
+        if (empty($tickers)) {
             return [];
         }
 
         $symbols = [];
-        foreach ($data as $ticker) {
+        foreach ($tickers as $ticker) {
             $sym = (string) ($ticker['symbol'] ?? '');
             $quoteVol = (float) ($ticker['quoteVolume'] ?? 0.0);
 
-            // Filter for standard ASCII USDT perpetual symbols exceeding volume threshold
             if (preg_match('/^[A-Z0-9]+USDT$/', $sym) && $quoteVol >= $minQuoteVolume24h) {
                 $symbols[] = [
                     'symbol' => $sym,
@@ -333,49 +428,51 @@ class BinanceClient
             }
         }
 
-        // Sort descending by 24h volume
         usort($symbols, fn (array $a, array $b): int => $b['volume'] <=> $a['volume']);
 
         return array_column($symbols, 'symbol');
     }
 
     /**
-     * Get BTC Macro Market Trend direction to prevent counter-trend altcoin executions.
+     * Get BTC Macro Market Trend direction using explicit BtcMacroAlignment.
+     * Evaluates closed 1h and 4h candles. Neutral/choppy BTC sets allow_long=false, allow_short=false.
      *
-     * @return array{trend: string, allow_long: bool, allow_short: bool, btc_price: float}
+     * @return array{
+     *     trend: string,
+     *     allow_long: bool,
+     *     allow_short: bool,
+     *     btc_price: float,
+     *     ema_fast_1h?: ?float,
+     *     ema_slow_1h?: ?float,
+     *     slope_pct?: float,
+     *     confluence_4h?: ?string,
+     *     reason?: string
+     * }
      */
     public function getBtcMarketTrend(): array
     {
         return Cache::remember('binance:btc:macro_trend', 45, function (): array {
             try {
-                $klines = $this->klines('BTCUSDT', '1h', 60);
-                $closes = $klines['closes'] ?? [];
-                $count = count($closes);
-                if ($count < 30) {
-                    return ['trend' => 'NEUTRAL', 'allow_long' => true, 'allow_short' => true, 'btc_price' => 0.0];
+                $btc1h = $this->klines('BTCUSDT', '1h', 210);
+                $btc4h = null;
+                try {
+                    $btc4h = $this->klines('BTCUSDT', '4h', 60);
+                } catch (\Throwable) {
                 }
 
-                $i = $count - 2;
-                $lastClose = (float) ($closes[$i] ?? 0.0);
-                $ema21 = Indicators::ema($closes, 21);
-                $ema50 = Indicators::ema($closes, 50);
+                $alignment = new BtcMacroAlignment;
 
-                $vEma21 = $ema21[$i] ?? $lastClose;
-                $vEma50 = $ema50[$i] ?? $lastClose;
+                return $alignment->evaluate($btc1h, $btc4h);
+            } catch (\Throwable $e) {
+                Log::warning("BinanceClient: Error evaluating BTC macro trend ({$e->getMessage()}) - defaulting to NEUTRAL (signals blocked)");
 
-                // Strong Bullish: BTC above 21 and 50 EMA, 21 EMA >= 50 EMA
-                if ($lastClose > $vEma21 && $vEma21 >= $vEma50) {
-                    return ['trend' => 'BULLISH', 'allow_long' => true, 'allow_short' => false, 'btc_price' => $lastClose];
-                }
-
-                // Strong Bearish: BTC below 21 and 50 EMA, 21 EMA <= 50 EMA
-                if ($lastClose < $vEma21 && $vEma21 <= $vEma50) {
-                    return ['trend' => 'BEARISH', 'allow_long' => false, 'allow_short' => true, 'btc_price' => $lastClose];
-                }
-
-                return ['trend' => 'RANGING', 'allow_long' => true, 'allow_short' => true, 'btc_price' => $lastClose];
-            } catch (\Throwable) {
-                return ['trend' => 'NEUTRAL', 'allow_long' => true, 'allow_short' => true, 'btc_price' => 0.0];
+                return [
+                    'trend' => 'NEUTRAL',
+                    'allow_long' => false,
+                    'allow_short' => false,
+                    'btc_price' => 0.0,
+                    'reason' => 'Error evaluating BTC macro trend: '.$e->getMessage().' - all signals blocked',
+                ];
             }
         });
     }

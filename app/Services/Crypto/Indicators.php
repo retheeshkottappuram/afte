@@ -564,7 +564,7 @@ class Indicators
      * @param  array<int, float>  $coinCloses
      * @param  array<int, float>  $benchCloses
      */
-    public static function relativeStrength(array $coinCloses, array $benchCloses, int $period = 24): float
+    public static function relativeStrength(array $coinCloses, array $benchCloses, int $period = 24, bool $isClosedOnly = true): float
     {
         $cCount = count($coinCloses);
         $bCount = count($benchCloses);
@@ -573,11 +573,18 @@ class Indicators
             return 1.0;
         }
 
-        $cCur = $coinCloses[$cCount - 2];
-        $cPast = $coinCloses[$cCount - 2 - $period];
+        $cIdx = $isClosedOnly ? ($cCount - 1) : ($cCount - 2);
+        $bIdx = $isClosedOnly ? ($bCount - 1) : ($bCount - 2);
 
-        $bCur = $benchCloses[$bCount - 2];
-        $bPast = $benchCloses[$bCount - 2 - $period];
+        if ($cIdx < $period || $bIdx < $period) {
+            return 1.0;
+        }
+
+        $cCur = $coinCloses[$cIdx];
+        $cPast = $coinCloses[$cIdx - $period];
+
+        $bCur = $benchCloses[$bIdx];
+        $bPast = $benchCloses[$bIdx - $period];
 
         if ($cPast <= 0 || $bPast <= 0 || $bCur <= 0) {
             return 1.0;

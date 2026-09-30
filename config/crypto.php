@@ -13,7 +13,42 @@ return [
     */
     'symbols' => array_values(array_filter(array_map('trim', explode(',', env('CRYPTO_SYMBOLS', 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,NEARUSDT,AVAXUSDT,SUIUSDT,1000PEPEUSDT'))))),
     'all_symbols' => (bool) env('CRYPTO_ALL_SYMBOLS', true),
-    'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 5000000.0),
+    'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 100000000.0),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Institutional Universe Filter Settings
+    |--------------------------------------------------------------------------
+    |
+    | Stringent liquidity, spread, and security gates for candidate scanning.
+    |
+    */
+    'universe' => [
+        'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 100000000.0), // $100M USD
+        'max_spread_pct' => (float) env('CRYPTO_MAX_SPREAD_PCT', 0.03),        // 0.03%
+        'min_listing_days' => (int) env('CRYPTO_MIN_LISTING_DAYS', 30),        // 30 days
+        'exclude_non_ascii' => (bool) env('CRYPTO_EXCLUDE_NON_ASCII', true),
+        'blacklist' => array_values(array_filter(array_map('trim', explode(',', env('CRYPTO_BLACKLIST', 'GRAMUSDT,AKEUSDT,GUSDT,USUSDT,USDCUSDT,FDUSDUSDT,TUSDUSDT,EURUSDT,BUSDUSDT,DAIUSDT'))))),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | BTC Macro Alignment Settings
+    |--------------------------------------------------------------------------
+    |
+    | Explicit BTC macro directional gate. Longs require bullish alignment,
+    | shorts require bearish, and neutral/choppy BTC blocks all signals.
+    |
+    */
+    'btc_macro' => [
+        'enabled' => (bool) env('CRYPTO_BTC_MACRO_ENABLED', true),
+        'ema_fast' => (int) env('CRYPTO_BTC_EMA_FAST', 50),
+        'ema_slow' => (int) env('CRYPTO_BTC_EMA_SLOW', 200),
+        'slope_lookback' => (int) env('CRYPTO_BTC_SLOPE_LOOKBACK', 3),
+        'min_slope_pct' => (float) env('CRYPTO_BTC_MIN_SLOPE_PCT', 0.01),
+        'require_4h_confluence' => (bool) env('CRYPTO_BTC_REQUIRE_4H', true),
+        'ema_4h' => (int) env('CRYPTO_BTC_4H_EMA', 50),
+    ],
 
     /*
     |--------------------------------------------------------------------------

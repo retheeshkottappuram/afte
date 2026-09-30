@@ -45,29 +45,33 @@ class BreakoutDetector
         ?array $htf1Candles = null,
         ?array $htf2Candles = null,
         ?array $microCandles = null,
-        ?array $btcCandles = null
+        ?array $btcCandles = null,
+        ?int $referenceTimeMs = null
     ): ?array {
-        $closes = $baseCandles['closes'] ?? [];
-        $highs = $baseCandles['highs'] ?? [];
-        $lows = $baseCandles['lows'] ?? [];
-        $opens = $baseCandles['opens'] ?? [];
-        $volumes = $baseCandles['volumes'] ?? [];
-        $closeTimes = $baseCandles['closeTimes'] ?? [];
+        // Enforce STRICT closed candle evaluation - zero forming candle leakage
+        $cleanBase = CandleSanitizer::onlyClosedCandles($baseCandles, $referenceTimeMs, true);
+        $closes = $cleanBase['closes'] ?? [];
+        $highs = $cleanBase['highs'] ?? [];
+        $lows = $cleanBase['lows'] ?? [];
+        $opens = $cleanBase['opens'] ?? [];
+        $volumes = $cleanBase['volumes'] ?? [];
+        $closeTimes = $cleanBase['closeTimes'] ?? [];
         $count = count($closes);
 
         if ($count < 55) {
             return null;
         }
 
-        $i = $count - 2; // Last closed candle
+        // Index of the latest closed candle
+        $i = $count - 1;
         $currentClose = $closes[$i];
         $currentHigh = $highs[$i];
         $currentLow = $lows[$i];
         $currentOpen = $opens[$i];
         $currentVol = $volumes[$i];
-        $closeTimeMs = $closeTimes[$i];
+        $closeTimeMs = $closeTimes[$i] ?? (int) (microtime(true) * 1000);
 
-        // 1. Indicators calculation on base timeframe
+        // 1. Indicators calculation strictly on CLOSED base timeframe candles
         $ema9 = Indicators::ema($closes, 9);
         $ema21 = Indicators::ema($closes, 21);
         $ema200 = Indicators::ema($closes, 200);
@@ -89,12 +93,13 @@ class BreakoutDetector
         $volRatio = $curVolSma > 0 ? round($currentVol / $curVolSma, 2) : 1.0;
         $curAdx = (float) ($adx[$i] ?? 20.0);
 
-        // 2. Higher Timeframe Trend Alignment
+        // 2. Higher Timeframe Trend Alignment on CLOSED candles
         $htf1Bull = true;
         $htf1Bear = true;
         if ($htf1Candles && ! empty($htf1Candles['closes'])) {
-            $htfCloses = $htf1Candles['closes'];
-            $htfIdx = count($htfCloses) - 2;
+            $cleanHtf1 = CandleSanitizer::onlyClosedCandles($htf1Candles, $referenceTimeMs, true);
+            $htfCloses = $cleanHtf1['closes'];
+            $htfIdx = count($htfCloses) - 1;
             if ($htfIdx >= 0) {
                 $htfEma21 = Indicators::ema($htfCloses, 21);
                 $htfEma200 = Indicators::ema($htfCloses, 200);
@@ -107,10 +112,11 @@ class BreakoutDetector
             }
         }
 
-        // 3. Relative Strength vs Bitcoin
+        // 3. Relative Strength vs Bitcoin on CLOSED candles
         $rsRatio = 1.0;
         if ($btcCandles && ! empty($btcCandles['closes'])) {
-            $rsRatio = Indicators::relativeStrength($closes, $btcCandles['closes'], 24);
+            $cleanBtc = CandleSanitizer::onlyClosedCandles($btcCandles, $referenceTimeMs, true);
+            $rsRatio = Indicators::relativeStrength($closes, $cleanBtc['closes'], 24, true);
         }
 
         // 4. Structural Resistance and Support Discovery

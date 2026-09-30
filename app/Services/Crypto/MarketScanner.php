@@ -3,7 +3,6 @@
 namespace App\Services\Crypto;
 
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -31,8 +30,11 @@ class MarketScanner
         protected BinanceClient $binanceClient,
         protected SignalEngine $signalEngine,
         protected BreakoutDetector $breakoutDetector,
-        protected TimingGuard $timingGuard
-    ) {}
+        protected TimingGuard $timingGuard,
+        protected ?UniverseFilter $universeFilter = null
+    ) {
+        $this->universeFilter ??= new UniverseFilter;
+    }
 
     /**
      * Get active monitored symbols (dynamically managed by user).
@@ -133,13 +135,14 @@ class MarketScanner
 
     /**
      * Scan the Binance Futures market dynamically for high-confluence breakouts and trend setups.
+     * Evaluates strictly on CLOSED candles. Neutral/choppy BTC blocks all setups.
      *
-     * @param  float  $minQuoteVolume24h  Minimum 24h USDT volume (default $5M)
+     * @param  float|null  $minQuoteVolume24h  Minimum 24h USDT volume (defaults to universe config, $100M)
      * @param  int  $maxCandidateSymbols  Maximum dynamic pairs to evaluate per cycle
      * @param  string  $baseInterval  Base evaluation timeframe (default 15m)
      * @return array<int, array{
      *     symbol: string,
-     *     type: string, // 'BREAKOUT_WATCH', 'BREAKOUT_CONFIRMED', 'TREND', 'RETEST_ENTRY'
+     *     type: string,
      *     side: string,
      *     score: int,
      *     grade: string,
@@ -163,14 +166,24 @@ class MarketScanner
      * }>
      */
     public function scanMarket(
-        float $minQuoteVolume24h = 5000000.0,
+        ?float $minQuoteVolume24h = null,
         int $maxCandidateSymbols = 35,
         string $baseInterval = '15m'
     ): array {
         $detectionStart = microtime(true);
+        $minQuoteVolume24h ??= (float) config('crypto.universe.min_24h_volume', 100000000.0);
+
+        // 1. Evaluate explicit BTC Macro Alignment first
         $btcTrend = $this->binanceClient->getBtcMarketTrend();
 
-        // 1. Discover and rank candidate pairs from entire Binance Futures universe
+        // If BTC is neutral or choppy, rule requires all signals to be blocked
+        if (! $btcTrend['allow_long'] && ! $btcTrend['allow_short']) {
+            Log::info("MarketScanner: BTC macro regime is {$btcTrend['trend']} ({$btcTrend['reason']}). Neutral/choppy BTC blocks all signals.");
+
+            return [];
+        }
+
+        // 2. Discover and rank candidate pairs from entire Binance Futures universe passing institutional filter
         $targetSymbols = $this->getRankedCandidateSymbols($minQuoteVolume24h, $maxCandidateSymbols);
 
         if (empty($targetSymbols)) {
@@ -183,11 +196,12 @@ class MarketScanner
 
         $btcBaseCandles = null;
         try {
-            $btcBaseCandles = $this->binanceClient->klines('BTCUSDT', $baseInterval, 320);
+            $rawBtcCandles = $this->binanceClient->klines('BTCUSDT', $baseInterval, 320);
+            $btcBaseCandles = CandleSanitizer::onlyClosedCandles($rawBtcCandles, null, true);
         } catch (Throwable) {
         }
 
-        // 2. Scan pairs in concurrent batches
+        // 3. Scan pairs in concurrent batches
         $chunks = array_chunk($targetSymbols, 8);
 
         foreach ($chunks as $chunk) {
@@ -195,8 +209,13 @@ class MarketScanner
 
             foreach ($chunk as $symbol) {
                 try {
-                    $baseCandles = $batchBase[$symbol] ?? null;
+                    $rawBase = $batchBase[$symbol] ?? null;
+                    if (! $rawBase) {
+                        continue;
+                    }
 
+                    // Enforce strictly CLOSED candles
+                    $baseCandles = CandleSanitizer::onlyClosedCandles($rawBase, null, true);
                     $closes = $baseCandles['closes'] ?? [];
                     $highs = $baseCandles['highs'] ?? [];
                     $lows = $baseCandles['lows'] ?? [];
@@ -206,7 +225,7 @@ class MarketScanner
                         continue;
                     }
 
-                    $lastIdx = $count - 2;
+                    $lastIdx = $count - 1;
                     $curClose = (float) $closes[$lastIdx];
                     $recentHigh = max(array_slice($highs, max(0, $lastIdx - 25), 25));
                     $recentLow = min(array_slice($lows, max(0, $lastIdx - 25), 25));
@@ -223,7 +242,8 @@ class MarketScanner
                     $htf1Candles = null;
                     $htf2Candles = null;
                     try {
-                        $htf1Candles = $this->binanceClient->klines($symbol, $htf1, 260);
+                        $rawHtf1 = $this->binanceClient->klines($symbol, $htf1, 260);
+                        $htf1Candles = CandleSanitizer::onlyClosedCandles($rawHtf1, null, true);
                     } catch (Throwable) {
                     }
 
@@ -234,11 +254,12 @@ class MarketScanner
                         $baseCandles,
                         $htf1Candles,
                         $htf2Candles,
+                        null,
                         $btcCandlesForSym
                     );
 
                     if ($breakoutResult !== null) {
-                        // Condition 1: Bitcoin Macro Trend Filter
+                        // Strict BTC Macro Trend Gate
                         if ($breakoutResult['side'] === 'BUY' && ! $btcTrend['allow_long']) {
                             Log::info("MarketScanner: Filtered out {$symbol} BUY setup - Counter to BTC {$btcTrend['trend']} macro trend");
 
@@ -280,7 +301,7 @@ class MarketScanner
                     if ($trendSignal !== null && ($trendSignal['score'] ?? 0) >= 82) {
                         $side = $trendSignal['side'];
 
-                        // Condition 1: Bitcoin Macro Trend Filter
+                        // Strict BTC Macro Trend Gate
                         if ($side === 'BUY' && ! $btcTrend['allow_long']) {
                             Log::info("MarketScanner: Filtered out {$symbol} BUY trend setup - Counter to BTC {$btcTrend['trend']} macro trend");
 
@@ -292,14 +313,14 @@ class MarketScanner
                             continue;
                         }
 
-                        // Condition 3: Minimum Volume Surge Requirement
+                        // Minimum Volume Surge Requirement
                         $volRatio = (float) ($trendSignal['volume_ratio'] ?? 1.0);
                         if ($volRatio < 1.25) {
                             continue;
                         }
                         $entry = (float) $trendSignal['entry'];
                         $tp1 = (float) $trendSignal['tp1'];
-                        $closeTimeMs = (int) ($baseCandles['closeTimes'][count($baseCandles['closeTimes']) - 2] ?? 0);
+                        $closeTimeMs = (int) ($baseCandles['closeTimes'][$lastIdx] ?? 0);
 
                         $timing = $this->timingGuard->validateEntry(
                             symbol: $symbol,
@@ -348,43 +369,58 @@ class MarketScanner
     }
 
     /**
-     * Fetch all Binance Futures 24hr tickers and rank candidates dynamically by volume and momentum.
+     * Fetch all Binance Futures 24hr tickers and rank candidates using institutional UniverseFilter.
      *
      * @return array<int, string>
      */
-    public function getRankedCandidateSymbols(float $minVolume = 5000000.0, int $limit = 35): array
+    public function getRankedCandidateSymbols(?float $minVolume = null, int $limit = 35): array
     {
-        return Cache::remember('crypto:market:ranked_candidates', 20, function () use ($minVolume, $limit): array {
-            $url = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
+        $minVol = $minVolume ?? (float) config('crypto.universe.min_24h_volume', 100000000.0);
 
+        return Cache::remember("crypto:market:ranked_candidates:{$minVol}:{$limit}", 20, function () use ($limit): array {
             try {
-                $response = Http::timeout(10)->acceptJson()->get($url);
-                if (! $response->successful()) {
+                $tickers = $this->binanceClient->get24hrTickers();
+                if (empty($tickers)) {
                     return self::CORE_PAIRS;
                 }
 
-                $tickers = $response->json();
-                if (! is_array($tickers)) {
+                $bookTickers = $this->binanceClient->getBookTickers();
+                $exchangeInfo = $this->binanceClient->getExchangeInfo();
+
+                // Apply institutional universe gates: Volume >= $100M, Spread < 0.03%, Age > 30d, blacklist & ASCII
+                $universeResult = $this->universeFilter->filterCandidates($tickers, $bookTickers, $exchangeInfo);
+                $eligibleSymbols = $universeResult['eligible_symbols'];
+
+                if (empty($eligibleSymbols)) {
+                    Log::warning('MarketScanner: No symbols passed institutional universe filters; falling back to core pairs.');
+
                     return self::CORE_PAIRS;
+                }
+
+                $tickerMap = [];
+                foreach ($tickers as $t) {
+                    $sym = (string) ($t['symbol'] ?? '');
+                    if ($sym !== '') {
+                        $tickerMap[$sym] = $t;
+                    }
                 }
 
                 $ranked = [];
-                foreach ($tickers as $ticker) {
-                    $sym = (string) ($ticker['symbol'] ?? '');
+                foreach ($eligibleSymbols as $sym) {
+                    $ticker = $tickerMap[$sym] ?? null;
+                    if (! $ticker) {
+                        continue;
+                    }
+
                     $vol = (float) ($ticker['quoteVolume'] ?? 0.0);
                     $priceChange = abs((float) ($ticker['priceChangePercent'] ?? 0.0));
                     $high = (float) ($ticker['highPrice'] ?? 0.0);
                     $low = (float) ($ticker['lowPrice'] ?? 0.0);
                     $last = (float) ($ticker['lastPrice'] ?? 0.0);
 
-                    // Filter only USDT perpetual pairs exceeding volume threshold
-                    if (! preg_match('/^[A-Z0-9]+USDT$/', $sym) || $vol < $minVolume) {
-                        continue;
-                    }
-
                     // Activity Score: Volume weighting + price momentum + 24h high/low breakout proximity
                     $range = max(0.0001, $high - $low);
-                    $rangePos = ($last - $low) / $range; // 0.0 (near low) to 1.0 (near high)
+                    $rangePos = ($last - $low) / $range;
                     $nearBreakout = ($rangePos >= 0.88 || $rangePos <= 0.12) ? 25.0 : 0.0;
 
                     $score = ($vol / 10000000.0) + ($priceChange * 2.0) + $nearBreakout;
@@ -398,8 +434,10 @@ class MarketScanner
                 usort($ranked, fn ($a, $b) => $b['score'] <=> $a['score']);
                 $topDynamic = array_slice(array_column($ranked, 'symbol'), 0, $limit);
 
-                // Always include core institutional pairs at the front
-                return array_values(array_unique(array_merge(self::CORE_PAIRS, $topDynamic)));
+                // Always include core institutional pairs that pass universe filters at the front
+                $corePassed = array_values(array_intersect(self::CORE_PAIRS, $eligibleSymbols));
+
+                return array_values(array_unique(array_merge($corePassed, $topDynamic)));
             } catch (Throwable $e) {
                 Log::warning("MarketScanner: Failed to rank candidates ({$e->getMessage()})");
 
