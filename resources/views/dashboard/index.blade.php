@@ -433,7 +433,12 @@
                         <h2 class="font-bold text-sm tracking-wide text-white font-mono uppercase">Active Open Positions</h2>
                         <span id="positions-count-badge" class="px-2 py-0.5 rounded-full text-xs font-mono bg-cyber-700 text-cyan-300">0</span>
                     </div>
-                    <span class="text-xs text-slate-400 font-mono">Autonomous Breakeven & Trailing Enabled</span>
+                    <div class="flex items-center space-x-3">
+                        <button type="button" onclick="closeAllPositions()" id="btn-close-all" class="px-2.5 py-1 text-[11px] font-mono font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded transition hidden items-center space-x-1 shadow-sm">
+                            <span>🛑 Close All Positions</span>
+                        </button>
+                        <span class="text-xs text-slate-400 font-mono hidden sm:inline">Autonomous Breakeven & Trailing Enabled</span>
+                    </div>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -1121,6 +1126,11 @@
             const badge = document.getElementById('positions-count-badge');
             if (badge) badge.textContent = activePositionsData.length;
 
+            const btnCloseAll = document.getElementById('btn-close-all');
+            if (btnCloseAll) {
+                btnCloseAll.style.display = activePositionsData.length > 0 ? 'inline-flex' : 'none';
+            }
+
             const tbody = document.getElementById('positions-tbody');
             if (!tbody) return;
 
@@ -1368,11 +1378,30 @@
                     body: JSON.stringify({ trade_id: tradeId })
                 });
                 const data = await res.json();
-                if (data.success) {
-                    liveSync();
+                if (data.message) {
+                    console.log("[Close Position]", data.message);
                 }
+                liveSync();
             } catch (err) {
                 console.error("Close position error:", err);
+                alert("Error closing position. Please refresh and try again.");
+            }
+        }
+
+        async function closeAllPositions() {
+            if (!confirm('Are you sure you want to close ALL active open positions immediately?')) return;
+            try {
+                const res = await fetch('/api/close-all-positions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                    body: JSON.stringify({ mode: currentMode })
+                });
+                const data = await res.json();
+                alert(data.message || 'All positions closed.');
+                liveSync();
+            } catch (err) {
+                console.error("Close all positions error:", err);
+                alert("Error closing all positions. Please try again.");
             }
         }
 

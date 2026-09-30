@@ -192,6 +192,7 @@ class DashboardTest extends TestCase
     public function test_positions_endpoint_preserves_newly_opened_trades(): void
     {
         $user = User::factory()->create();
+        TradingTargetManager::setActiveCoin('SOLUSDT');
 
         $trade = Trade::create([
             'symbol' => 'SOLUSDT',

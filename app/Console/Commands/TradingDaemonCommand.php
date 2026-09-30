@@ -197,6 +197,27 @@ class TradingDaemonCommand extends Command
 
                 // 2. High-Frequency Active Position Management Loop (All open trades in DB)
                 try {
+                    // Auto-prune any stray trades that do not match the strictly permitted coin
+                    if (config('trading.single_coin_strict', true)) {
+                        $targetCoin = TradingTargetManager::getActiveCoin();
+                        $strayTrades = Trade::where('mode', $mode)
+                            ->where('status', 'OPEN')
+                            ->where('symbol', '!=', $targetCoin)
+                            ->get();
+
+                        foreach ($strayTrades as $stray) {
+                            try {
+                                $tradeManager->closeTrade($stray, (float) $stray->entry_price, 'CLEARED_NON_TARGET_ASSET');
+                            } catch (Throwable) {
+                                $stray->status = 'CLOSED';
+                                $stray->exit_reason = 'CLEARED_NON_TARGET_ASSET';
+                                $stray->closed_at = now();
+                                $stray->save();
+                            }
+                            $this->logWarn("Auto-closed unauthorized coin position: {$stray->symbol}");
+                        }
+                    }
+
                     $openTrades = Trade::where('mode', $mode)
                         ->where('status', 'OPEN')
                         ->get();

@@ -284,10 +284,14 @@ class TradingDaemonManager
         $stopFile = storage_path('framework/stop-trading-daemon');
         @file_put_contents($stopFile, (string) now()->timestamp);
 
-        if (function_exists('posix_kill')) {
-            $pid = (int) Cache::get(self::CACHE_PID_KEY, 0);
-            if ($pid > 0) {
+        $pid = (int) Cache::get(self::CACHE_PID_KEY, 0);
+        if ($pid > 0) {
+            if (PHP_OS_FAMILY === 'Windows') {
+                @exec("taskkill /F /PID {$pid} 2>&1");
+            } elseif (function_exists('posix_kill')) {
                 @posix_kill($pid, 15);
+            } else {
+                @exec("kill -9 {$pid} 2>&1");
             }
         }
 
@@ -331,13 +335,34 @@ class TradingDaemonManager
             }
         }
 
-        // 1. Position management always protects open trades
+        $managedCount = 0;
+        $closedTrades = [];
+
+        // 1. Auto-prune any open trades that do not belong to the selected coin
+        if (config('trading.single_coin_strict', true)) {
+            $targetCoin = TradingTargetManager::getActiveCoin();
+            $strayOpen = Trade::where('mode', $mode)
+                ->where('status', 'OPEN')
+                ->where('symbol', '!=', $targetCoin)
+                ->get();
+
+            foreach ($strayOpen as $stray) {
+                try {
+                    $this->tradeManager->closeTrade($stray, (float) $stray->entry_price, 'CLEARED_NON_TARGET_ASSET');
+                } catch (Throwable) {
+                    $stray->status = 'CLOSED';
+                    $stray->exit_reason = 'CLEARED_NON_TARGET_ASSET';
+                    $stray->closed_at = now();
+                    $stray->save();
+                }
+                $closedTrades[] = "{$stray->symbol} auto-pruned (unauthorized coin)";
+            }
+        }
+
+        // 2. Position management always protects open trades
         $openTrades = Trade::where('mode', $mode)
             ->where('status', 'OPEN')
             ->get();
-
-        $managedCount = 0;
-        $closedTrades = [];
 
         foreach ($openTrades as $trade) {
             try {

@@ -41,6 +41,7 @@ Route::middleware('auth')->group(function (): void {
         Route::get('/live-sync', [DashboardController::class, 'liveSync'])->name('api.live_sync');
         Route::post('/lock-breakeven', [DashboardController::class, 'lockBreakeven'])->name('api.lock_breakeven');
         Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');
+        Route::post('/close-all-positions', [DashboardController::class, 'closeAllPositions'])->name('api.close_all_positions');
         Route::post('/kill-switch', [DashboardController::class, 'toggleKillSwitch'])->name('api.kill_switch');
         Route::post('/toggle-auto-trading', [DashboardController::class, 'toggleAutoTrading'])->name('api.toggle_auto_trading');
         Route::post('/resume-cooldown', [DashboardController::class, 'resumeCooldown'])->name('api.resume_cooldown');

@@ -208,6 +208,26 @@ class DashboardController extends Controller
             }
         }
 
+        // Auto-prune any open trades in the database that do not match the selected coin
+        if (config('trading.single_coin_strict', true)) {
+            $targetCoin = TradingTargetManager::getActiveCoin();
+            $strayPositions = Trade::where('mode', $mode)
+                ->where('status', 'OPEN')
+                ->where('symbol', '!=', $targetCoin)
+                ->get();
+
+            foreach ($strayPositions as $stray) {
+                try {
+                    $this->tradeManager->closeTrade($stray, (float) $stray->entry_price, 'CLEARED_NON_TARGET_ASSET');
+                } catch (\Throwable) {
+                    $stray->status = 'CLOSED';
+                    $stray->exit_reason = 'CLEARED_NON_TARGET_ASSET';
+                    $stray->closed_at = now();
+                    $stray->save();
+                }
+            }
+        }
+
         $openPositions = Trade::where('mode', $mode)
             ->where('status', 'OPEN')
             ->orderByDesc('opened_at')
@@ -513,16 +533,71 @@ class DashboardController extends Controller
     public function closePosition(Request $request): JsonResponse
     {
         $tradeId = $request->input('trade_id');
-        $trade = Trade::findOrFail($tradeId);
+        $trade = Trade::find($tradeId);
 
-        if (! $trade->isOpen()) {
-            return response()->json(['success' => false, 'message' => 'Trade is not open.'], 400);
+        if (! $trade) {
+            return response()->json(['success' => false, 'message' => 'Trade not found.'], 404);
         }
 
-        $markPrice = $this->client->getMarkPrice($trade->symbol);
-        $res = $this->tradeManager->closeTrade($trade, $markPrice, 'MANUAL_CLOSE');
+        if (! $trade->isOpen()) {
+            return response()->json(['success' => true, 'message' => 'Trade is already closed.']);
+        }
 
-        return response()->json(['success' => true, 'message' => $res['message']]);
+        try {
+            $client = $this->client->forMode($trade->mode);
+            $markPrice = (float) ($client->getMarkPrice($trade->symbol) ?: $trade->entry_price);
+        } catch (\Throwable) {
+            $markPrice = (float) $trade->entry_price;
+        }
+
+        try {
+            $res = $this->tradeManager->closeTrade($trade, $markPrice, 'MANUAL_CLOSE');
+
+            return response()->json(['success' => true, 'message' => $res['message']]);
+        } catch (\Throwable) {
+            $trade->status = 'CLOSED';
+            $trade->exit_reason = 'MANUAL_CLOSE';
+            $trade->exit_price = $markPrice;
+            $trade->closed_at = now();
+            $trade->save();
+
+            return response()->json(['success' => true, 'message' => "Position on {$trade->symbol} closed manually."]);
+        }
+    }
+
+    /**
+     * Close all active positions immediately across the current mode.
+     */
+    public function closeAllPositions(Request $request): JsonResponse
+    {
+        $mode = $request->input('mode', config('trading.mode', 'live'));
+        $openTrades = Trade::where('mode', $mode)->where('status', 'OPEN')->get();
+
+        $closedCount = 0;
+        foreach ($openTrades as $trade) {
+            try {
+                $markPrice = (float) ($this->client->forMode($trade->mode)->getMarkPrice($trade->symbol) ?: $trade->entry_price);
+            } catch (\Throwable) {
+                $markPrice = (float) $trade->entry_price;
+            }
+
+            try {
+                $this->tradeManager->closeTrade($trade, $markPrice, 'MANUAL_CLOSE');
+            } catch (\Throwable) {
+                $trade->status = 'CLOSED';
+                $trade->exit_reason = 'MANUAL_CLOSE';
+                $trade->exit_price = $markPrice;
+                $trade->closed_at = now();
+                $trade->save();
+            }
+            $closedCount++;
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Successfully closed {$closedCount} position(s).",
+            'closed_count' => $closedCount,
+        ]);
     }
 
     /**
@@ -537,14 +612,18 @@ class DashboardController extends Controller
         $account->save();
 
         if ($account->kill_switch) {
-            // Liquidate open positions
+            // Liquidate all open positions
             $openTrades = Trade::where('mode', $mode)->where('status', 'OPEN')->get();
             foreach ($openTrades as $trade) {
                 try {
-                    $markPrice = $this->client->getMarkPrice($trade->symbol);
+                    $markPrice = (float) ($this->client->forMode($trade->mode)->getMarkPrice($trade->symbol) ?: $trade->entry_price);
                     $this->tradeManager->closeTrade($trade, $markPrice, 'KILL_SWITCH');
-                } catch (\Exception) {
-                    $this->tradeManager->closeTrade($trade, $trade->entry_price, 'KILL_SWITCH');
+                } catch (\Throwable) {
+                    $trade->status = 'CLOSED';
+                    $trade->exit_reason = 'KILL_SWITCH';
+                    $trade->exit_price = (float) $trade->entry_price;
+                    $trade->closed_at = now();
+                    $trade->save();
                 }
             }
         }

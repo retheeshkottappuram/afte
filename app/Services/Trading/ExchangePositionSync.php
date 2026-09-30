@@ -66,6 +66,13 @@ class ExchangePositionSync
                     continue;
                 }
 
+                // Strict single-coin strategy: Never import non-selected coins into database
+                if (config('trading.single_coin_strict', true) && ! TradingTargetManager::isCoinAllowed($symbol)) {
+                    Log::warning("[ExchangePositionSync] Skipping non-target position {$symbol} (Single-coin mode locked to ".TradingTargetManager::getActiveCoin().')');
+
+                    continue;
+                }
+
                 $liveSymbolsFound[] = $symbol;
                 $side = $amt > 0 ? 'LONG' : 'SHORT';
                 $absQty = abs($amt);
