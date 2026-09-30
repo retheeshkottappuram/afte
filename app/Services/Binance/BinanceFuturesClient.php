@@ -609,12 +609,104 @@ class BinanceFuturesClient
      *
      * @return array<int, array<string, mixed>>
      */
-    public function getUserTrades(string $symbol, int $limit = 5): array
+    public function getUserTrades(string $symbol, int $limit = 50, ?int $orderId = null, ?int $startTime = null, ?int $endTime = null, ?int $fromId = null): array
     {
-        return $this->signedGet('/fapi/v1/userTrades', [
+        $params = [
             'symbol' => strtoupper($symbol),
-            'limit' => $limit,
+            'limit' => min($limit, 1000),
+        ];
+
+        if ($orderId !== null) {
+            $params['orderId'] = $orderId;
+        }
+        if ($startTime !== null) {
+            $params['startTime'] = $startTime;
+        }
+        if ($endTime !== null) {
+            $params['endTime'] = $endTime;
+        }
+        if ($fromId !== null) {
+            $params['fromId'] = $fromId;
+        }
+
+        return $this->signedGet('/fapi/v1/userTrades', $params);
+    }
+
+    /**
+     * Get income history (funding fee, realized PnL, commission, etc.) (signed).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getIncome(?string $symbol = null, ?string $incomeType = null, ?int $startTime = null, ?int $endTime = null, int $limit = 100): array
+    {
+        $params = [
+            'limit' => min($limit, 1000),
+        ];
+
+        if ($symbol !== null) {
+            $params['symbol'] = strtoupper($symbol);
+        }
+        if ($incomeType !== null) {
+            $params['incomeType'] = $incomeType;
+        }
+        if ($startTime !== null) {
+            $params['startTime'] = $startTime;
+        }
+        if ($endTime !== null) {
+            $params['endTime'] = $endTime;
+        }
+
+        return $this->signedGet('/fapi/v1/income', $params);
+    }
+
+    /**
+     * Query order details (signed).
+     *
+     * @return array<string, mixed>
+     */
+    public function getOrder(string $symbol, int|string $orderId): array
+    {
+        return $this->signedGet('/fapi/v1/order', [
+            'symbol' => strtoupper($symbol),
+            'orderId' => $orderId,
         ]);
+    }
+
+    /**
+     * Get all orders for a symbol (signed).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getAllOrders(string $symbol, ?int $startTime = null, ?int $endTime = null, int $limit = 50): array
+    {
+        $params = [
+            'symbol' => strtoupper($symbol),
+            'limit' => min($limit, 1000),
+        ];
+
+        if ($startTime !== null) {
+            $params['startTime'] = $startTime;
+        }
+        if ($endTime !== null) {
+            $params['endTime'] = $endTime;
+        }
+
+        return $this->signedGet('/fapi/v1/allOrders', $params);
+    }
+
+    /**
+     * Get all open orders on a symbol or entire account (signed).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getOpenOrders(?string $symbol = null): array
+    {
+        $params = [];
+        if ($symbol !== null) {
+            $params['symbol'] = strtoupper($symbol);
+        }
+
+        return $this->signedGet('/fapi/v1/openOrders', $params);
     }
 
     /**

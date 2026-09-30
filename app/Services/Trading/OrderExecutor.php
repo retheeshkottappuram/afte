@@ -125,9 +125,22 @@ class OrderExecutor
             }
         }
 
+        $setupTag = $aiResult['regime'] ?? ($signal['grade'] ?? 'STANDARD');
+        $stopDistance = round(abs($entryPrice - (float) $signal['initial_sl']), 8);
+        $btcTrend = $signal['indicators']['btc_trend'] ?? null;
+        if (! $btcTrend) {
+            try {
+                $btcTrend = app(MarketEngine::class)->getBtcMarketTrend()['trend'] ?? 'NEUTRAL';
+            } catch (\Throwable) {
+                $btcTrend = 'NEUTRAL';
+            }
+        }
+
         // 4. Create Trade Record
         $trade = Trade::create([
             'symbol' => $symbol,
+            'setup_tag' => $setupTag,
+            'btc_trend_1h' => $btcTrend,
             'side' => $side,
             'mode' => $mode,
             'status' => 'OPEN',
@@ -139,6 +152,7 @@ class OrderExecutor
             'leverage' => $leverage,
             'initial_sl' => (float) $signal['initial_sl'],
             'current_sl' => (float) $signal['initial_sl'],
+            'stop_distance' => $stopDistance,
             'tp1_price' => (float) $signal['tp1'],
             'tp2_price' => (float) $signal['tp2'],
             'be_locked' => false,
@@ -152,6 +166,7 @@ class OrderExecutor
                 'ai_regime' => $aiResult['regime'],
                 'ai_reason' => $aiResult['reason'],
                 'atr' => $signal['indicators']['atr'] ?? null,
+                'btc_trend_1h' => $btcTrend,
                 'binance_sl_algo_id' => $slAlgoId ?? null,
                 'binance_tp_algo_id' => $tpAlgoId ?? null,
             ],

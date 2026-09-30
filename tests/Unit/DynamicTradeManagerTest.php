@@ -135,6 +135,11 @@ class DynamicTradeManagerTest extends TestCase
 
     public function test_early_breakeven_locked_at_point_four_five_gain(): void
     {
+        config([
+            'trading.management.be_gain_pct' => 0.45,
+            'trading.management.be_roe_threshold' => 4.5,
+        ]);
+
         $manager = app(DynamicTradeManager::class);
 
         TradingAccount::create([
@@ -216,6 +221,11 @@ class DynamicTradeManagerTest extends TestCase
 
     public function test_peak_profit_reversal_clawback_protection_locks_green_profit(): void
     {
+        config([
+            'trading.management.peak_profit_min_gain_pct' => 0.50,
+            'trading.management.peak_profit_giveback_pct' => 35.0,
+        ]);
+
         $manager = app(DynamicTradeManager::class);
 
         TradingAccount::create([

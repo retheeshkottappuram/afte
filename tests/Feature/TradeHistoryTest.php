@@ -145,8 +145,10 @@ class TradeHistoryTest extends TestCase
     {
         $user = User::factory()->create();
 
-        Trade::create([
+        $trade = Trade::create([
             'symbol' => 'SOLUSDT',
+            'setup_tag' => 'PRE_BREAKOUT_COIL',
+            'btc_trend_1h' => 'BULLISH',
             'side' => 'LONG',
             'mode' => 'paper',
             'status' => 'CLOSED',
@@ -154,15 +156,24 @@ class TradeHistoryTest extends TestCase
             'exit_price' => 112.0,
             'quantity' => 0.5,
             'remaining_quantity' => 0.0,
-            'margin_used' => 5.0,
+            'margin_used' => 5.5,
             'leverage' => 10,
             'initial_sl' => 108.0,
             'current_sl' => 110.0,
+            'stop_distance' => 2.0,
             'tp1_price' => 112.0,
             'tp2_price' => 114.0,
-            'realized_pnl' => 1.0,
-            'pnl_percent' => 20.0,
-            'fee_paid' => 0.005,
+            'gross_pnl' => 1.0,
+            'commission' => 0.055,
+            'funding_fee' => -0.001,
+            'net_pnl' => 0.944,
+            'realized_pnl' => 0.944,
+            'pnl_percent' => 17.16,
+            'fee_paid' => 0.055,
+            'mae' => 0.25,
+            'mfe' => 1.5,
+            'binance_order_id' => '987654321',
+            'binance_trade_ids' => ['112233', '112234'],
             'exit_reason' => 'TP1_HIT',
             'opened_at' => Carbon::now()->subMinutes(15),
             'closed_at' => Carbon::now(),
@@ -171,6 +182,30 @@ class TradeHistoryTest extends TestCase
         $response = $this->actingAs($user)->get('/history/export?mode=paper');
 
         $response->assertStatus(200);
-        $this->assertStringContainsString('text/csv', $response->headers->get('content-type'));
+        $this->assertStringContainsString('text/csv', (string) $response->headers->get('content-type'));
+
+        // Streamed content verification
+        $content = $response->streamedContent();
+        $this->assertStringContainsString('Trade ID', $content);
+        $this->assertStringContainsString('Binance Order ID', $content);
+        $this->assertStringContainsString('Binance Trade IDs', $content);
+        $this->assertStringContainsString('Position Size (USD)', $content);
+        $this->assertStringContainsString('Gross PnL (USD)', $content);
+        $this->assertStringContainsString('Commission (USD)', $content);
+        $this->assertStringContainsString('Funding (USD)', $content);
+        $this->assertStringContainsString('Net PnL (USD)', $content);
+        $this->assertStringContainsString('Stop Distance ($)', $content);
+        $this->assertStringContainsString('MAE (USD)', $content);
+        $this->assertStringContainsString('MFE (USD)', $content);
+        $this->assertStringContainsString('Setup Tag', $content);
+        $this->assertStringContainsString('BTC 1h Trend at Entry', $content);
+
+        // Verify values
+        $this->assertStringContainsString('PRE_BREAKOUT_COIL', $content);
+        $this->assertStringContainsString('BULLISH', $content);
+        $this->assertStringContainsString('987654321', $content);
+        $this->assertStringContainsString('112233;112234', $content);
+        $this->assertStringContainsString('55', $content); // Position Size: 0.5 * 110 = $55 (Never 0!)
+        $this->assertStringContainsString('0.944', $content); // Net PnL
     }
 }

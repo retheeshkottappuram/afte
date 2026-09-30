@@ -12,7 +12,8 @@ class ExchangePositionSync
 {
     public function __construct(
         protected BinanceFuturesClient $client,
-        protected RiskManager $riskManager
+        protected RiskManager $riskManager,
+        protected TradeReconciler $tradeReconciler
     ) {}
 
     /**
@@ -159,41 +160,12 @@ class ExchangePositionSync
                 $isNotInLiveSymbols = ! in_array($dbTrade->symbol, $liveSymbolsFound, true);
 
                 if ($isNotInLiveSymbols && $hasExplicitZeroAmt) {
-                    $closeMark = $dbTrade->entry_price;
-                    $realizedPnl = 0.0;
-                    $feePaid = 0.0;
-                    $exitReason = 'EXCHANGE_CLOSED';
-
                     try {
-                        $userTrades = $client->getUserTrades($dbTrade->symbol, 5);
-                        if (! empty($userTrades)) {
-                            $latestFill = end($userTrades);
-                            $closeMark = (float) ($latestFill['price'] ?? $closeMark);
-                            $realizedPnl = (float) ($latestFill['realizedPnl'] ?? 0.0);
-                            $feePaid = (float) ($latestFill['commission'] ?? 0.0);
-                        } else {
-                            $closeMark = $client->getMarkPrice($dbTrade->symbol);
-                            $realizedPnl = $dbTrade->calculateUnrealizedPnl($closeMark);
-                        }
-                    } catch (Throwable) {
-                        try {
-                            $closeMark = $client->getMarkPrice($dbTrade->symbol);
-                            $realizedPnl = $dbTrade->calculateUnrealizedPnl($closeMark);
-                        } catch (Throwable) {
-                            // ignore
-                        }
+                        $this->tradeReconciler->reconcileClosedTrade($dbTrade, null, 'EXCHANGE_CLOSED');
+                        Log::info("[ExchangePositionSync] Closed position {$dbTrade->symbol} truthfully reconciled from Binance (Exit: {$dbTrade->exit_reason}, Net PnL: \${$dbTrade->net_pnl}, Fee: \${$dbTrade->commission})");
+                    } catch (Throwable $reconError) {
+                        Log::error("[ExchangePositionSync] Truthful reconciliation failed for {$dbTrade->symbol} #{$dbTrade->id}: {$reconError->getMessage()}");
                     }
-
-                    $dbTrade->status = 'CLOSED';
-                    $dbTrade->exit_price = $closeMark;
-                    $dbTrade->exit_reason = $exitReason;
-                    $dbTrade->realized_pnl = $realizedPnl;
-                    $dbTrade->fee_paid = round(($dbTrade->fee_paid ?? 0) + $feePaid, 6);
-                    $dbTrade->closed_at = now();
-                    $dbTrade->save();
-
-                    $this->riskManager->handleTradeClosed($account, $dbTrade);
-                    Log::info("[ExchangePositionSync] Closed position {$dbTrade->symbol} reconciled from Binance exchange (Exit: {$exitReason}, PnL: \${$realizedPnl})");
                 }
             }
 

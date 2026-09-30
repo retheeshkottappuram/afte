@@ -35,6 +35,17 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property float|null $lowest_price
  * @property string|null $binance_order_id
  * @property array|null $meta
+ * @property string|null $setup_tag
+ * @property string|null $btc_trend_1h
+ * @property float|null $stop_distance
+ * @property float $gross_pnl
+ * @property float $commission
+ * @property float $funding_fee
+ * @property float $net_pnl
+ * @property float|null $mae
+ * @property float|null $mfe
+ * @property string|null $binance_exit_order_id
+ * @property array|null $binance_trade_ids
  * @property Carbon|null $opened_at
  * @property Carbon|null $closed_at
  */
@@ -47,6 +58,8 @@ class Trade extends Model
      */
     protected $fillable = [
         'symbol',
+        'setup_tag',
+        'btc_trend_1h',
         'side',
         'mode',
         'status',
@@ -58,6 +71,7 @@ class Trade extends Model
         'leverage',
         'initial_sl',
         'current_sl',
+        'stop_distance',
         'tp1_price',
         'tp2_price',
         'be_locked',
@@ -66,11 +80,19 @@ class Trade extends Model
         'exit_price',
         'exit_reason',
         'realized_pnl',
+        'gross_pnl',
+        'commission',
+        'funding_fee',
+        'net_pnl',
         'pnl_percent',
         'fee_paid',
+        'mae',
+        'mfe',
         'highest_price',
         'lowest_price',
         'binance_order_id',
+        'binance_exit_order_id',
+        'binance_trade_ids',
         'meta',
         'opened_at',
         'closed_at',
@@ -87,6 +109,7 @@ class Trade extends Model
         'leverage' => 'integer',
         'initial_sl' => 'float',
         'current_sl' => 'float',
+        'stop_distance' => 'float',
         'tp1_price' => 'float',
         'tp2_price' => 'float',
         'be_locked' => 'boolean',
@@ -94,11 +117,18 @@ class Trade extends Model
         'tp2_hit' => 'boolean',
         'exit_price' => 'float',
         'realized_pnl' => 'float',
+        'gross_pnl' => 'float',
+        'commission' => 'float',
+        'funding_fee' => 'float',
+        'net_pnl' => 'float',
         'pnl_percent' => 'float',
         'fee_paid' => 'float',
+        'mae' => 'float',
+        'mfe' => 'float',
         'highest_price' => 'float',
         'lowest_price' => 'float',
         'meta' => 'array',
+        'binance_trade_ids' => 'array',
         'opened_at' => 'datetime',
         'closed_at' => 'datetime',
     ];
@@ -110,6 +140,7 @@ class Trade extends Model
         'amount_added',
         'initial_amount_added',
         'position_size_usd',
+        'remaining_position_size_usd',
     ];
 
     public function isLong(): bool
@@ -202,9 +233,17 @@ class Trade extends Model
     }
 
     /**
-     * Total position notional value in USD.
+     * Total position notional value in USD at entry (never 0 for closed trades).
      */
     public function getPositionSizeUsdAttribute(): float
+    {
+        return round($this->quantity * $this->entry_price, 2);
+    }
+
+    /**
+     * Current remaining position notional value in USD.
+     */
+    public function getRemainingPositionSizeUsdAttribute(): float
     {
         return round($this->remaining_quantity * $this->entry_price, 2);
     }

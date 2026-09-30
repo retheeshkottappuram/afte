@@ -3,7 +3,6 @@
 namespace App\Services\Trading;
 
 use App\Models\Trade;
-use App\Models\TradingAccount;
 use App\Services\AI\ActiveTradeMonitorAgent;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
@@ -16,7 +15,8 @@ class DynamicTradeManager
         protected BinanceFuturesClient $client,
         protected RiskManager $riskManager,
         protected TelegramNotifier $notifier,
-        protected ActiveTradeMonitorAgent $aiMonitor
+        protected ActiveTradeMonitorAgent $aiMonitor,
+        protected TradeReconciler $tradeReconciler
     ) {}
 
     /**
@@ -449,16 +449,8 @@ class DynamicTradeManager
      */
     public function closeTrade(Trade $trade, float $exitPrice, string $reason): array
     {
-        $closeQty = $trade->remaining_quantity;
-        $remainingPnl = 0.0;
-
-        if ($closeQty > 0) {
-            $remainingPnl = $trade->isLong()
-                ? ($exitPrice - $trade->entry_price) * $closeQty
-                : ($trade->entry_price - $exitPrice) * $closeQty;
-        }
-
-        $totalPnl = round($trade->realized_pnl + $remainingPnl, 4);
+        $closeQty = $trade->remaining_quantity > 0 ? $trade->remaining_quantity : $trade->quantity;
+        $exitOrderId = null;
 
         if ($trade->mode === 'live') {
             try {
@@ -466,13 +458,14 @@ class DynamicTradeManager
                 if ($client->hasCredentials()) {
                     if ($closeQty > 0) {
                         $closeSide = $trade->isLong() ? 'SELL' : 'BUY';
-                        $client->placeOrder([
+                        $orderRes = $client->placeOrder([
                             'symbol' => $trade->symbol,
                             'side' => $closeSide,
                             'type' => 'MARKET',
                             'quantity' => $client->formatQuantity($trade->symbol, $closeQty),
                             'reduceOnly' => 'true',
                         ]);
+                        $exitOrderId = $orderRes['orderId'] ?? null;
                     }
                     // Clean up any remaining exchange-side conditional orders
                     $client->cancelAllAlgoOrders($trade->symbol);
@@ -483,32 +476,15 @@ class DynamicTradeManager
             }
         }
 
-        // Calculate fee (0.05% taker on notional)
-        $notional = $trade->quantity * $trade->entry_price;
-        $fee = round($notional * 0.0005 * 2, 4);
-        $netPnl = round($totalPnl - $fee, 4);
-
         $trade->exit_price = $exitPrice;
         $trade->exit_reason = $reason;
-        $trade->realized_pnl = $netPnl;
-        $trade->pnl_percent = $trade->margin_used > 0 ? round(($netPnl / $trade->margin_used) * 100, 2) : 0;
-        $trade->fee_paid = $fee;
-        $trade->remaining_quantity = 0.0;
-        $trade->status = 'CLOSED';
-        $trade->stage = 'CLOSED';
-        $trade->closed_at = Carbon::now();
-        $trade->save();
 
-        // Update account statistics
-        $account = TradingAccount::getForMode($trade->mode);
-        $this->riskManager->handleTradeClosed($account, $trade);
-
-        // Send Telegram alert
-        $this->notifier->notifyTradeClosed($trade, $account->balance);
+        // Truthfully reconcile trade (sourcing real fills, fees, and funding from Binance for live trades)
+        $this->tradeReconciler->reconcileClosedTrade($trade, $exitOrderId, $reason);
 
         return [
             'status' => 'closed',
-            'message' => "Trade {$trade->id} closed at \${$exitPrice}. Net PnL: \${$netPnl} ({$trade->pnl_percent}%). Reason: {$reason}.",
+            'message' => "Trade {$trade->id} closed at \${$trade->exit_price}. Net PnL: \${$trade->net_pnl} ({$trade->pnl_percent}%). Reason: {$reason}.",
         ];
     }
 

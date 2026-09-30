@@ -107,33 +107,33 @@ return [
     |--------------------------------------------------------------------------
     */
     'management' => [
-        // Breakeven Lock: Triggered at +0.45% gain (+4.5% ROE at 10x)
-        'be_gain_pct' => (float) env('TRADING_BE_GAIN_PCT', 0.45),
-        'be_roe_threshold' => (float) env('TRADING_BE_ROE_THRESHOLD', 4.5),
-        'be_fee_buffer_pct' => (float) env('TRADING_BE_FEE_BUFFER_PCT', 0.08),
+        // Breakeven Lock: Triggered at +1.20% gain (+12.0% ROE at 10x)
+        'be_gain_pct' => (float) env('TRADING_BE_GAIN_PCT', 1.20),
+        'be_roe_threshold' => (float) env('TRADING_BE_ROE_THRESHOLD', 12.0),
+        'be_fee_buffer_pct' => (float) env('TRADING_BE_FEE_BUFFER_PCT', 0.25), // 0.25% buffer overcomes 0.10% Binance round-trip fee
 
-        // Tier 1 Stepped Ratchet: At +0.45% gain (+4.5% ROE), lock SL at +0.18% profit (+1.8% ROE)
-        'lock1_gain_pct' => 0.45,
-        'lock1_sl_pct' => 0.18,
+        // Tier 1 Stepped Ratchet: At +1.20% gain, lock SL at +0.25% net profit
+        'lock1_gain_pct' => 1.20,
+        'lock1_sl_pct' => 0.25,
 
         // Partial Profit Booking:
-        'tp1_pct' => (float) env('TRADING_TP1_PCT', 1.50),           // Harvest 35% at +1.50% price gain (+15% ROE at 10x)
+        'tp1_pct' => (float) env('TRADING_TP1_PCT', 1.80),           // Harvest 35% at +1.80% price gain (+18% ROE at 10x)
         'tp1_close_ratio' => (float) env('TRADING_TP1_CLOSE_RATIO', 0.35),
 
-        // Tier 2 Stepped Ratchet: At +0.90% gain (+9.0% ROE), lock SL at +0.45% profit (+4.5% ROE)
-        'lock2_gain_pct' => 0.90,
-        'lock2_sl_pct' => 0.45,
+        // Tier 2 Stepped Ratchet: At +1.80% gain (TP1 hit), lock SL at +0.60% profit (+6.0% ROE)
+        'lock2_gain_pct' => 1.80,
+        'lock2_sl_pct' => 0.60,
 
-        'tp2_pct' => (float) env('TRADING_TP2_PCT', 3.00),           // Harvest 30% at +3.00% price gain (+30% ROE at 10x)
-        'tp2_close_ratio' => (float) env('TRADING_TP2_CLOSE_RATIO', 0.30),
+        'tp2_pct' => (float) env('TRADING_TP2_PCT', 3.20),           // Harvest 35% at +3.20% price gain (+32% ROE at 10x)
+        'tp2_close_ratio' => (float) env('TRADING_TP2_CLOSE_RATIO', 0.35),
 
-        // Remaining 35% runs on AI structural & trailing SL to capture multi-dollar breakouts
-        'trailing_sl_atr_mult' => (float) env('TRADING_TRAILING_SL_ATR_MULT', 2.0),
-        'trailing_sl_trigger_pct' => (float) env('TRADING_TRAILING_SL_TRIGGER_PCT', 1.50),
+        // Remaining 30% runs on dynamic ATR trailing SL to capture multi-dollar breakouts
+        'trailing_sl_atr_mult' => (float) env('TRADING_TRAILING_SL_ATR_MULT', 1.5),
+        'trailing_sl_trigger_pct' => (float) env('TRADING_TRAILING_SL_TRIGGER_PCT', 2.50),
 
-        // Anti-Giveback Circuit:
-        'peak_profit_min_gain_pct' => (float) env('TRADING_PEAK_PROFIT_MIN_GAIN_PCT', 0.60),
-        'peak_profit_giveback_pct' => (float) env('TRADING_PEAK_PROFIT_GIVEBACK_PCT', 35.0),
+        // Anti-Giveback Circuit: Disabled at low profits so normal 1m pullbacks do NOT choke winners (e.g. LINK)
+        'peak_profit_min_gain_pct' => (float) env('TRADING_PEAK_PROFIT_MIN_GAIN_PCT', 4.00),
+        'peak_profit_giveback_pct' => (float) env('TRADING_PEAK_PROFIT_GIVEBACK_PCT', 40.0),
 
         // Stagnation & Dead-Position Timeout Pruner (0 disables time-based forced closures)
         'stagnation_timeout_minutes' => (int) env('TRADING_STAGNATION_TIMEOUT_MINUTES', 0),

@@ -121,18 +121,28 @@ class TradeHistoryController extends Controller
             $handle = fopen('php://output', 'w');
             fputcsv($handle, [
                 'Trade ID',
+                'Binance Order ID',
+                'Binance Trade IDs',
                 'Coin / Symbol',
+                'Setup Tag',
+                'BTC 1h Trend at Entry',
                 'Side',
                 'Mode',
                 'Entry Price',
                 'Exit Price',
                 'Quantity',
-                'Amount Added (Margin USD)',
                 'Position Size (USD)',
+                'Amount Added (Margin USD)',
                 'Leverage',
-                'Realized PnL (USD)',
+                'Stop Distance ($)',
+                'Stop Distance (%)',
+                'Gross PnL (USD)',
+                'Commission (USD)',
+                'Funding (USD)',
+                'Net PnL (USD)',
                 'ROE (%)',
-                'Fee Paid (USD)',
+                'MAE (USD)',
+                'MFE (USD)',
                 'Exit Reason',
                 'Opened At',
                 'Closed At',
@@ -144,20 +154,41 @@ class TradeHistoryController extends Controller
                     ? round($t->opened_at->diffInMinutes($t->closed_at), 1)
                     : 0;
 
+                $positionSizeUsd = round($t->quantity * $t->entry_price, 2);
+                $stopDist = $t->stop_distance ?? abs($t->entry_price - $t->initial_sl);
+                $stopDistPct = $t->entry_price > 0 ? round(($stopDist / $t->entry_price) * 100, 2) : 0;
+                $grossPnl = $t->gross_pnl !== null ? $t->gross_pnl : round($t->realized_pnl + $t->fee_paid, 4);
+                $commission = $t->commission > 0 ? $t->commission : $t->fee_paid;
+                $funding = $t->funding_fee ?? 0.0;
+                $netPnl = $t->net_pnl !== null ? $t->net_pnl : $t->realized_pnl;
+                $tradeIds = ! empty($t->binance_trade_ids) ? implode(';', (array) $t->binance_trade_ids) : '';
+                $setupTag = $t->setup_tag ?: ($t->meta['ai_regime'] ?? ($t->meta['grade'] ?? 'STANDARD'));
+                $btcTrend = $t->btc_trend_1h ?: ($t->meta['btc_trend_1h'] ?? 'NEUTRAL');
+
                 fputcsv($handle, [
                     $t->id,
+                    $t->binance_order_id ?? 'N/A',
+                    $tradeIds ?: 'N/A',
                     $t->symbol,
+                    $setupTag,
+                    $btcTrend,
                     $t->side,
                     strtoupper($t->mode),
                     $t->entry_price,
                     $t->exit_price ?? 0,
                     $t->quantity,
+                    $positionSizeUsd,
                     $t->amount_added,
-                    $t->position_size_usd,
                     $t->leverage.'x',
-                    $t->realized_pnl,
+                    round($stopDist, 4),
+                    $stopDistPct.'%',
+                    $grossPnl,
+                    $commission,
+                    $funding,
+                    $netPnl,
                     $t->pnl_percent.'%',
-                    $t->fee_paid,
+                    $t->mae ?? 0,
+                    $t->mfe ?? 0,
                     $t->exit_reason,
                     $t->opened_at?->toDateTimeString(),
                     $t->closed_at?->toDateTimeString(),
