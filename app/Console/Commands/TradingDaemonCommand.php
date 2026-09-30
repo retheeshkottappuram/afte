@@ -10,8 +10,10 @@ use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\MarketEngine;
 use App\Services\Trading\OrderExecutor;
+use App\Services\Trading\SignalAlgoTrader;
 use App\Services\Trading\SignalEngine;
 use App\Services\Trading\TradingDaemonManager;
+use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
@@ -28,8 +30,9 @@ class TradingDaemonCommand extends Command
      */
     protected $signature = 'trade:daemon
                             {--mode= : Override mode (paper, live)}
+                            {--coin= : Override targeted trading asset (e.g. NEARUSDT)}
                             {--interval=2 : Seconds between position management cycles}
-                            {--scan-interval=25 : Seconds between market scanner cycles}
+                            {--scan-interval=15 : Seconds between SignalAlgo PRO chart scan cycles}
                             {--start : Activate auto-trading state}
                             {--once : Run a single loop iteration and exit}';
 
@@ -38,7 +41,7 @@ class TradingDaemonCommand extends Command
      *
      * @var string
      */
-    protected $description = 'Autonomous 24/7 trading daemon: continuous position management & breakout scanner';
+    protected $description = 'Autonomous 24/7 trading daemon: SignalAlgo PRO single-coin chart monitor, reversal exits & trend follower';
 
     /**
      * Execute the console command.
@@ -49,7 +52,8 @@ class TradingDaemonCommand extends Command
         SignalValidator $validator,
         DynamicTradeManager $tradeManager,
         OrderExecutor $executor,
-        ExchangePositionSync $exchangeSync
+        ExchangePositionSync $exchangeSync,
+        SignalAlgoTrader $signalAlgoTrader
     ): int {
         // Fortify PHP execution environment for continuous 24/7 background operation
         @set_time_limit(0);
@@ -80,6 +84,11 @@ class TradingDaemonCommand extends Command
         $runOnce = (bool) $this->option('once');
         $daemonStartTimestamp = time();
 
+        if ($this->option('coin')) {
+            TradingTargetManager::setActiveCoin((string) $this->option('coin'));
+        }
+        $targetCoin = TradingTargetManager::getActiveCoin();
+
         $account = TradingAccount::getForMode($mode);
 
         if ($this->option('start')) {
@@ -94,8 +103,8 @@ class TradingDaemonCommand extends Command
         $startedAt = now()->toIso8601String();
         $statusStr = $account->is_running ? 'ACTIVE' : 'PAUSED';
 
-        $this->logInfo("🤖 AFTE 24/7 Autonomous Daemon online [Mode: {$mode}, PID: {$pid}, Status: {$statusStr}]");
-        $this->logLine("Capital: \${$account->balance} | Target: \$500.00 | Management Loop: {$interval}s | Scanner Loop: {$scanInterval}s");
+        $this->logInfo("🤖 AFTE 24/7 Autonomous Daemon online [Mode: {$mode}, Target: {$targetCoin}, PID: {$pid}, Status: {$statusStr}]");
+        $this->logLine("Capital: \${$account->balance} | Strategy: SignalAlgo PRO (15m & 1h) | Management Loop: {$interval}s | Chart Scan: {$scanInterval}s");
 
         $lastScanTime = 0;
         $lastSnapshotTime = 0;
@@ -152,6 +161,9 @@ class TradingDaemonCommand extends Command
                 Cache::put(TradingDaemonManager::CACHE_STATS_KEY, [
                     'pid' => $pid,
                     'mode' => $mode,
+                    'target_coin' => TradingTargetManager::getActiveCoin(),
+                    'target_base' => TradingTargetManager::getBaseCoin(),
+                    'strategy' => 'SignalAlgo PRO (15m & 1h)',
                     'started_at' => $startedAt,
                     'last_tick_at' => now()->toIso8601String(),
                     'loop_count' => $loopCount,
@@ -183,7 +195,7 @@ class TradingDaemonCommand extends Command
                     }
                 }
 
-                // 2. High-Frequency Active Position Management Loop
+                // 2. High-Frequency Active Position Management Loop (All open trades in DB)
                 try {
                     $openTrades = Trade::where('mode', $mode)
                         ->where('status', 'OPEN')
@@ -196,7 +208,6 @@ class TradingDaemonCommand extends Command
                             if (($result['status'] ?? '') === 'closed') {
                                 $totalClosedCount++;
                                 $this->logWarn("Position Closed: {$trade->symbol} ({$result['message']})");
-                                // Free slot opened: immediately trigger fresh market scan!
                                 $lastScanTime = 0;
                             }
                         } catch (Throwable $tradeEx) {
@@ -207,66 +218,34 @@ class TradingDaemonCommand extends Command
                     Log::warning("[TradingDaemon] Position management error: {$e->getMessage()}");
                 }
 
-                // 2. Scheduled Market Scanner Cycle
+                // 3. Focused Single-Coin SignalAlgo PRO Strategy Cycle (15m & 1h Chart Monitoring, Reversals, & Profit Following)
                 $now = time();
                 if ($now - $lastScanTime >= $scanInterval || $runOnce) {
                     $lastScanTime = $now;
+                    $targetCoin = TradingTargetManager::getActiveCoin();
 
                     if ($account->canTrade()) {
-                        $btcTrend = $marketEngine->getBtcMarketTrend();
-                        $btcBase = $marketEngine->getBtcBaseKlines();
-                        $this->logLine('['.date('H:i:s')."] Macro BTC Trend: {$btcTrend['trend']} (\${$btcTrend['btc_price']}) | Scanning setups...");
+                        $this->logLine('['.date('H:i:s')."] SignalAlgo PRO Target: {$targetCoin} (15m & 1h) | Evaluating chart signals...");
                         try {
-                            $symbols = $marketEngine->getScannableSymbols();
-                            $candidates = array_slice($symbols, 0, 20);
+                            $algoRes = $signalAlgoTrader->runCycle($mode);
+                            $totalScannedCount++;
 
-                            foreach ($candidates as $sym) {
-                                $totalScannedCount++;
-                                try {
-                                    $klines = $marketEngine->getMultiTimeframeKlines($sym);
-                                    $eval = $signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
-
-                                    if ($eval !== null && $eval['score'] >= 80) {
-                                        // Macro Market Trend Filter Gate (Permits high-strength decoupled altcoin leaders)
-                                        $rsRatio = (float) ($eval['indicators']['rs_ratio'] ?? 1.0);
-                                        $isDecoupledLeader = $eval['score'] >= 90 || $rsRatio >= 1.04;
-
-                                        if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long'] && ! $isDecoupledLeader) {
-                                            $this->logLine("Skipped {$sym} LONG: Counter-trend to Bearish BTC macro (RS: {$rsRatio}).");
-
-                                            continue;
-                                        }
-                                        if ($eval['direction'] === 'SHORT' && ! $btcTrend['allow_short'] && ! $isDecoupledLeader) {
-                                            $this->logLine("Skipped {$sym} SHORT: Counter-trend to Bullish BTC macro (RS: {$rsRatio}).");
-
-                                            continue;
-                                        }
-
-                                        $ai = $validator->validate($eval, $klines['base']);
-
-                                        if ($ai['approved']) {
-                                            $this->logInfo("⚡ High-Confluence Setup on {$sym} ({$eval['direction']}) - Score: {$eval['score']}/100");
-                                            $execResult = $executor->executeSignal($eval, $ai, $mode);
-
-                                            if (($execResult['status'] ?? '') === 'opened') {
-                                                $totalOpenedCount++;
-                                                $this->logInfo("✅ Order Executed: {$execResult['message']}");
-                                                break; // Executed 1 trade for this scanning cycle; multi-trade capacity will continue on subsequent cycles based on available free margin
-                                            } else {
-                                                $this->logLine("Execution Notice: {$execResult['message']}");
-                                            }
-                                        }
-                                    }
-                                } catch (Throwable $symEx) {
-                                    // Ignore transient per-symbol errors
-                                }
+                            if ($algoRes['action'] === 'OPEN_LONG' || $algoRes['action'] === 'OPEN_SHORT') {
+                                $totalOpenedCount++;
+                                $this->logInfo("✅ [SignalAlgo Entry] {$algoRes['message']}");
+                            } elseif (str_starts_with($algoRes['action'], 'REVERSED_TO_')) {
+                                $totalClosedCount++;
+                                $totalOpenedCount++;
+                                $this->logWarn("🔄 [SignalAlgo Reversal] {$algoRes['message']}");
+                            } elseif ($algoRes['action'] === 'MANAGE') {
+                                $totalManagedCount++;
+                                $this->logLine("📊 [Trend Following] {$algoRes['message']}");
+                            } else {
+                                $this->logLine("👁️ [Monitoring] {$algoRes['message']}");
                             }
-
-                            if ($totalOpenedCount === 0) {
-                                $this->logLine('['.date('H:i:s')."] Scan complete: {$totalScannedCount} pairs checked. No setups met score >= 80 entry criteria on this candle.");
-                            }
-                        } catch (Throwable $scanEx) {
-                            Log::error("[TradingDaemon] Scanner cycle error: {$scanEx->getMessage()}");
+                        } catch (Throwable $algoEx) {
+                            Log::error("[TradingDaemon] SignalAlgo cycle error on {$targetCoin}: {$algoEx->getMessage()}");
+                            $this->logError("SignalAlgo cycle error: {$algoEx->getMessage()}");
                         }
                     } else {
                         if (! $account->is_running) {

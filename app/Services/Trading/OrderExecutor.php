@@ -28,8 +28,20 @@ class OrderExecutor
     public function executeSignal(array $signal, array $aiResult, string $mode = 'paper', bool $isManual = false): array
     {
         $account = TradingAccount::getForMode($mode);
-        $symbol = $signal['symbol'];
+        $symbol = TradingTargetManager::normalizeSymbol((string) $signal['symbol']);
         $score = (int) $signal['score'];
+
+        // 0. Strict single-coin strategy gate: Block any coin other than the user's selected coin
+        if (config('trading.single_coin_strict', true) && ! TradingTargetManager::isCoinAllowed($symbol)) {
+            $activeCoin = TradingTargetManager::getActiveCoin();
+            Log::warning("OrderExecutor: Blocked trade for {$symbol}. Active single-coin strategy is locked to {$activeCoin}.");
+
+            return [
+                'status' => 'rejected',
+                'trade' => null,
+                'message' => "Trading is strictly restricted to selected coin ({$activeCoin}). Trades on {$symbol} are not allowed.",
+            ];
+        }
 
         // 1. Verify Risk Engine permission
         $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $score, $isManual);

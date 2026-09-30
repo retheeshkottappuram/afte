@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
+use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -312,6 +313,7 @@ class DashboardTest extends TestCase
     public function test_user_can_execute_radar_trade_directly_from_scanner(): void
     {
         $user = User::factory()->create();
+        TradingTargetManager::setActiveCoin('SOLUSDT');
 
         TradingAccount::create([
             'mode' => 'paper',
@@ -335,6 +337,30 @@ class DashboardTest extends TestCase
             'mode' => 'paper',
             'status' => 'OPEN',
         ]);
+    }
+
+    public function test_radar_trade_blocked_if_coin_is_not_selected(): void
+    {
+        $user = User::factory()->create();
+        TradingTargetManager::setActiveCoin('NEARUSDT');
+
+        TradingAccount::create([
+            'mode' => 'paper',
+            'balance' => 20.0,
+            'initial_balance' => 20.0,
+            'is_running' => false,
+            'kill_switch' => false,
+        ]);
+
+        $response = $this->actingAs($user)->postJson('/api/execute-radar-trade', [
+            'symbol' => 'SOLUSDT',
+            'direction' => 'LONG',
+            'mode' => 'paper',
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonFragment(['success' => false]);
+        $this->assertStringContainsString('Trading is strictly restricted to selected coin', $response->json('message'));
     }
 
     public function test_stats_includes_cooldown_and_paused_reason_when_circuit_breaker_active(): void

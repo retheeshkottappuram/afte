@@ -228,6 +228,41 @@
                 </div>
             </div>
 
+            <!-- Targeted Single-Coin Strategy Cockpit -->
+            <div id="target-asset-panel" class="glass-panel rounded-xl p-4 sm:p-5 border border-cyan-500/40 bg-gradient-to-r from-cyber-800/95 via-cyan-950/20 to-cyber-800/95 shadow-[0_0_25px_rgba(6,182,212,0.12)]">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div class="flex items-start sm:items-center space-x-3.5">
+                        <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500/20 to-emerald-500/20 border border-cyan-500/40 flex items-center justify-center flex-shrink-0 shadow-[0_0_15px_rgba(6,182,212,0.2)]">
+                            <span class="text-2xl">🎯</span>
+                        </div>
+                        <div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="text-xs font-mono font-bold uppercase text-cyan-400 tracking-wider">TARGET TRADING ASSET</span>
+                                <span id="active-coin-pill" class="px-2.5 py-0.5 rounded-full text-xs font-mono font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.3)]">
+                                    {{ $activeCoin ?? 'NEARUSDT' }}
+                                </span>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    SIGNALALGO PRO 15M & 1H STRATEGY
+                                </span>
+                            </div>
+                            <p class="text-xs text-slate-300 font-mono mt-1 leading-relaxed">
+                                Bot exclusively trades <strong id="active-coin-name" class="text-white font-bold">{{ $activeCoin ?? 'NEARUSDT' }}</strong> on SignalAlgo PRO chart signals. Follows profit with dynamic ratchet & trailing SL, and exits immediately on reversals.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-2 self-start md:self-center flex-shrink-0">
+                        <button type="button" onclick="openChangeCoinModal()" class="px-3.5 py-2 text-xs font-mono font-bold bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/50 rounded-lg transition flex items-center space-x-1.5 shadow-sm shadow-cyan-500/20">
+                            <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+                            <span>Change Coin</span>
+                        </button>
+                        <a id="link-algo-chart" href="{{ route('signals.dashboard') }}?symbol={{ $activeCoin ?? 'NEARUSDT' }}" class="px-3.5 py-2 text-xs font-mono font-semibold bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-lg text-emerald-300 hover:text-emerald-200 transition flex items-center space-x-1.5 shadow-sm">
+                            <span>📈 View 15m/1h Chart</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+
             <!-- Portfolio Balance & Margin Utilization Matrix -->
             <div class="glass-panel rounded-xl p-5 border border-cyber-border">
                 <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-cyber-border/60">
@@ -1710,6 +1745,102 @@
             liveSync();
             runAutoTickFallback();
         }, 3000);
+
+        function openChangeCoinModal() {
+            const modal = document.getElementById('change-coin-modal');
+            if (modal) modal.classList.remove('hidden');
+        }
+
+        function closeChangeCoinModal() {
+            const modal = document.getElementById('change-coin-modal');
+            if (modal) modal.classList.add('hidden');
+        }
+
+        function selectTargetCoin(rawCoin) {
+            if (!rawCoin || !rawCoin.trim()) return;
+            const coin = rawCoin.trim();
+
+            fetch('{{ route('api.trading_coin.set') }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                },
+                body: JSON.stringify({ coin: coin })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const pill = document.getElementById('active-coin-pill');
+                    const name = document.getElementById('active-coin-name');
+                    const link = document.getElementById('link-algo-chart');
+                    if (pill) pill.textContent = data.active_coin;
+                    if (name) name.textContent = data.active_coin;
+                    if (link) link.href = `{{ route('signals.dashboard') }}?symbol=${encodeURIComponent(data.active_coin)}`;
+
+                    closeChangeCoinModal();
+                    alert(`✅ Target Asset Switched!\n\nThe bot is now exclusively monitoring ${data.active_coin} on 15m & 1h SignalAlgo PRO charts.`);
+                    liveSync();
+                } else {
+                    alert(data.message || 'Failed to switch coin');
+                }
+            })
+            .catch(err => {
+                alert('Network error while switching target coin');
+            });
+        }
     </script>
+
+    <!-- Change Target Coin Modal -->
+    <div id="change-coin-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md hidden transition-all duration-300">
+        <div class="glass-panel w-full max-w-lg rounded-2xl border border-cyan-500/40 bg-cyber-800 shadow-[0_0_50px_rgba(6,182,212,0.2)] p-6 space-y-5">
+            <div class="flex items-center justify-between pb-3 border-b border-cyber-border">
+                <div class="flex items-center space-x-2.5">
+                    <span class="text-xl">🎯</span>
+                    <h3 class="font-bold text-base text-white font-mono uppercase tracking-wider">Select Target Trading Asset</h3>
+                </div>
+                <button type="button" onclick="closeChangeCoinModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-cyber-700 transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <p class="text-xs text-slate-300 font-mono leading-relaxed">
+                The bot will exclusively monitor this coin on <span class="text-cyan-300 font-semibold">15m & 1h SignalAlgo PRO charts</span>. When a signal prints, it enters the position, follows profit with trailing SL, and exits immediately on reversals.
+            </p>
+
+            <div>
+                <label class="block text-xs font-mono text-slate-400 uppercase font-bold mb-2">Recommended Liquid Pairs</label>
+                <div class="grid grid-cols-3 sm:grid-cols-4 gap-2" id="modal-coin-grid">
+                    @foreach ($availableCoins ?? [] as $coinItem)
+                        <button type="button" onclick="selectTargetCoin('{{ $coinItem['symbol'] }}')"
+                            class="p-2.5 rounded-xl border text-center font-mono text-xs font-bold transition flex flex-col items-center justify-center space-y-1 {{ $coinItem['is_active'] ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500 shadow-[0_0_12px_rgba(6,182,212,0.3)]' : 'bg-cyber-900/60 hover:bg-cyber-700 text-slate-300 border-cyber-border hover:border-slate-500' }}">
+                            <span class="text-white">{{ $coinItem['base'] }}</span>
+                            <span class="text-[10px] text-slate-400 font-normal">{{ $coinItem['symbol'] }}</span>
+                        </button>
+                    @endforeach
+                </div>
+            </div>
+
+            <div class="pt-2 border-t border-cyber-border">
+                <label for="customTargetCoinInput" class="block text-xs font-mono text-slate-400 uppercase font-bold mb-1.5">Or Enter Any Binance Futures Symbol</label>
+                <div class="flex items-center space-x-2">
+                    <input type="text" id="customTargetCoinInput" placeholder="e.g. NEAR, APT, SUI, SOL"
+                        onkeydown="if(event.key === 'Enter') selectTargetCoin(this.value);"
+                        class="flex-1 px-3.5 py-2.5 bg-cyber-900 border border-cyber-border rounded-xl text-xs font-mono text-white uppercase placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500">
+                    <button type="button" onclick="selectTargetCoin(document.getElementById('customTargetCoinInput').value)"
+                        class="px-4 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white font-mono font-bold text-xs rounded-xl shadow-lg shadow-cyan-900/40 transition">
+                        Set Active
+                    </button>
+                </div>
+            </div>
+
+            <div class="pt-2 flex justify-end">
+                <button type="button" onclick="closeChangeCoinModal()" class="px-4 py-2 text-xs font-mono text-slate-400 hover:text-white bg-cyber-700 hover:bg-cyber-600 rounded-lg transition">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

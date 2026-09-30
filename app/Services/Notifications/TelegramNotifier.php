@@ -21,20 +21,19 @@ class TelegramNotifier
         $this->enabled = (bool) config('trading.telegram.enabled', false);
         $this->botToken = (string) config('trading.telegram.bot_token', '');
         $this->chatId = (string) config('trading.telegram.chat_id', '');
-        $this->liveOnly = (bool) config('trading.telegram.live_only', true);
+        $this->liveOnly = (bool) config('trading.telegram.live_only', false);
     }
 
     /**
      * Determine if a notification should be dispatched for this trade.
      */
-    protected function shouldNotify(Trade $trade): bool
+    public function shouldNotify(Trade $trade): bool
     {
         if (! $this->enabled || empty($this->botToken) || empty($this->chatId)) {
             return false;
         }
 
-        // Never notify for paper trading
-        if ($trade->mode === 'paper' || ($this->liveOnly && $trade->mode !== 'live')) {
+        if ($this->liveOnly && $trade->mode !== 'live') {
             return false;
         }
 
@@ -167,6 +166,62 @@ class TelegramNotifier
             ."• *Realized PnL:* {$pnlSign}\${$trade->realized_pnl} ({$trade->pnl_percent}%)\n"
             ."• *Updated Balance:* \${$accountBalance}\n\n"
             .'_Compounding challenge in progress._';
+
+        $this->sendMessage($msg);
+    }
+
+    /**
+     * Notify when a SignalAlgo PRO chart signal triggers an automated entry.
+     *
+     * @param  array<string, mixed>  $signal
+     */
+    public function notifySignalAlgoEntry(Trade $trade, array $signal, string $timeframe): void
+    {
+        if (! $this->shouldNotify($trade)) {
+            return;
+        }
+
+        $icon = $trade->isLong() ? '🟢' : '🔴';
+        $modeTag = strtoupper($trade->mode);
+        $score = $signal['score'] ?? 90;
+        $grade = $signal['grade'] ?? 'A';
+        $setupLabel = $signal['setup_label'] ?? 'CONFIRMED SIGNAL';
+        $notional = round($trade->quantity * $trade->entry_price, 2);
+
+        $msg = "⚡ *SIGNALALGO PRO™ CHART SIGNAL EXECUTED*\n\n"
+            ."{$icon} *{$trade->symbol} {$trade->side}* [{$modeTag}]\n"
+            ."• *Chart Timeframe:* `{$timeframe}`\n"
+            ."• *Setup:* {$setupLabel} (Score: *{$score}/100*, Grade *{$grade}*)\n"
+            ."• *Entry Price:* \${$trade->entry_price}\n"
+            ."• *Stop Loss:* \${$trade->current_sl}\n"
+            ."• *Target TP1:* \${$trade->tp1_price}\n"
+            ."• *Target TP2:* \${$trade->tp2_price}\n"
+            ."• *Margin Added:* \${$trade->margin_used} USDT ({$trade->leverage}x Leverage, \${$notional} size)\n\n"
+            .'🎯 _Chart continuous monitor active: Following profit with dynamic ratchet & trailing SL. Reversal signal will immediately flip position._';
+
+        $this->sendMessage($msg);
+    }
+
+    /**
+     * Notify when an open trade is closed immediately due to a chart reversal signal.
+     */
+    public function notifyReversalExit(Trade $trade, string $reverseSide, float $exitPrice, float $pnl, string $newDirection): void
+    {
+        if (! $this->shouldNotify($trade)) {
+            return;
+        }
+
+        $modeTag = strtoupper($trade->mode);
+        $pnlSign = $pnl >= 0 ? '+' : '';
+        $icon = $pnl >= 0 ? '💰' : '⚠️';
+
+        $msg = "🔄 *SIGNALALGO PRO™ REVERSAL EXIT [{$modeTag}]*\n\n"
+            ."{$icon} *{$trade->symbol} {$trade->side} Position Closed*\n"
+            ."• *Exit Price:* \${$exitPrice}\n"
+            ."• *Reason:* Chart printed opposite *{$reverseSide}* signal\n"
+            ."• *Realized PnL:* {$pnlSign}\${$pnl} USD\n"
+            ."• *Action:* Immediately reversing and entering *{$newDirection}* position on {$trade->symbol}!\n\n"
+            .'⚡ _Active trend alignment maintained._';
 
         $this->sendMessage($msg);
     }

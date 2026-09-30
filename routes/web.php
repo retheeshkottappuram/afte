@@ -47,6 +47,10 @@ Route::middleware('auth')->group(function (): void {
         Route::post('/auto-tick', [DashboardController::class, 'autoTick'])->name('api.auto_tick');
         Route::post('/backtest', [DashboardController::class, 'runBacktest'])->name('api.backtest');
 
+        // Targeted Single-Coin Trading Strategy Endpoints
+        Route::get('/trading-coin', [DashboardController::class, 'getTradingCoin'])->name('api.trading_coin.get');
+        Route::post('/trading-coin', [DashboardController::class, 'setTradingCoin'])->name('api.trading_coin.set');
+
         // 24/7 Trading Daemon Endpoints
         Route::get('/trading-daemon/status', [DashboardController::class, 'daemonStatus'])->name('api.trading_daemon.status');
         Route::post('/trading-daemon/start', [DashboardController::class, 'startDaemon'])->name('api.trading_daemon.start');

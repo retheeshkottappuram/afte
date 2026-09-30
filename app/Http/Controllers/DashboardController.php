@@ -16,6 +16,7 @@ use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SignalEngine;
 use App\Services\Trading\TradingDaemonManager;
+use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -61,6 +62,10 @@ class DashboardController extends Controller
         return view('dashboard.index', [
             'mode' => $mode,
             'account' => $account->fresh(),
+            'activeCoin' => TradingTargetManager::getActiveCoin(),
+            'activeBase' => TradingTargetManager::getBaseCoin(),
+            'availableCoins' => TradingTargetManager::getAvailableCoins(),
+            'timeframes' => TradingTargetManager::getMonitoredTimeframes(),
         ]);
     }
 
@@ -406,6 +411,14 @@ class DashboardController extends Controller
             return response()->json(['success' => false, 'message' => 'Trading pair symbol is required.'], 422);
         }
 
+        $activeCoin = TradingTargetManager::getActiveCoin();
+        if (config('trading.single_coin_strict', true) && ! TradingTargetManager::isCoinAllowed($symbol)) {
+            return response()->json([
+                'success' => false,
+                'message' => "Trading is strictly restricted to selected coin ({$activeCoin}). Please select {$symbol} as the active trading coin first.",
+            ], 422);
+        }
+
         $account = TradingAccount::getForMode($mode);
         if ($account->kill_switch) {
             return response()->json(['success' => false, 'message' => 'Kill switch is active. Trade cannot be placed.'], 422);
@@ -740,5 +753,44 @@ class DashboardController extends Controller
     protected function syncLiveAccountAndPositions(TradingAccount $account, string $mode): bool
     {
         return $this->exchangeSync->syncLiveAccountAndPositions($account, $mode);
+    }
+
+    /**
+     * Get target trading coin information.
+     */
+    public function getTradingCoin(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'active_coin' => TradingTargetManager::getActiveCoin(),
+            'base' => TradingTargetManager::getBaseCoin(),
+            'available_coins' => TradingTargetManager::getAvailableCoins(),
+            'timeframes' => TradingTargetManager::getMonitoredTimeframes(),
+        ]);
+    }
+
+    /**
+     * Update target trading coin.
+     */
+    public function setTradingCoin(Request $request): JsonResponse
+    {
+        $raw = (string) $request->input('coin', $request->input('symbol', 'NEARUSDT'));
+        if (empty(trim($raw))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Coin symbol is required.',
+            ], 422);
+        }
+
+        $activeCoin = TradingTargetManager::setActiveCoin($raw);
+        $base = TradingTargetManager::getBaseCoin($activeCoin);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Target trading asset updated to {$activeCoin} ({$base})! The 24/7 autonomous bot is now monitoring {$activeCoin} on 15m & 1h SignalAlgo PRO charts.",
+            'active_coin' => $activeCoin,
+            'base' => $base,
+            'available_coins' => TradingTargetManager::getAvailableCoins(),
+        ]);
     }
 }

@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Trading\RiskManager;
+use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -145,7 +146,13 @@ class RiskManagerTest extends TestCase
         $this->assertFalse($canOpenEth['allowed']);
         $this->assertStringContainsString('excluded', $canOpenEth['reason']);
 
+        TradingTargetManager::setActiveCoin('SUIUSDT');
         $canOpenSui = $riskManager->canOpenTrade($account, 'SUIUSDT', 95);
         $this->assertTrue($canOpenSui['allowed']);
+
+        // Non-target coin must be strictly blocked
+        $canOpenNear = $riskManager->canOpenTrade($account, 'NEARUSDT', 95);
+        $this->assertFalse($canOpenNear['allowed']);
+        $this->assertStringContainsString('Trading is strictly restricted', $canOpenNear['reason']);
     }
 }

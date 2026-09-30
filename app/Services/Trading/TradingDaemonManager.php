@@ -24,14 +24,19 @@ class TradingDaemonManager
 
     public const CACHE_REVIVE_LOCK = 'trading:daemon:revive_lock';
 
+    protected SignalAlgoTrader $signalAlgoTrader;
+
     public function __construct(
         protected MarketEngine $marketEngine,
         protected SignalEngine $signalEngine,
         protected SignalValidator $validator,
         protected DynamicTradeManager $tradeManager,
         protected OrderExecutor $executor,
-        protected ExchangePositionSync $exchangeSync
-    ) {}
+        protected ExchangePositionSync $exchangeSync,
+        ?SignalAlgoTrader $signalAlgoTrader = null
+    ) {
+        $this->signalAlgoTrader = $signalAlgoTrader ?? app(SignalAlgoTrader::class);
+    }
 
     /**
      * Get live status and diagnostics of the 24/7 autonomous trading daemon.
@@ -346,40 +351,26 @@ class TradingDaemonManager
             }
         }
 
-        // 2. Scan and execute if account is permitted
+        // 2. Focused Single-Coin SignalAlgo PRO Strategy Cycle (15m & 1h)
         $scannedCount = 0;
         $openedTrade = null;
+        $targetCoin = TradingTargetManager::getActiveCoin();
 
         if ($account->canTrade()) {
             try {
-                $btcBase = $this->marketEngine->getBtcBaseKlines();
-                $symbols = $this->marketEngine->getScannableSymbols();
-                $candidates = array_slice($symbols, 0, 15);
+                $algoRes = $this->signalAlgoTrader->runCycle($mode);
+                $scannedCount = 1;
 
-                foreach ($candidates as $sym) {
-                    $scannedCount++;
-                    try {
-                        $klines = $this->marketEngine->getMultiTimeframeKlines($sym);
-                        $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
-
-                        if ($eval !== null && $eval['score'] >= 80) {
-                            $ai = $this->validator->validate($eval, $klines['base']);
-
-                            if ($ai['approved']) {
-                                $execResult = $this->executor->executeSignal($eval, $ai, $mode);
-                                if ($execResult['status'] === 'opened') {
-                                    $openedTrade = "{$sym} {$eval['direction']} opened!";
-                                    Log::info("[AutonomousTrader] Order Executed: {$sym} {$eval['direction']} - {$execResult['message']}");
-                                    break;
-                                }
-                            }
-                        }
-                    } catch (Throwable) {
-                        // Skip individual symbol error
-                    }
+                if ($algoRes['action'] === 'OPEN_LONG' || $algoRes['action'] === 'OPEN_SHORT') {
+                    $openedTrade = "{$targetCoin} {$algoRes['action']} opened!";
+                    Log::info("[AutonomousTrader] Order Executed: {$targetCoin} - {$algoRes['message']}");
+                } elseif (str_starts_with($algoRes['action'], 'REVERSED_TO_')) {
+                    $openedTrade = "{$targetCoin} {$algoRes['action']} reversed!";
+                    $closedTrades[] = "{$targetCoin} reversed on chart signal";
+                    Log::info("[AutonomousTrader] Reversal Executed: {$targetCoin} - {$algoRes['message']}");
                 }
             } catch (Throwable $e) {
-                Log::error("[AutonomousTrader] Market scan error: {$e->getMessage()}");
+                Log::error("[AutonomousTrader] SignalAlgo cycle error on {$targetCoin}: {$e->getMessage()}");
             }
         }
 

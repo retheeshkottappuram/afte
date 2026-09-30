@@ -13,6 +13,16 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Targeted Single-Coin Trading Asset
+    |--------------------------------------------------------------------------
+    | The dedicated asset monitored continuously on 15m & 1h SignalAlgo PRO charts.
+    */
+    'symbol' => env('TRADING_SYMBOL', 'NEARUSDT'),
+    'active_coin' => env('TRADING_ACTIVE_COIN', 'NEARUSDT'),
+    'single_coin_strict' => (bool) env('TRADING_SINGLE_COIN_STRICT', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | PHP CLI Binary & Shared Hosting Controls
     |--------------------------------------------------------------------------
     */
@@ -186,7 +196,7 @@ return [
         'enabled' => (bool) env('TELEGRAM_NOTIFICATIONS_ENABLED', false),
         'bot_token' => env('TELEGRAM_BOT_TOKEN', ''),
         'chat_id' => env('TELEGRAM_CHAT_ID', ''),
-        'live_only' => (bool) env('TELEGRAM_LIVE_ONLY', true), // Only dispatch Telegram alerts for real live trading; suppress simulated paper trades
+        'live_only' => (bool) env('TELEGRAM_LIVE_ONLY', false), // Set to false so user receives Telegram alerts during both paper and live trading
     ],
 
     /*

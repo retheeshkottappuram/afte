@@ -363,6 +363,34 @@ class BinanceClient
     }
 
     /**
+     * Fetch live ticker price for a symbol.
+     */
+    public function tickerPrice(string $symbol): float
+    {
+        $symbol = strtoupper($symbol);
+        $url = $this->market === 'spot'
+            ? "{$this->baseUrl}/api/v3/ticker/price"
+            : "{$this->baseUrl}/fapi/v1/ticker/price";
+
+        try {
+            $response = Http::timeout(6)->acceptJson()->get($url, [
+                'symbol' => $symbol,
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                if (isset($data['price']) && is_numeric($data['price'])) {
+                    return (float) $data['price'];
+                }
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::debug("BinanceClient tickerPrice error for {$symbol}: {$e->getMessage()}");
+        }
+
+        return 0.0;
+    }
+
+    /**
      * Fetch exchange metadata (listing dates, symbols status, filters).
      *
      * @return array<string, array{status: string, onboardDate: int}>
