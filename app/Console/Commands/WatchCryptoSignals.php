@@ -10,6 +10,8 @@ use App\Services\Crypto\SignalEngine;
 use App\Services\Crypto\SignalRecorder;
 use App\Services\Crypto\TelegramNotifier;
 use App\Services\Crypto\TimingGuard;
+use App\Services\Trading\RiskManager;
+use App\Services\Trading\SignalAlgoTrader;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
@@ -339,6 +341,66 @@ class WatchCryptoSignals extends Command
                                 if ($syncResult['telegram_sent']) {
                                     $totalAlertsSent++;
                                     $this->info("  🚀 [TELEGRAM ALERT SENT] {$symbol} {$interval} Candle Close Signal Dispatched!");
+                                }
+
+                                // Automated Trade Execution: Immediately place trade if fresh SignalAlgo Pro signal marker detected (Score >= 80)
+                                $latestMarker = end($markers);
+                                if ($latestMarker && ((int) ($latestMarker['score'] ?? 0)) >= 80) {
+                                    $markerTime = (int) ($latestMarker['time'] ?? 0);
+                                    $candleAgeSeconds = now()->timestamp - $markerTime;
+                                    $maxFreshnessSeconds = match ($interval) {
+                                        '1m' => 180,
+                                        '3m' => 450,
+                                        '5m' => 750,
+                                        '15m' => 2200,
+                                        '30m' => 4500,
+                                        '1h' => 9000,
+                                        default => 3600,
+                                    };
+
+                                    if ($candleAgeSeconds >= -60 && $candleAgeSeconds <= $maxFreshnessSeconds) {
+                                        $entryPrice = (float) ($latestMarker['entry'] ?? 0.0);
+                                        $direction = strtoupper((string) ($latestMarker['side'] ?? 'BUY')) === 'BUY' ? 'LONG' : 'SHORT';
+                                        $rawSl = (float) ($latestMarker['sl'] ?? 0.0);
+                                        $exactSl = $rawSl > 0
+                                            ? $rawSl
+                                            : app(RiskManager::class)->calculateAssetProtectionStopLoss($direction, $entryPrice, null);
+
+                                        $chartSignal = [
+                                            'symbol' => $symbol,
+                                            'interval' => $interval,
+                                            'side' => strtoupper((string) ($latestMarker['side'] ?? 'BUY')),
+                                            'direction' => $direction,
+                                            'score' => (int) ($latestMarker['score'] ?? 80),
+                                            'grade' => (string) ($latestMarker['grade'] ?? 'A'),
+                                            'price' => $entryPrice,
+                                            'initial_sl' => $exactSl,
+                                            'tp1' => (float) ($latestMarker['tp1'] ?? 0.0),
+                                            'tp2' => (float) ($latestMarker['tp2'] ?? 0.0),
+                                            'tp3' => (float) ($latestMarker['tp3'] ?? 0.0),
+                                            'risk_reward' => (string) ($latestMarker['risk_reward'] ?? '1 : 2.8'),
+                                            'marker_time' => $markerTime,
+                                            'setup_type' => (string) ($latestMarker['setup_type'] ?? 'BREAKOUT_CONFIRMED'),
+                                            'setup_label' => (string) ($latestMarker['setup_label'] ?? 'SIGNALALGO PRO SIGNAL'),
+                                            'indicators' => [
+                                                'rsi' => $latestMarker['rsi'] ?? 50,
+                                                'adx' => $latestMarker['adx'] ?? 20,
+                                                'atr_pct' => $latestMarker['atr_pct'] ?? 1.5,
+                                                'volume_ratio' => $latestMarker['volume_ratio'] ?? 1.0,
+                                                'rs_ratio' => $latestMarker['rs_ratio'] ?? 1.0,
+                                            ],
+                                            'raw_marker' => $latestMarker,
+                                        ];
+
+                                        try {
+                                            $autoOrderResult = app(SignalAlgoTrader::class)->processSignalForExecution($symbol, $chartSignal);
+                                            if (in_array($autoOrderResult['status'] ?? '', ['opened', 'reversed'], true)) {
+                                                $this->info("  ⚡ [AUTO-TRADE EXECUTED] {$autoOrderResult['message']}");
+                                            }
+                                        } catch (Throwable $tradeEx) {
+                                            Log::warning("WatchCryptoSignals auto-order notice for {$symbol}: {$tradeEx->getMessage()}");
+                                        }
+                                    }
                                 }
                             }
                         } catch (Throwable $e) {

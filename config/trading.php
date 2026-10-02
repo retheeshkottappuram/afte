@@ -61,8 +61,8 @@ return [
             'default_leverage' => 10,
             'max_risk_pct' => 5.0,
             'min_score' => 80,
-            'max_coin_price' => 15.0,
-            'exclude_symbols' => ['BTCUSDT', 'ETHUSDT'],
+            'max_coin_price' => 100000.0,
+            'exclude_symbols' => [],
         ],
         // Stage 2: Acceleration ($25 to $100)
         'stage_2' => [

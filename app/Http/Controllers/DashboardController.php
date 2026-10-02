@@ -15,6 +15,7 @@ use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\MarketEngine;
 use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\RiskManager;
+use App\Services\Trading\SignalAlgoTrader;
 use App\Services\Trading\SignalEngine;
 use App\Services\Trading\TradingDaemonManager;
 use App\Services\Trading\TradingTargetManager;
@@ -555,46 +556,31 @@ class DashboardController extends Controller
         }
 
         try {
-            $btcBase = $this->marketEngine->getBtcBaseKlines();
-            $klines = $this->marketEngine->getMultiTimeframeKlines($symbol);
-            $eval = $this->signalEngine->evaluate($symbol, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
+            // Strictly enforce that trades are placed ONLY on verified SignalAlgo PRO chart signals
+            /** @var SignalAlgoTrader $algoTrader */
+            $algoTrader = app(SignalAlgoTrader::class);
+            $freshSignal = $algoTrader->detectSignalOnChart($symbol);
 
-            if ($eval === null) {
-                $currentPrice = $this->client->forMode($mode)->getMarkPrice($symbol);
-                $slPct = (float) config('trading.risk.default_sl_pct', 1.5) / 100.0;
-                $tp1Pct = (float) config('trading.risk.default_tp1_pct', 2.0) / 100.0;
-                $tp2Pct = (float) config('trading.risk.default_tp2_pct', 4.0) / 100.0;
-
-                $eval = [
-                    'symbol' => $symbol,
-                    'direction' => $direction,
-                    'price' => $currentPrice,
-                    'initial_sl' => $direction === 'LONG' ? round($currentPrice * (1.0 - $slPct), 6) : round($currentPrice * (1.0 + $slPct), 6),
-                    'tp1' => $direction === 'LONG' ? round($currentPrice * (1.0 + $tp1Pct), 6) : round($currentPrice * (1.0 - $tp1Pct), 6),
-                    'tp2' => $direction === 'LONG' ? round($currentPrice * (1.0 + $tp2Pct), 6) : round($currentPrice * (1.0 - $tp2Pct), 6),
-                    'score' => 88,
-                    'grade' => 'A',
-                    'setup' => 'MANUAL_RADAR_TRIGGER',
-                    'indicators' => [],
-                ];
-                $ai = [
-                    'approved' => true,
-                    'confidence' => 88,
-                    'regime' => 'MANUAL_RADAR_TRIGGER',
-                    'reason' => 'Executed manually from Breakout Scanner Radar with institutional risk parameters.',
-                ];
-            } else {
-                $eval['direction'] = $direction;
-                $ai = $this->validator->validate($eval, $klines['base']);
-                $ai['approved'] = true;
+            if ($freshSignal === null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Trade rejected: No active SignalAlgo Pro signal found on {$symbol}. Trades can only be placed when a confirmed SignalAlgo Pro chart signal appears.",
+                ], 422);
             }
 
-            $execResult = $this->executor->executeSignal($eval, $ai, $mode, true);
+            if ($freshSignal['direction'] !== $direction) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Direction mismatch: SignalAlgo Pro chart signal on {$symbol} is {$freshSignal['direction']} (Score: {$freshSignal['score']}), but {$direction} was requested.",
+                ], 422);
+            }
 
-            if ($execResult['status'] === 'opened' || $execResult['status'] === 'executed') {
+            $execResult = $algoTrader->processSignalForExecution($symbol, $freshSignal, $mode);
+
+            if (($execResult['status'] ?? '') === 'opened' || ($execResult['status'] ?? '') === 'reversed') {
                 return response()->json([
                     'success' => true,
-                    'message' => "Successfully opened {$symbol} {$direction}! Order active on ".strtoupper($mode).' mode.',
+                    'message' => $execResult['message'],
                     'trade' => $execResult['trade'],
                 ]);
             }

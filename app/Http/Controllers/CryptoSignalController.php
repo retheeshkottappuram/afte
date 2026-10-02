@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Console\Commands\CheckCryptoSignals;
 use App\Models\CryptoSignal;
+use App\Models\Trade;
 use App\Models\User;
 use App\Services\Crypto\BinanceClient;
 use App\Services\Crypto\SignalEngine;
@@ -228,11 +229,10 @@ class CryptoSignalController extends Controller
                 if ($candleAgeSeconds >= -60 && $candleAgeSeconds <= $maxFreshnessSeconds) {
                     $entryPrice = (float) ($lastMarker['entry'] ?? $lastClose);
                     $direction = strtoupper((string) ($lastMarker['side'] ?? 'BUY')) === 'BUY' ? 'LONG' : 'SHORT';
-                    $sanitizedSl = app(RiskManager::class)->calculateAssetProtectionStopLoss(
-                        $direction,
-                        $entryPrice,
-                        (float) ($lastMarker['sl'] ?? 0.0)
-                    );
+                    $rawSl = (float) ($lastMarker['sl'] ?? 0.0);
+                    $exactSl = $rawSl > 0
+                        ? $rawSl
+                        : app(RiskManager::class)->calculateAssetProtectionStopLoss($direction, $entryPrice, null);
 
                     $chartSignal = [
                         'symbol' => $symbol,
@@ -242,7 +242,7 @@ class CryptoSignalController extends Controller
                         'score' => (int) ($lastMarker['score'] ?? 80),
                         'grade' => (string) ($lastMarker['grade'] ?? 'A'),
                         'price' => $entryPrice,
-                        'initial_sl' => $sanitizedSl,
+                        'initial_sl' => $exactSl,
                         'tp1' => (float) ($lastMarker['tp1'] ?? 0.0),
                         'tp2' => (float) ($lastMarker['tp2'] ?? 0.0),
                         'tp3' => (float) ($lastMarker['tp3'] ?? 0.0),
@@ -268,10 +268,36 @@ class CryptoSignalController extends Controller
                 }
             }
 
+            $mode = (string) (session('trading_mode') ?? request()->cookie('afte_trading_mode') ?? config('trading.mode', 'live'));
+            if (! in_array($mode, ['paper', 'live'], true)) {
+                $mode = 'live';
+            }
+
+            $activeTrade = Trade::where('mode', $mode)
+                ->where('symbol', $symbol)
+                ->where('status', 'OPEN')
+                ->first();
+
             return response()->json([
                 'success' => true,
                 'symbol' => $symbol,
                 'tv_symbol' => 'BINANCE:'.$symbol.'.P',
+                'active_trade' => $activeTrade ? [
+                    'id' => $activeTrade->id,
+                    'symbol' => $activeTrade->symbol,
+                    'side' => $activeTrade->side,
+                    'entry_price' => (float) $activeTrade->entry_price,
+                    'current_sl' => (float) $activeTrade->current_sl,
+                    'tp1_price' => (float) $activeTrade->tp1_price,
+                    'tp2_price' => (float) $activeTrade->tp2_price,
+                    'margin_used' => (float) $activeTrade->margin_used,
+                    'leverage' => $activeTrade->leverage,
+                    'setup_tag' => $activeTrade->setup_tag,
+                    'pnl_percent' => (float) $activeTrade->pnl_percent,
+                    'mode' => $activeTrade->mode,
+                    'opened_at' => $activeTrade->opened_at?->toIso8601String(),
+                    'meta' => $activeTrade->meta,
+                ] : null,
                 'market' => $binanceClient->getMarketLabel(),
                 'price' => $lastClose,
                 'interval' => $interval,

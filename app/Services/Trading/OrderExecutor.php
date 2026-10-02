@@ -52,12 +52,10 @@ class OrderExecutor
         $entryPrice = (float) $signal['price'];
         $direction = strtoupper((string) ($signal['direction'] ?? ($signal['side'] === 'BUY' ? 'LONG' : 'SHORT')));
 
-        // Ensure proper Stop Loss for Asset Protection (strictly bounded 0.8% - 1.6%)
-        $initialSl = $this->riskManager->calculateAssetProtectionStopLoss(
-            $direction,
-            $entryPrice,
-            isset($signal['initial_sl']) ? (float) $signal['initial_sl'] : null
-        );
+        // Replicate exact Stop Loss from SignalAlgo Pro chart signal or compute asset protection
+        $initialSl = (isset($signal['initial_sl']) && (float) $signal['initial_sl'] > 0)
+            ? (float) $signal['initial_sl']
+            : $this->riskManager->calculateAssetProtectionStopLoss($direction, $entryPrice, null);
         $signal['initial_sl'] = $initialSl;
 
         // Align Take Profit levels if missing or compressed

@@ -475,13 +475,11 @@ class SignalAlgoTrader
                     $direction = $markerSide === 'BUY' ? 'LONG' : 'SHORT';
                     $rawSl = (float) ($latestMarker['sl'] ?? 0.0);
 
-                    // Guarantee proper Stop Loss for Asset Protection (tightly bounded 0.80% - 1.60%)
-                    $sanitizedSl = $this->riskManager->calculateAssetProtectionStopLoss(
-                        $direction,
-                        $entryPrice,
-                        $rawSl > 0 ? $rawSl : null
-                    );
-                    $riskDist = abs($entryPrice - $sanitizedSl);
+                    // Replicate the exact Stop Loss displayed on the SignalAlgo Pro chart marker
+                    $exactSl = $rawSl > 0
+                        ? $rawSl
+                        : $this->riskManager->calculateAssetProtectionStopLoss($direction, $entryPrice, null);
+                    $riskDist = abs($entryPrice - $exactSl);
 
                     $tp1 = (float) ($latestMarker['tp1'] ?? 0.0);
                     if ($tp1 <= 0) {
@@ -504,7 +502,7 @@ class SignalAlgoTrader
                         'score' => $markerScore,
                         'grade' => (string) ($latestMarker['grade'] ?? 'A'),
                         'price' => $entryPrice,
-                        'initial_sl' => $sanitizedSl,
+                        'initial_sl' => $exactSl,
                         'tp1' => $tp1,
                         'tp2' => $tp2,
                         'tp3' => $tp3,

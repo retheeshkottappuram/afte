@@ -718,6 +718,25 @@
                 </div>
             </div>
 
+            <!-- Floating SignalAlgo PRO Active Position HUD (Visible when an automated trade is running on this chart) -->
+            <div id="chartActivePositionHud" class="hidden absolute top-14 left-4 z-20 pointer-events-auto flex items-center space-x-3 bg-slate-950/95 backdrop-blur-md px-3.5 py-2 rounded-xl border border-emerald-500/40 text-xs shadow-2xl transition-all duration-300">
+                <div class="flex items-center space-x-2">
+                    <span id="posHudDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+                    <span id="posHudDirection" class="font-black text-xs font-mono text-emerald-400">LONG</span>
+                </div>
+                <div class="h-4 w-px bg-slate-800"></div>
+                <div class="text-[11px] font-mono space-x-2 text-slate-300">
+                    <span>Entry: <strong id="posHudEntry" class="text-white font-bold">$0.00</strong></span>
+                    <span>SL: <strong id="posHudSl" class="text-rose-400 font-bold">$0.00</strong></span>
+                    <span>TP1: <strong id="posHudTp1" class="text-emerald-400 font-bold">$0.00</strong></span>
+                    <span>PnL: <strong id="posHudPnl" class="font-bold text-emerald-400">+0.00%</strong></span>
+                </div>
+                <div class="h-4 w-px bg-slate-800"></div>
+                <div class="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-bold">
+                    SignalAlgo PRO Position
+                </div>
+            </div>
+
             <!-- 1. SignalAlgo PRO Native Canvas Chart (Active by default) -->
             <div id="signalalgo_canvas_chart" class="w-full h-full"></div>
 
@@ -1320,10 +1339,12 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
             updateTooltip(param);
         });
 
-        // Click to inspect historical signal levels on chart or restore verified active signal
+        // Click to inspect historical signal levels on chart or restore verified active signal / position
         chart.subscribeClick(param => {
             if (!param || !param.time) {
-                if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
+                if (window.activePositionTrade) {
+                    renderTradeLevels(window.activePositionTrade);
+                } else if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
                     renderTradeLevels(activeInstitutionalSignal);
                 } else {
                     clearTradeLevels();
@@ -1337,8 +1358,10 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                     return;
                 }
             }
-            // Clicked empty bar / whitespace - restore verified active signal or clear
-            if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
+            // Clicked empty bar / whitespace - restore live active trade or verified active signal or clear
+            if (window.activePositionTrade) {
+                renderTradeLevels(window.activePositionTrade);
+            } else if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
                 renderTradeLevels(activeInstitutionalSignal);
             } else {
                 clearTradeLevels();
@@ -1378,23 +1401,25 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         clearTradeLevels();
         if (!setup || !candleSeries || typeof LightweightCharts === 'undefined') return;
 
-        const entry = Number(setup.entry);
-        const sl = Number(setup.sl);
-        const tp1 = Number(setup.tp1);
-        const tp2 = Number(setup.tp2);
-        const tp3 = Number(setup.tp3);
-        const side = (setup.side || 'BUY').toUpperCase();
+        const entry = Number(setup.entry || setup.entry_price || 0);
+        const sl = Number(setup.sl || setup.current_sl || setup.initial_sl || 0);
+        const tp1 = Number(setup.tp1 || setup.tp1_price || 0);
+        const tp2 = Number(setup.tp2 || setup.tp2_price || 0);
+        const tp3 = Number(setup.tp3 || setup.tp3_price || 0);
+        const rawSide = String(setup.side || (setup.direction === 'LONG' ? 'BUY' : 'SELL') || 'BUY').toUpperCase();
+        const isLong = rawSide === 'LONG' || rawSide === 'BUY';
+        const isLiveTrade = Boolean(setup.is_live_position || setup.id);
 
         const fmtP = (p) => p < 1 ? p.toFixed(5) : p.toFixed(2);
 
         if (entry > 0) {
             entryLine = candleSeries.createPriceLine({
                 price: entry,
-                color: '#06b6d4',
+                color: isLiveTrade ? '#38bdf8' : '#06b6d4',
                 lineWidth: 2,
-                lineStyle: 2, // Dashed
+                lineStyle: isLiveTrade ? 0 : 2, // Solid for active position, dashed for signal
                 axisLabelVisible: true,
-                title: `ENTRY (${side}): $${fmtP(entry)}`,
+                title: `${isLiveTrade ? '⚡ ACTIVE POSITION' : 'ENTRY'} (${isLong ? 'LONG' : 'SHORT'}): $${fmtP(entry)}`,
             });
         }
 
@@ -1405,7 +1430,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                 lineWidth: 2,
                 lineStyle: 1, // Dotted
                 axisLabelVisible: true,
-                title: `SL: $${fmtP(sl)}`,
+                title: `${isLiveTrade ? '🛡️ LIVE SL' : 'SL'}: $${fmtP(sl)}`,
             });
         }
 
@@ -1574,13 +1599,45 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
 
                     chart.timeScale().fitContent();
 
-                    // Render trade levels ONLY if an institutional setup is genuinely active and verified.
-                    // Never render artificial or expired setup lines on the chart!
-                    activeInstitutionalSignal = data.signal;
-                    if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
-                        renderTradeLevels(activeInstitutionalSignal);
+                    // Store active position on window for click-restores and tooltips
+                    window.activePositionTrade = data.active_trade ? Object.assign({}, data.active_trade, { is_live_position: true }) : null;
+                    const posHud = document.getElementById('chartActivePositionHud');
+
+                    if (window.activePositionTrade) {
+                        renderTradeLevels(window.activePositionTrade);
+                        if (posHud) {
+                            posHud.classList.remove('hidden');
+                            const isLong = window.activePositionTrade.side === 'LONG';
+                            const dotEl = document.getElementById('posHudDot');
+                            const dirEl = document.getElementById('posHudDirection');
+                            const pnlEl = document.getElementById('posHudPnl');
+                            const pnl = Number(window.activePositionTrade.pnl_percent || 0);
+
+                            if (dotEl) dotEl.className = `w-2.5 h-2.5 rounded-full ${isLong ? 'bg-emerald-400' : 'bg-rose-400'} animate-ping`;
+                            if (dirEl) {
+                                dirEl.className = `font-black text-xs font-mono ${isLong ? 'text-emerald-400' : 'text-rose-400'}`;
+                                dirEl.textContent = `ACTIVE ${window.activePositionTrade.side}`;
+                            }
+                            const fmtH = (val) => val ? (Number(val) < 1 ? Number(val).toFixed(5) : Number(val).toFixed(2)) : '--';
+                            document.getElementById('posHudEntry').textContent = '$' + fmtH(window.activePositionTrade.entry_price);
+                            document.getElementById('posHudSl').textContent = '$' + fmtH(window.activePositionTrade.current_sl);
+                            document.getElementById('posHudTp1').textContent = '$' + fmtH(window.activePositionTrade.tp1_price);
+                            if (pnlEl) {
+                                pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
+                                pnlEl.className = `font-bold ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+                            }
+                        }
                     } else {
-                        clearTradeLevels();
+                        if (posHud) posHud.classList.add('hidden');
+
+                        // Render trade levels ONLY if an institutional setup is genuinely active and verified.
+                        // Never render artificial or expired setup lines on the chart!
+                        activeInstitutionalSignal = data.signal;
+                        if (activeInstitutionalSignal && (activeInstitutionalSignal.entry || activeInstitutionalSignal.sl)) {
+                            renderTradeLevels(activeInstitutionalSignal);
+                        } else {
+                            clearTradeLevels();
+                        }
                     }
                 }
 
@@ -1593,6 +1650,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                 const diag = data.diagnostics || {};
                 const perp = data.perpetual_options || {};
                 const btcMacro = data.btc_macro || {};
+                const activeTrade = data.active_trade;
 
                 // Update BTC Macro Indicator
                 const btcMacroEl = document.getElementById('hud-btc-macro');
@@ -1607,22 +1665,105 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                 // Update Setup Type
                 const setupTypeEl = document.getElementById('hud-setup-type');
                 if (setupTypeEl) {
-                    if (sig && sig.setup_type) {
+                    if (activeTrade) {
+                        const isLong = activeTrade.side === 'LONG';
+                        setupTypeEl.innerHTML = `Setup: <strong class="${isLong ? 'text-emerald-400' : 'text-rose-400'} font-bold">SIGNALALGO PRO (${activeTrade.side} POSITION)</strong>`;
+                    } else if (sig && sig.setup_type) {
                         setupTypeEl.innerHTML = `Setup: <strong class="text-emerald-400 font-bold">${sig.setup_type}</strong>`;
                     } else {
-                        setupTypeEl.innerHTML = 'Setup: <strong class="text-slate-500">STANDBY</strong>';
+                        setupTypeEl.innerHTML = 'Setup: <strong class="text-slate-500">STANDBY (NO TRADE)</strong>';
                     }
                 }
 
-                // Update Signal Badge
-                if (sig && sig.side === 'BUY') {
+                const fmt = (val) => val ? (Number(val) < 1 ? Number(val).toFixed(6) : Number(val).toFixed(4)) : '--';
+
+                // Update Signal Badge & Perpetual Trade Options
+                const hudLeverage = document.getElementById('hud-leverage');
+                const hudRr = document.getElementById('hud-rr');
+                const scoreLabel = document.getElementById('hud-score-label');
+
+                if (activeTrade) {
+                    const isLong = activeTrade.side === 'LONG';
+                    const pnl = Number(activeTrade.pnl_percent || 0);
+                    const pnlColor = pnl >= 0 ? 'text-emerald-300' : 'text-rose-300';
+                    const pnlStr = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
+                    const badgeClass = isLong
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm shadow-emerald-500/20'
+                        : 'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-sm shadow-rose-500/20';
+
+                    if (badge) {
+                        badge.className = `px-2.5 py-1 rounded-lg text-xs font-black tracking-wide border flex items-center space-x-1.5 ${badgeClass}`;
+                        badge.innerHTML = `<span class="w-2 h-2 rounded-full ${isLong ? 'bg-emerald-400' : 'bg-rose-400'} animate-ping"></span><span>⚡ ACTIVE ${activeTrade.side} @ $${fmt(activeTrade.entry_price)} | SL: $${fmt(activeTrade.current_sl)} | PnL: <span class="${pnlColor}">${pnlStr}</span></span>`;
+                    }
+
+                    if (scoreLabel) {
+                        const trScore = activeTrade.meta?.score || 94;
+                        scoreLabel.textContent = `Score: ${trScore}/100 [SignalAlgo PRO Executed]`;
+                        scoreLabel.className = 'text-emerald-400 font-bold';
+                    }
+
+                    if (hudLeverage) hudLeverage.textContent = `${activeTrade.leverage || 10}x Isolated`;
+                    if (hudRr) hudRr.textContent = '1 : 2.8';
+
+                    document.getElementById('hud-entry').textContent = fmt(activeTrade.entry_price);
+                    document.getElementById('hud-sl').textContent = fmt(activeTrade.current_sl);
+                    document.getElementById('hud-tp1').textContent = fmt(activeTrade.tp1_price);
+                    document.getElementById('hud-tp2').textContent = fmt(activeTrade.tp2_price);
+                    document.getElementById('hud-tp3').textContent = activeTrade.tp2_price ? fmt(activeTrade.tp2_price * 1.015) : '--';
+                } else if (sig && sig.side === 'BUY') {
                     const activeTag = sig.is_active_trade ? ' (ACTIVE SETUP)' : '';
                     badge.className = 'px-2.5 py-1 rounded-lg text-xs font-black tracking-wide bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/20 flex items-center space-x-1.5';
                     badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span><span>🟢 STRONG BUY / LONG${activeTag} (SCORE ${sig.score})</span>`;
+
+                    if (scoreLabel) {
+                        scoreLabel.textContent = `Score: ${sig.score}/100 [Grade ${sig.grade || 'A'}]`;
+                        scoreLabel.className = 'text-emerald-400 font-bold';
+                    }
+
+                    if (hudLeverage) hudLeverage.textContent = perp.recommended_leverage || '5x - 10x';
+                    if (hudRr) hudRr.textContent = perp.risk_reward || '1 : 2.8';
+
+                    const entryVal = sig.entry;
+                    document.getElementById('hud-entry').textContent = fmt(entryVal);
+                    const slVal = sig.sl;
+                    const slPct = perp.sl_pct ? `(-${perp.sl_pct}%)` : (entryVal > 0 && slVal > 0 ? `(-${Math.abs((entryVal - slVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-sl').textContent = fmt(slVal) + (slPct ? ' ' + slPct : '');
+                    const tp1Val = sig.tp1;
+                    const tp1Pct = perp.tp1_pct ? `(+${perp.tp1_pct}%)` : (entryVal > 0 && tp1Val > 0 ? `(+${Math.abs((tp1Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp1').textContent = fmt(tp1Val) + (tp1Pct ? ' ' + tp1Pct : '');
+                    const tp2Val = sig.tp2;
+                    const tp2Pct = perp.tp2_pct ? `(+${perp.tp2_pct}%)` : (entryVal > 0 && tp2Val > 0 ? `(+${Math.abs((tp2Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp2').textContent = fmt(tp2Val) + (tp2Pct ? ' ' + tp2Pct : '');
+                    const tp3Val = sig.tp3;
+                    const tp3Pct = perp.tp3_pct ? `(+${perp.tp3_pct}%)` : (entryVal > 0 && tp3Val > 0 ? `(+${Math.abs((tp3Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp3').textContent = fmt(tp3Val) + (tp3Pct ? ' ' + tp3Pct : '');
                 } else if (sig && sig.side === 'SELL') {
                     const activeTag = sig.is_active_trade ? ' (ACTIVE SETUP)' : '';
                     badge.className = 'px-2.5 py-1 rounded-lg text-xs font-black tracking-wide bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm shadow-rose-500/20 flex items-center space-x-1.5';
                     badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span><span>🔴 STRONG SELL / SHORT${activeTag} (SCORE ${sig.score})</span>`;
+
+                    if (scoreLabel) {
+                        scoreLabel.textContent = `Score: ${sig.score}/100 [Grade ${sig.grade || 'A'}]`;
+                        scoreLabel.className = 'text-emerald-400 font-bold';
+                    }
+
+                    if (hudLeverage) hudLeverage.textContent = perp.recommended_leverage || '5x - 10x';
+                    if (hudRr) hudRr.textContent = perp.risk_reward || '1 : 2.8';
+
+                    const entryVal = sig.entry;
+                    document.getElementById('hud-entry').textContent = fmt(entryVal);
+                    const slVal = sig.sl;
+                    const slPct = perp.sl_pct ? `(-${perp.sl_pct}%)` : (entryVal > 0 && slVal > 0 ? `(-${Math.abs((entryVal - slVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-sl').textContent = fmt(slVal) + (slPct ? ' ' + slPct : '');
+                    const tp1Val = sig.tp1;
+                    const tp1Pct = perp.tp1_pct ? `(+${perp.tp1_pct}%)` : (entryVal > 0 && tp1Val > 0 ? `(+${Math.abs((tp1Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp1').textContent = fmt(tp1Val) + (tp1Pct ? ' ' + tp1Pct : '');
+                    const tp2Val = sig.tp2;
+                    const tp2Pct = perp.tp2_pct ? `(+${perp.tp2_pct}%)` : (entryVal > 0 && tp2Val > 0 ? `(+${Math.abs((tp2Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp2').textContent = fmt(tp2Val) + (tp2Pct ? ' ' + tp2Pct : '');
+                    const tp3Val = sig.tp3;
+                    const tp3Pct = perp.tp3_pct ? `(+${perp.tp3_pct}%)` : (entryVal > 0 && tp3Val > 0 ? `(+${Math.abs((tp3Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
+                    document.getElementById('hud-tp3').textContent = fmt(tp3Val) + (tp3Pct ? ' ' + tp3Pct : '');
                 } else {
                     const buyScore = diag.buy_score || 0;
                     const sellScore = diag.sell_score || 0;
@@ -1633,56 +1774,18 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                         badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400"></span><span>🛡️ BLOCKED (COUNTER BTC ${btcMacro.trend || 'MACRO'})</span>`;
                     } else {
                         badge.className = 'px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide bg-slate-800 text-slate-300 border border-slate-700 flex items-center space-x-1.5';
-                        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span><span>⚪ STANDBY (NO INSTITUTIONAL SETUP)</span>`;
+                        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span><span>⚪ STANDBY (MONITORING 15m/1h CHARTS - NO TRADE)</span>`;
                     }
-                }
 
-                // Update Score Label
-                const scoreLabel = document.getElementById('hud-score-label');
-                if (scoreLabel) {
-                    if (sig) {
-                        scoreLabel.textContent = `Score: ${sig.score}/100 [Grade ${sig.grade || 'A'}]`;
-                        scoreLabel.className = 'text-emerald-400 font-bold';
-                    } else {
+                    if (scoreLabel) {
                         const rawScore = Math.max(diag.buy_score || 0, diag.sell_score || 0);
-                        scoreLabel.textContent = `Score: ${rawScore}/100 (Threshold: 82)`;
-                        scoreLabel.className = rawScore >= 82 ? 'text-amber-400 font-bold' : 'text-slate-400 font-bold';
+                        scoreLabel.textContent = `Score: ${rawScore}/100 (Threshold: 80)`;
+                        scoreLabel.className = rawScore >= 80 ? 'text-amber-400 font-bold' : 'text-slate-400 font-bold';
                     }
-                }
 
-                // Update Perpetual Trade Options
-                const hudLeverage = document.getElementById('hud-leverage');
-                const hudRr = document.getElementById('hud-rr');
-                if (sig && perp && perp.recommended_leverage) {
-                    if (hudLeverage) hudLeverage.textContent = perp.recommended_leverage;
-                    if (hudRr) hudRr.textContent = perp.risk_reward || '1 : 2.0';
-                } else {
                     if (hudLeverage) hudLeverage.textContent = 'Standby';
                     if (hudRr) hudRr.textContent = '--';
-                }
 
-                const fmt = (val) => val ? (Number(val) < 1 ? Number(val).toFixed(6) : Number(val).toFixed(4)) : '--';
-
-                if (sig && sig.entry) {
-                    const entryVal = sig.entry;
-                    document.getElementById('hud-entry').textContent = fmt(entryVal);
-
-                    const slVal = sig.sl;
-                    const slPct = perp.sl_pct ? `(-${perp.sl_pct}%)` : (entryVal > 0 && slVal > 0 ? `(-${Math.abs((entryVal - slVal) / entryVal * 100).toFixed(2)}%)` : '');
-                    document.getElementById('hud-sl').textContent = fmt(slVal) + (slPct ? ' ' + slPct : '');
-
-                    const tp1Val = sig.tp1;
-                    const tp1Pct = perp.tp1_pct ? `(+${perp.tp1_pct}%)` : (entryVal > 0 && tp1Val > 0 ? `(+${Math.abs((tp1Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
-                    document.getElementById('hud-tp1').textContent = fmt(tp1Val) + (tp1Pct ? ' ' + tp1Pct : '');
-
-                    const tp2Val = sig.tp2;
-                    const tp2Pct = perp.tp2_pct ? `(+${perp.tp2_pct}%)` : (entryVal > 0 && tp2Val > 0 ? `(+${Math.abs((tp2Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
-                    document.getElementById('hud-tp2').textContent = fmt(tp2Val) + (tp2Pct ? ' ' + tp2Pct : '');
-
-                    const tp3Val = sig.tp3;
-                    const tp3Pct = perp.tp3_pct ? `(+${perp.tp3_pct}%)` : (entryVal > 0 && tp3Val > 0 ? `(+${Math.abs((tp3Val - entryVal) / entryVal * 100).toFixed(2)}%)` : '');
-                    document.getElementById('hud-tp3').textContent = fmt(tp3Val) + (tp3Pct ? ' ' + tp3Pct : '');
-                } else {
                     document.getElementById('hud-entry').textContent = '--';
                     document.getElementById('hud-sl').textContent = '--';
                     document.getElementById('hud-tp1').textContent = '--';

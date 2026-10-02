@@ -519,8 +519,8 @@ class SignalEngine
         // Guaranteed >= 10% Profit Target on $100 (10x Leverage)
         // ==========================================
         $entry = $close;
-        $minSlDist = $entry * 0.0075;
-        $maxSlDist = $entry * 0.0135;
+        $minSlDist = $entry * 0.0080;
+        $maxSlDist = $entry * 0.0160;
         $rawRisk = abs($entry - $rawSl);
         $risk = max($minSlDist, min($maxSlDist, $rawRisk));
 
@@ -989,8 +989,8 @@ class SignalEngine
                     }
 
                     if ($canTrade) {
-                        $minRisk = $curClose * 0.0075;
-                        $maxRisk = $curClose * 0.0135;
+                        $minRisk = $curClose * 0.0080;
+                        $maxRisk = $curClose * 0.0160;
                         $calcRisk = max($minRisk, min($maxRisk, abs($curClose - $histRawSl)));
 
                         $sl = $histSide === 'BUY' ? round($curClose - $calcRisk, 4) : round($curClose + $calcRisk, 4);
