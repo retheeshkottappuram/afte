@@ -11,10 +11,10 @@ class TradingTargetManager
 
     public const CACHE_MONITORED_KEY = 'trading:monitored_coins';
 
-    public const DEFAULT_COIN = 'NEARUSDT';
+    public const DEFAULT_COIN = 'BTCUSDT';
 
     /**
-     * Default list of at least 5 high-liquidity coins to continuously monitor.
+     * Default list of top profitable, high-momentum coins to continuously monitor.
      *
      * @var array<int, string>
      */
@@ -22,10 +22,15 @@ class TradingTargetManager
         'BTCUSDT',
         'ETHUSDT',
         'SOLUSDT',
-        'BNBUSDT',
+        'SUIUSDT',
         'NEARUSDT',
-        'XRPUSDT',
+        '1000PEPEUSDT',
         'DOGEUSDT',
+        'AVAXUSDT',
+        'BNBUSDT',
+        'XRPUSDT',
+        'LINKUSDT',
+        'FETUSDT',
     ];
 
     /**
@@ -37,14 +42,18 @@ class TradingTargetManager
         ['symbol' => 'BTCUSDT', 'base' => 'BTC', 'name' => 'Bitcoin'],
         ['symbol' => 'ETHUSDT', 'base' => 'ETH', 'name' => 'Ethereum'],
         ['symbol' => 'SOLUSDT', 'base' => 'SOL', 'name' => 'Solana'],
-        ['symbol' => 'BNBUSDT', 'base' => 'BNB', 'name' => 'Binance Coin'],
-        ['symbol' => 'NEARUSDT', 'base' => 'NEAR', 'name' => 'NEAR Protocol'],
-        ['symbol' => 'XRPUSDT', 'base' => 'XRP', 'name' => 'Ripple (XRP)'],
-        ['symbol' => 'DOGEUSDT', 'base' => 'DOGE', 'name' => 'Dogecoin'],
         ['symbol' => 'SUIUSDT', 'base' => 'SUI', 'name' => 'Sui'],
-        ['symbol' => 'AVAXUSDT', 'base' => 'AVAX', 'name' => 'Avalanche'],
+        ['symbol' => 'NEARUSDT', 'base' => 'NEAR', 'name' => 'NEAR Protocol'],
         ['symbol' => '1000PEPEUSDT', 'base' => '1000PEPE', 'name' => 'Pepe 1000'],
+        ['symbol' => 'DOGEUSDT', 'base' => 'DOGE', 'name' => 'Dogecoin'],
+        ['symbol' => 'AVAXUSDT', 'base' => 'AVAX', 'name' => 'Avalanche'],
+        ['symbol' => 'BNBUSDT', 'base' => 'BNB', 'name' => 'Binance Coin'],
+        ['symbol' => 'XRPUSDT', 'base' => 'XRP', 'name' => 'Ripple (XRP)'],
         ['symbol' => 'LINKUSDT', 'base' => 'LINK', 'name' => 'Chainlink'],
+        ['symbol' => 'FETUSDT', 'base' => 'FET', 'name' => 'Artificial Superintelligence (FET)'],
+        ['symbol' => 'RENDERUSDT', 'base' => 'RENDER', 'name' => 'Render'],
+        ['symbol' => 'INJUSDT', 'base' => 'INJ', 'name' => 'Injective'],
+        ['symbol' => 'APTUSDT', 'base' => 'APT', 'name' => 'Aptos'],
     ];
 
     /**

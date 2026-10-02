@@ -27,8 +27,8 @@ class TradingCoinApiTest extends TestCase
         $response->assertOk()
             ->assertJson([
                 'success' => true,
-                'active_coin' => 'NEARUSDT',
-                'base' => 'NEAR',
+                'active_coin' => 'BTCUSDT',
+                'base' => 'BTC',
             ])
             ->assertJsonStructure([
                 'success',

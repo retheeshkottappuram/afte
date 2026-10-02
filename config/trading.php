@@ -17,10 +17,10 @@ return [
     |--------------------------------------------------------------------------
     | The dedicated assets monitored continuously on 15m & 1h SignalAlgo PRO charts.
     */
-    'symbol' => env('TRADING_SYMBOL', 'NEARUSDT'),
-    'active_coin' => env('TRADING_ACTIVE_COIN', 'NEARUSDT'),
+    'symbol' => env('TRADING_SYMBOL', 'BTCUSDT'),
+    'active_coin' => env('TRADING_ACTIVE_COIN', 'BTCUSDT'),
     'single_coin_strict' => (bool) env('TRADING_SINGLE_COIN_STRICT', false),
-    'monitored_coins' => array_values(array_filter(array_map('trim', explode(',', env('TRADING_MONITORED_COINS', 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,NEARUSDT,XRPUSDT,DOGEUSDT'))))),
+    'monitored_coins' => array_values(array_filter(array_map('trim', explode(',', env('TRADING_MONITORED_COINS', 'BTCUSDT,ETHUSDT,SOLUSDT,SUIUSDT,NEARUSDT,1000PEPEUSDT,DOGEUSDT,AVAXUSDT,BNBUSDT,XRPUSDT,LINKUSDT,FETUSDT'))))),
 
     /*
     |--------------------------------------------------------------------------

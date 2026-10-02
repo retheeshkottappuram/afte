@@ -1121,7 +1121,6 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
     let currentAbortController = null;
     let activeSymbol = '{{ $cryptoConfig['symbols'][0] ?? 'BTCUSDT' }}';
     let activeInterval = '{{ $cryptoConfig['interval'] ?? '15m' }}';
-    let currentActiveTradingCoin = '{{ \App\Services\Trading\TradingTargetManager::getActiveCoin() }}';
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
     function showToast(message, isSuccess = true) {
@@ -1144,57 +1143,6 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         setTimeout(() => {
             if (toast) toast.classList.add('hidden');
         }, 6000);
-    }
-
-    function updateTargetCoinBtnState() {
-        const btn = document.getElementById('btnSetTargetCoin');
-        const text = document.getElementById('btnSetTargetCoinText');
-        if (!btn || !text) return;
-
-        const cleanActive = (activeSymbol || '').toUpperCase().replace('.P', '');
-        const cleanTarget = (currentActiveTradingCoin || '').toUpperCase().replace('.P', '');
-
-        if (cleanActive === cleanTarget) {
-            btn.className = "w-full py-1.5 px-3 bg-emerald-600/30 text-emerald-300 border border-emerald-500/50 font-bold text-xs rounded-xl flex items-center justify-center space-x-1.5 shadow-sm";
-            text.textContent = `✅ Active Trading Asset (${cleanTarget})`;
-        } else {
-            btn.className = "w-full py-1.5 px-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-cyan-900/30 flex items-center justify-center space-x-1.5 transition";
-            text.textContent = `🎯 Set ${cleanActive} as Trading Target`;
-        }
-    }
-
-    function setAsTargetCoin() {
-        const sym = activeSymbol;
-        if (!sym) return;
-
-        const btn = document.getElementById('btnSetTargetCoin');
-        if (btn) btn.disabled = true;
-
-        fetch('{{ route('api.trading_coin.set') }}', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-CSRF-TOKEN': '{{ csrf_token() }}'
-            },
-            body: JSON.stringify({ coin: sym })
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (data.success) {
-                currentActiveTradingCoin = data.active_coin;
-                updateTargetCoinBtnState();
-                showToast(data.message || `Switched target trading coin to ${data.active_coin}!`, true);
-            } else {
-                showToast(data.message || 'Failed to update coin', false);
-            }
-        })
-        .catch(() => {
-            showToast('Network error while updating target coin', false);
-        })
-        .finally(() => {
-            if (btn) btn.disabled = false;
-        });
     }
 
     function showChartLoading(coin, tf) {
@@ -1886,7 +1834,6 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
 
         // Trigger real-time SignalAlgo evaluation and plot signals on canvas
         fetchSignalAlgoData(activeSymbol, currentAbortController.signal);
-        updateTargetCoinBtnState();
     }
 
     function loadCustomFuturesChart() {

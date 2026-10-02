@@ -17,13 +17,15 @@ class MarketScanner
         'BTCUSDT',
         'ETHUSDT',
         'SOLUSDT',
+        'SUIUSDT',
+        'NEARUSDT',
+        '1000PEPEUSDT',
+        'DOGEUSDT',
+        'AVAXUSDT',
         'BNBUSDT',
         'XRPUSDT',
-        'DOGEUSDT',
-        'NEARUSDT',
-        'AVAXUSDT',
-        'SUIUSDT',
-        '1000PEPEUSDT',
+        'LINKUSDT',
+        'FETUSDT',
     ];
 
     public function __construct(

@@ -14,11 +14,11 @@ class TradingTargetManagerTest extends TestCase
         Cache::flush();
     }
 
-    public function test_it_defaults_to_near_usdt(): void
+    public function test_it_defaults_to_btc_usdt(): void
     {
         $coin = TradingTargetManager::getActiveCoin();
-        $this->assertEquals('NEARUSDT', $coin);
-        $this->assertEquals('NEAR', TradingTargetManager::getBaseCoin());
+        $this->assertEquals('BTCUSDT', $coin);
+        $this->assertEquals('BTC', TradingTargetManager::getBaseCoin());
     }
 
     public function test_it_can_switch_active_coin_and_normalizes(): void

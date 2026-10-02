@@ -11,7 +11,7 @@ return [
     | all active liquid Binance Futures USDT perpetual pairs.
     |
     */
-    'symbols' => array_values(array_filter(array_map('trim', explode(',', env('CRYPTO_SYMBOLS', 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,NEARUSDT,AVAXUSDT,SUIUSDT,1000PEPEUSDT'))))),
+    'symbols' => array_values(array_filter(array_map('trim', explode(',', env('CRYPTO_SYMBOLS', 'BTCUSDT,ETHUSDT,SOLUSDT,SUIUSDT,NEARUSDT,1000PEPEUSDT,DOGEUSDT,AVAXUSDT,BNBUSDT,XRPUSDT,LINKUSDT,FETUSDT'))))),
     'all_symbols' => (bool) env('CRYPTO_ALL_SYMBOLS', true),
     'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 100000000.0),
 
