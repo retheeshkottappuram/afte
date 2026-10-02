@@ -210,8 +210,9 @@ class SignalEngine
         [$htf1Bull, $htf1Bear] = $this->htfTrend($htf1, (int) $c['trend_len']);
         [$htf2Bull, $htf2Bear] = $this->htfTrend($htf2, (int) $c['trend_len']);
 
-        $htf1OK = ! $c['use_htf1'] || $htf1 === null || $htf1Bull;
-        $htf1OKBear = ! $c['use_htf1'] || $htf1 === null || $htf1Bear;
+        $htfStrategy = $this->analyzeHtfStrategy($htf1);
+        $allowHtfLong = $htfStrategy['allow_long'];
+        $allowHtfShort = $htfStrategy['allow_short'];
 
         $candleRange = max(0.0000001, $high - $low);
         $body = abs($close - $open);
@@ -294,7 +295,8 @@ class SignalEngine
         $isStrongBearMomentum = ($fastVal < $slowVal * 0.998) && ($close <= $fastVal);
 
         // 2. High-Conviction Breakout / Breakdown Direction Starts
-        $isBreakoutStartLong = ! $isLongExtended
+        $isBreakoutStartLong = $allowHtfLong
+            && ! $isLongExtended
             && ! $isClimaxCandle
             && ($close > ($previousHigh * (1.0 + $breakoutBuffer)))
             && ($close <= $fastVal * 1.018)
@@ -303,7 +305,8 @@ class SignalEngine
             && ($rsi[$i] >= 50.0 && $rsi[$i] <= 70.0)
             && $fastVal >= $slowVal * 0.998;
 
-        $isBreakdownStartShort = ! $isShortExtended
+        $isBreakdownStartShort = $allowHtfShort
+            && ! $isShortExtended
             && ! $isClimaxCandle
             && ($close < ($previousLow * (1.0 - $breakoutBuffer)))
             && ($close >= $fastVal * 0.982)
@@ -313,7 +316,8 @@ class SignalEngine
             && $fastVal <= $slowVal * 1.002;
 
         // 3. Trend Continuation 21-EMA Pullback (Requires confirmed trend ADX >= 20, never in chop)
-        $isPullbackBounceLong = ! $isChopZone
+        $isPullbackBounceLong = $allowHtfLong
+            && ! $isChopZone
             && ($adx[$i] >= 20.0)
             && $trendBull
             && ! $isLongExtended
@@ -321,7 +325,8 @@ class SignalEngine
             && ($close > $fastVal || $lowerWickRatio >= 0.25 || $bullCandle)
             && ($rsi[$i] >= 42.0 && $rsi[$i] <= 62.0);
 
-        $isPullbackRejectShort = ! $isChopZone
+        $isPullbackRejectShort = $allowHtfShort
+            && ! $isChopZone
             && ($adx[$i] >= 20.0)
             && $trendBear
             && ! $isShortExtended
@@ -330,11 +335,11 @@ class SignalEngine
             && ($rsi[$i] <= 58.0 && $rsi[$i] >= 38.0);
 
         // Dynamic Trend & Momentum Protections
-        // 1. NEVER short if price is above EMA 9 (eliminates XRP 1.54 and SOL 121 fake short)
-        $allowPeakShort = ! $isChopZone && ($close < $fastVal);
+        // 1. NEVER short if price is above EMA 9 or counter to 1H bull trend
+        $allowPeakShort = $allowHtfShort && ! $isChopZone && ($close < $fastVal);
 
-        // 2. NEVER buy if price is below EMA 9 (eliminates NEAR 5.20 waterfall dump fake buy)
-        $allowTroughLong = ! $isChopZone && ($close > $fastVal);
+        // 2. NEVER buy if price is below EMA 9 or counter to 1H bear trend
+        $allowTroughLong = $allowHtfLong && ! $isChopZone && ($close > $fastVal);
 
         $recentHighMax = max($high, $highs[$i - 1] ?? $high, $highs[$i - 2] ?? $high);
         $recentLowMin = min($low, $lows[$i - 1] ?? $low, $lows[$i - 2] ?? $low);
@@ -399,14 +404,16 @@ class SignalEngine
         $isSwingTroughLong = ($isTroughEngulfingLong || $isTroughSpringLong || $isTroughEma9ReclaimLong);
 
         // 5. EMA 9/21 Cross Momentum (Golden & Death Cross)
-        $isEmaCrossLong = $emaCrossBull
+        $isEmaCrossLong = $allowHtfLong
+            && $emaCrossBull
             && ! $isChopZone
             && $close > $fastVal
             && $bullCandle
             && ($rsi[$i] >= 48.0 && $rsi[$i] <= 66.0)
             && ! $isLongExtended;
 
-        $isEmaCrossShort = $emaCrossBear
+        $isEmaCrossShort = $allowHtfShort
+            && $emaCrossBear
             && ! $isChopZone
             && $close < $fastVal
             && $bearCandle
@@ -465,6 +472,7 @@ class SignalEngine
         }
 
         if ($side !== null) {
+            $score += $htfStrategy['score_boost'] ?? 0;
             if ($isCompressed) {
                 $score += 3;
             }
@@ -508,6 +516,7 @@ class SignalEngine
 
         // ==========================================
         // STRICT ASYMMETRIC RISK-REWARD ENGINE (Min 0.75%, Max 1.35% SL)
+        // Guaranteed >= 10% Profit Target on $100 (10x Leverage)
         // ==========================================
         $entry = $close;
         $minSlDist = $entry * 0.0075;
@@ -515,10 +524,16 @@ class SignalEngine
         $rawRisk = abs($entry - $rawSl);
         $risk = max($minSlDist, min($maxSlDist, $rawRisk));
 
+        // Enforce minimum price move distances for TP1 (>= 1.25%), TP2 (>= 2.60%), TP3 (>= 4.50%)
+        // So that on 10x leverage with $100 margin, TP1 always gives >= +12.5% ROE (+$12.50 profit)
+        $minTp1Dist = max($risk * 1.35, $entry * 0.0125);
+        $minTp2Dist = max($risk * 2.80, $entry * 0.0260);
+        $minTp3Dist = max($risk * 4.50, $entry * 0.0450);
+
         $sl = $side === 'BUY' ? round($entry - $risk, 6) : round($entry + $risk, 6);
-        $tp1 = $side === 'BUY' ? round($entry + ($risk * 1.35), 6) : round($entry - ($risk * 1.35), 6); // 1:1.35 R:R (+15% ROE)
-        $tp2 = $side === 'BUY' ? round($entry + ($risk * 2.80), 6) : round($entry - ($risk * 2.80), 6); // 1:2.80 R:R (+30% ROE)
-        $tp3 = $side === 'BUY' ? round($entry + ($risk * 4.50), 6) : round($entry - ($risk * 4.50), 6); // 1:4.50 R:R (+50% ROE)
+        $tp1 = $side === 'BUY' ? round($entry + $minTp1Dist, 6) : round($entry - $minTp1Dist, 6);
+        $tp2 = $side === 'BUY' ? round($entry + $minTp2Dist, 6) : round($entry - $minTp2Dist, 6);
+        $tp3 = $side === 'BUY' ? round($entry + $minTp3Dist, 6) : round($entry - $minTp3Dist, 6);
 
         $slDistancePct = $entry > 0 ? round(($risk / $entry) * 100.0, 2) : 1.0;
         $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100.0, 2) : 1.35;
@@ -548,6 +563,20 @@ class SignalEngine
             'liquidation_buffer' => '> 15% safety cushion',
         ];
 
+        $dollarSim = [
+            'capital' => 100,
+            'leverage' => $levMult,
+            'position_size' => 100 * $levMult,
+            'tp1_profit' => round(100 * ($tp1Pct / 100.0) * $levMult, 2),
+            'tp1_roe_pct' => round($tp1Pct * $levMult, 1),
+            'tp2_profit' => round(100 * ($tp2Pct / 100.0) * $levMult, 2),
+            'tp2_roe_pct' => round($tp2Pct * $levMult, 1),
+            'tp3_profit' => round(100 * ($tp3Pct / 100.0) * $levMult, 2),
+            'tp3_roe_pct' => round($tp3Pct * $levMult, 1),
+            'sl_loss' => round(100 * ($slDistancePct / 100.0) * $levMult, 2),
+            'sl_roe_pct' => round($slDistancePct * $levMult, 1),
+        ];
+
         $signal = [
             'side' => $side,
             'score' => $score,
@@ -569,6 +598,15 @@ class SignalEngine
             'breakout_level' => $side === 'BUY' ? round($previousHigh, 4) : round($previousLow, 4),
             'distance_pct' => $side === 'BUY' ? round($distToResPct, 2) : round($distToSupPct, 2),
             'perpetual_options' => $perpetualOptions,
+            'dollar_sim' => $dollarSim,
+            'htf_strategy' => [
+                'trend' => $htfStrategy['trend'] ?? 'NEUTRAL',
+                'summary' => $htfStrategy['summary'] ?? '',
+                'ema9' => $htfStrategy['ema9'] ?? null,
+                'ema21' => $htfStrategy['ema21'] ?? null,
+                'ema50' => $htfStrategy['ema50'] ?? null,
+                'rsi' => $htfStrategy['rsi'] ?? null,
+            ],
         ];
 
         return [
@@ -1004,6 +1042,114 @@ class SignalEngine
             'ema9' => $ema9Series,
             'ema21' => $ema21Series,
             'ema200' => $ema200Series,
+        ];
+    }
+
+    /**
+     * Institutional 1-Hour Strategy Analysis.
+     * Evaluates 1H EMA 9/21/50 alignment, structural momentum, and volatility.
+     *
+     * @param  array<string, mixed>|null  $htfCandles
+     * @return array{
+     *     trend: string, // 'BULLISH', 'BEARISH', 'RANGE'
+     *     allow_long: bool,
+     *     allow_short: bool,
+     *     summary: string,
+     *     score_boost: int,
+     *     ema9: ?float,
+     *     ema21: ?float,
+     *     ema50: ?float,
+     *     rsi: ?float
+     * }
+     */
+    public function analyzeHtfStrategy(?array $htfCandles): array
+    {
+        if ($htfCandles === null || empty($htfCandles['closes'])) {
+            return [
+                'trend' => 'NEUTRAL',
+                'allow_long' => true,
+                'allow_short' => true,
+                'summary' => '1H Strategy Confluence (Bypassed)',
+                'score_boost' => 0,
+                'ema9' => null,
+                'ema21' => null,
+                'ema50' => null,
+                'rsi' => null,
+            ];
+        }
+
+        $clean = CandleSanitizer::onlyClosedCandles($htfCandles, null, true);
+        $closes = $clean['closes'] ?? [];
+        $count = count($closes);
+        if ($count < 21) {
+            return [
+                'trend' => 'NEUTRAL',
+                'allow_long' => true,
+                'allow_short' => true,
+                'summary' => '1H History Initializing (< 21 bars)',
+                'score_boost' => 0,
+                'ema9' => null,
+                'ema21' => null,
+                'ema50' => null,
+                'rsi' => null,
+            ];
+        }
+
+        $idx = $count - 1;
+        $close = (float) $closes[$idx];
+        $ema9 = Indicators::ema($closes, 9);
+        $ema21 = Indicators::ema($closes, 21);
+        $ema50 = Indicators::ema($closes, min(50, $count - 1));
+        $rsi = Indicators::rsi($closes, 14);
+
+        $fast = $ema9[$idx] !== null ? (float) $ema9[$idx] : $close;
+        $slow = $ema21[$idx] !== null ? (float) $ema21[$idx] : $close;
+        $trend50 = $ema50[$idx] !== null ? (float) $ema50[$idx] : $close;
+        $curRsi = $rsi[$idx] !== null ? round((float) $rsi[$idx], 1) : 50.0;
+
+        $is1hBull = ($close >= $slow * 0.996) && ($fast >= $slow * 0.998 || $close >= $trend50 * 0.996) && ($curRsi >= 42.0);
+        $is1hBear = ($close <= $slow * 1.004) && ($fast <= $slow * 1.002 || $close <= $trend50 * 1.004) && ($curRsi <= 58.0);
+
+        if ($is1hBull && ! $is1hBear) {
+            $boost = ($fast > $slow && $close > $trend50) ? 3 : 1;
+
+            return [
+                'trend' => 'BULLISH',
+                'allow_long' => true,
+                'allow_short' => false, // STRICT: No shorting against confirmed 1H bull expansion
+                'summary' => '1H Bullish Expansion (Above EMA 21 & EMA 50)',
+                'score_boost' => $boost,
+                'ema9' => round($fast, 4),
+                'ema21' => round($slow, 4),
+                'ema50' => round($trend50, 4),
+                'rsi' => $curRsi,
+            ];
+        } elseif ($is1hBear && ! $is1hBull) {
+            $boost = ($fast < $slow && $close < $trend50) ? 3 : 1;
+
+            return [
+                'trend' => 'BEARISH',
+                'allow_long' => false, // STRICT: No buying into confirmed 1H bear downtrend
+                'allow_short' => true,
+                'summary' => '1H Bearish Trend (Below EMA 21 & EMA 50)',
+                'score_boost' => $boost,
+                'ema9' => round($fast, 4),
+                'ema21' => round($slow, 4),
+                'ema50' => round($trend50, 4),
+                'rsi' => $curRsi,
+            ];
+        }
+
+        return [
+            'trend' => 'RANGE',
+            'allow_long' => true,
+            'allow_short' => true,
+            'summary' => '1H Range / Consolidation',
+            'score_boost' => 0,
+            'ema9' => round($fast, 4),
+            'ema21' => round($slow, 4),
+            'ema50' => round($trend50, 4),
+            'rsi' => $curRsi,
         ];
     }
 

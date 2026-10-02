@@ -198,4 +198,65 @@ class SignalEngineStrategyTest extends TestCase
         $side = $eval['signal']['side'] ?? null;
         $this->assertNotEquals('BUY', $side, 'Algorithm must never fire a BUY signal into a cascading red waterfall dump');
     }
+
+    public function test_100_usd_trade_simulation_guarantees_minimum_10_percent_profit_target(): void
+    {
+        $candles = $this->generateCandles(220, 100.0, 0.08);
+        $lastIdx = count($candles['closes']) - 1;
+        $candles['highs'][$lastIdx - 1] = 125.5;
+        $candles['closes'][$lastIdx - 1] = 124.8;
+        $candles['opens'][$lastIdx - 1] = 122.5;
+
+        $candles['opens'][$lastIdx] = 124.8;
+        $candles['highs'][$lastIdx] = 125.0;
+        $candles['lows'][$lastIdx] = 118.0;
+        $candles['closes'][$lastIdx] = 118.5;
+        $candles['volumes'][$lastIdx] = 3500.0;
+
+        $engine = new SignalEngine([]);
+        $eval = $engine->evaluateDetailed($candles, null, null, null);
+
+        $this->assertNotNull($eval['signal']);
+        $signal = $eval['signal'];
+
+        // Validate $100 capital trade simulation
+        $this->assertArrayHasKey('dollar_sim', $signal);
+        $sim = $signal['dollar_sim'];
+        $this->assertEquals(100, $sim['capital']);
+        $this->assertEquals(10, $sim['leverage']);
+        $this->assertEquals(1000, $sim['position_size']);
+
+        // Must guarantee at least 10% ROE ($10 profit) on TP1
+        $this->assertGreaterThanOrEqual(10.0, $sim['tp1_roe_pct']);
+        $this->assertGreaterThanOrEqual(10.0, $sim['tp1_profit']);
+
+        // Must guarantee at least 25% ROE ($25 profit) on TP2
+        $this->assertGreaterThanOrEqual(25.0, $sim['tp2_roe_pct']);
+        $this->assertGreaterThanOrEqual(25.0, $sim['tp2_profit']);
+
+        // Risk capped
+        $this->assertLessThanOrEqual(13.5, $sim['sl_roe_pct']);
+        $this->assertLessThanOrEqual(13.50, $sim['sl_loss']);
+    }
+
+    public function test_1h_strategy_confluence_blocks_counter_trend_trades(): void
+    {
+        $engine = new SignalEngine([]);
+
+        // Generate bearish 1H candles (closes declining consistently below EMA 21 and 50)
+        $htfBearCandles = $this->generateCandles(60, 100.0, -0.30);
+        $htfAnalysis = $engine->analyzeHtfStrategy($htfBearCandles);
+
+        $this->assertEquals('BEARISH', $htfAnalysis['trend']);
+        $this->assertFalse($htfAnalysis['allow_long'], '1H bearish trend must not allow LONG entries');
+        $this->assertTrue($htfAnalysis['allow_short'], '1H bearish trend allows SHORT entries');
+
+        // Generate bullish 1H candles (closes climbing consistently above EMA 21 and 50)
+        $htfBullCandles = $this->generateCandles(60, 100.0, 0.30);
+        $htfBullAnalysis = $engine->analyzeHtfStrategy($htfBullCandles);
+
+        $this->assertEquals('BULLISH', $htfBullAnalysis['trend']);
+        $this->assertTrue($htfBullAnalysis['allow_long'], '1H bullish trend allows LONG entries');
+        $this->assertFalse($htfBullAnalysis['allow_short'], '1H bullish trend must not allow SHORT entries');
+    }
 }

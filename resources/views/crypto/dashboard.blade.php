@@ -352,14 +352,53 @@
 
         <!-- Detected Signals Container -->
         <div class="mt-5">
-            <div class="flex items-center justify-between mb-3">
-                <div class="flex items-center space-x-2">
-                    <h4 class="text-sm font-bold text-slate-200">
-                        🎯 Detected Institutional Setups
-                    </h4>
-                    <span id="signalsBadgeCount" class="text-xs px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400 border border-slate-700">0 Found</span>
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800/80">
+                <div>
+                    <div class="flex items-center space-x-2.5">
+                        <h4 class="text-sm sm:text-base font-black text-slate-100 flex items-center space-x-2">
+                            <span>🎯 Institutional Setups</span>
+                            <span id="signalsBadgeCount" class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">0 Found</span>
+                        </h4>
+                    </div>
+                    <p class="text-[11px] text-slate-400 mt-0.5">
+                        Strictly filtered with <strong class="text-slate-300">&ge; 10% Profit Target Gating</strong>, <strong class="text-slate-300">&gt; 1H Strategy Alignment</strong>, and <strong class="text-slate-300">BTC Macro Direction</strong>.
+                    </p>
                 </div>
-                <span class="text-[11px] text-slate-500 hidden sm:inline">Click "Inspect Chart" on any card to view interactive chart</span>
+
+                <!-- Controls: Filter Pills & Score Sorting Dropdown -->
+                <div class="flex flex-wrap items-center gap-2">
+                    <!-- Direction / Grade Filter Pills -->
+                    <div class="inline-flex rounded-xl bg-slate-950 p-1 border border-slate-800 text-xs">
+                        <button type="button" onclick="setScanFilter('ALL')" id="filter-btn-ALL"
+                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer bg-slate-800 text-white shadow">
+                            All
+                        </button>
+                        <button type="button" onclick="setScanFilter('BUY')" id="filter-btn-BUY"
+                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-emerald-400">
+                            🟢 Longs
+                        </button>
+                        <button type="button" onclick="setScanFilter('SELL')" id="filter-btn-SELL"
+                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-rose-400">
+                            🔴 Shorts
+                        </button>
+                        <button type="button" onclick="setScanFilter('A_PLUS')" id="filter-btn-A_PLUS"
+                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-amber-400">
+                            ⭐ Grade A+
+                        </button>
+                    </div>
+
+                    <!-- Sort Dropdown -->
+                    <div class="flex items-center space-x-1.5 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 text-xs">
+                        <span class="text-slate-500 font-semibold text-[11px]">Sort:</span>
+                        <select id="scanSortSelect" onchange="changeScanSort(this.value)"
+                            class="bg-transparent text-slate-200 font-bold focus:outline-none cursor-pointer text-xs pr-1">
+                            <option value="score_desc" selected>🔥 Highest Score (Default)</option>
+                            <option value="profit_desc">💰 Highest Profit (ROE %)</option>
+                            <option value="rr_desc">⚖️ Best Risk/Reward</option>
+                            <option value="newest">⏱️ Newest First</option>
+                        </select>
+                    </div>
+                </div>
             </div>
 
             <div id="scanSignalsGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
@@ -513,11 +552,6 @@
                         class="w-full py-2 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-900/30 flex items-center justify-center space-x-1.5 transition">
                         <span>⚡</span>
                         <span>Send Alert to Telegram</span>
-                    </button>
-                    <button type="button" id="btnSetTargetCoin" onclick="setAsTargetCoin()"
-                        class="w-full py-1.5 px-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-cyan-900/30 flex items-center justify-center space-x-1.5 transition">
-                        <span>🎯</span>
-                        <span id="btnSetTargetCoinText">Set as Target Trading Asset</span>
                     </button>
                     <div class="flex items-center space-x-2">
                         <a id="btnBinanceFuturesLink" href="https://www.binance.com/en/futures/BTCUSDT" target="_blank" rel="noopener noreferrer"
@@ -2555,22 +2589,98 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         .catch(() => {});
     }
 
+    let rawMarketScanSignals = [];
+    let activeScanFilter = 'ALL';
+    let activeScanSort = 'score_desc';
+
+    function setScanFilter(filter) {
+        activeScanFilter = filter;
+        ['ALL', 'BUY', 'SELL', 'A_PLUS'].forEach(f => {
+            const btn = document.getElementById(`filter-btn-${f}`);
+            if (!btn) return;
+            if (f === filter) {
+                btn.className = 'px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer bg-slate-800 text-white shadow';
+            } else {
+                btn.className = 'px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-slate-200';
+            }
+        });
+        applyScanFilterAndSort();
+    }
+
+    function changeScanSort(sort) {
+        activeScanSort = sort;
+        applyScanFilterAndSort();
+    }
+
     function renderMarketScanSignals(signals) {
+        rawMarketScanSignals = signals || [];
+        applyScanFilterAndSort();
+    }
+
+    function applyScanFilterAndSort() {
         const grid = document.getElementById('scanSignalsGrid');
         if (!grid) return;
 
-        if (!signals || signals.length === 0) {
+        if (!rawMarketScanSignals || rawMarketScanSignals.length === 0) {
             grid.innerHTML = `
                 <div id="scanSignalsEmptyState" class="col-span-full py-8 text-center rounded-xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-500 text-xs">
                     <div class="text-2xl mb-1.5">🔭</div>
                     No setups detected yet. Click <strong class="text-slate-400">"Run Whole-Market Scan"</strong> to evaluate all ~350 USDT Perpetual contracts.
                 </div>
             `;
+            const badgeCount = document.getElementById('signalsBadgeCount');
+            if (badgeCount) badgeCount.textContent = '0 Found';
+            return;
+        }
+
+        // 1. Filter
+        let filtered = rawMarketScanSignals.filter(s => {
+            if (activeScanFilter === 'BUY') return s.side === 'BUY';
+            if (activeScanFilter === 'SELL') return s.side === 'SELL';
+            if (activeScanFilter === 'A_PLUS') return s.grade === 'A+' || (s.score && s.score >= 90);
+            return true;
+        });
+
+        // 2. Sort
+        filtered.sort((a, b) => {
+            if (activeScanSort === 'score_desc') {
+                return (b.score || 0) - (a.score || 0);
+            }
+            if (activeScanSort === 'profit_desc') {
+                const pA = a.dollar_sim?.tp2_roe_pct || a.target_profit_leveraged_pct || a.target_profit_pct || 0;
+                const pB = b.dollar_sim?.tp2_roe_pct || b.target_profit_leveraged_pct || b.target_profit_pct || 0;
+                return pB - pA;
+            }
+            if (activeScanSort === 'rr_desc') {
+                const parseRr = (rr) => {
+                    if (!rr) return 0;
+                    const parts = String(rr).split(':');
+                    return parseFloat(parts[1] || parts[0]) || 0;
+                };
+                return parseRr(b.risk_reward) - parseRr(a.risk_reward);
+            }
+            if (activeScanSort === 'newest') {
+                return (a.age_minutes || 0) - (b.age_minutes || 0);
+            }
+            return 0;
+        });
+
+        const badgeCount = document.getElementById('signalsBadgeCount');
+        if (badgeCount) {
+            badgeCount.textContent = `${filtered.length} of ${rawMarketScanSignals.length} Setups`;
+        }
+
+        if (filtered.length === 0) {
+            grid.innerHTML = `
+                <div class="col-span-full py-8 text-center rounded-xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-400 text-xs">
+                    No setups match the selected filter (${activeScanFilter}). Click <strong class="text-cyan-400 cursor-pointer" onclick="setScanFilter('ALL')">All</strong> to reset.
+                </div>
+            `;
             return;
         }
 
         let html = '';
-        signals.forEach(s => {
+        filtered.forEach(s => {
             const isBuy = s.side === 'BUY';
             const borderCls = isBuy ? 'border-emerald-500/40 hover:border-emerald-500/70 shadow-emerald-950/20' : 'border-rose-500/40 hover:border-rose-500/70 shadow-rose-950/20';
             const tagCls = isBuy ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
@@ -2584,6 +2694,14 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
             let setupTypeBadge = '';
             if (s.setup_type === 'PRE_BREAKOUT_COIL') {
                 setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/50 animate-pulse flex items-center gap-1">⚡ PRE-BREAKOUT COIL</span>';
+            } else if (s.setup_type === 'BREAKOUT_START') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 flex items-center gap-1">🚀 BREAKOUT DIRECTION START</span>';
+            } else if (s.setup_type === 'BREAKDOWN_START') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/50 flex items-center gap-1">📉 BREAKDOWN DIRECTION START</span>';
+            } else if (s.setup_type === 'SWING_PEAK_REVERSAL') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-orange-500/20 text-orange-300 border border-orange-500/50 flex items-center gap-1">🎯 SWING PEAK REVERSAL</span>';
+            } else if (s.setup_type === 'SWING_TROUGH_REVERSAL') {
+                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 flex items-center gap-1">💎 SWING TROUGH REVERSAL</span>';
             } else if (s.setup_type === 'WYCKOFF_SPRING') {
                 setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 flex items-center gap-1">💎 WYCKOFF SPRING</span>';
             } else if (s.setup_type === 'WYCKOFF_UPTHRUST') {
@@ -2598,19 +2716,98 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                 setupTypeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40">${s.setup_label || 'HIGH PROBABILITY'}</span>`;
             }
 
+            // Support & Resistance Execution HUD
+            const suppLevel = s.support ? Number(s.support).toPrecision(6) : null;
+            const resLevel = s.resistance ? Number(s.resistance).toPrecision(6) : null;
+            const tradeType = s.trade_type || (isBuy ? 'DAY TRADE' : 'DAY TRADE');
+            const tradeHorizon = s.trade_horizon || 'Intraday (4h – 12h)';
+            const recLeverage = s.recommended_leverage || '5x – 10x';
+            const isSwing = tradeType === 'SWING TRADE';
+            const tradeTypeCls = isSwing
+                ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+                : 'bg-amber-500/15 text-amber-300 border-amber-500/40';
+            const tradeTypeIcon = isSwing ? '🌊' : '⚡';
+            const rrRatio = s.risk_reward || '1 : 3.0';
+
+            const slPct = s.sl_pct !== undefined ? s.sl_pct : (s.sl && s.entry ? Math.abs(((s.sl - s.entry) / s.entry) * 100).toFixed(2) : '1.5');
+            const tp1Pct = s.tp1_pct !== undefined ? s.tp1_pct : (s.tp1 && s.entry ? Math.abs(((s.tp1 - s.entry) / s.entry) * 100).toFixed(2) : '2.5');
+            const tp2Pct = s.tp2_pct !== undefined ? s.tp2_pct : (s.tp2 && s.entry ? Math.abs(((s.tp2 - s.entry) / s.entry) * 100).toFixed(2) : '5.0');
+            const tp3Pct = s.tp3_pct !== undefined ? s.tp3_pct : (s.tp3 && s.entry ? Math.abs(((s.tp3 - s.entry) / s.entry) * 100).toFixed(2) : '9.0');
+
+            const srHudHtml = `
+                <div class="mb-2.5 rounded-xl bg-slate-900/90 border border-slate-700/60 overflow-hidden shadow-inner">
+                    <!-- Header: S/R Level Badges -->
+                    <div class="flex items-stretch">
+                        <div class="flex-1 flex flex-col items-center justify-center py-1.5 px-2 bg-emerald-500/8 border-b border-r border-slate-800">
+                            <span class="text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-0.5">🛡️ Imm. Support</span>
+                            <span class="font-black text-emerald-400 text-xs font-mono">${suppLevel ? '$' + suppLevel : '—'}</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center justify-center py-1.5 px-2 bg-rose-500/8 border-b border-slate-800">
+                            <span class="text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-0.5">🧱 Imm. Resistance</span>
+                            <span class="font-black text-rose-400 text-xs font-mono">${resLevel ? '$' + resLevel : '—'}</span>
+                        </div>
+                    </div>
+                    <!-- Trade type + leverage + R:R row -->
+                    <div class="flex items-center justify-between px-2.5 py-1.5 border-b border-slate-800 bg-slate-950/40">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black border ${tradeTypeCls}">${tradeTypeIcon} ${tradeType}</span>
+                        <span class="text-[10px] text-slate-400 font-mono">${tradeHorizon}</span>
+                        <span class="text-[10px] font-bold text-cyan-300">R:R <strong>${rrRatio}</strong></span>
+                    </div>
+                    <!-- SL / TP1 / TP2 levels -->
+                    <div class="grid grid-cols-3 text-center">
+                        <div class="py-1.5 px-1 border-r border-slate-800">
+                            <div class="text-[9px] text-rose-400 uppercase font-semibold mb-0.5">Stop Loss</div>
+                            <div class="font-black text-rose-400 text-[11px] font-mono">$${s.sl}</div>
+                            <div class="text-[9px] text-rose-400/70">-${slPct}%</div>
+                        </div>
+                        <div class="py-1.5 px-1 border-r border-slate-800">
+                            <div class="text-[9px] text-emerald-400 uppercase font-semibold mb-0.5">TP 1</div>
+                            <div class="font-black text-emerald-400 text-[11px] font-mono">$${s.tp1}</div>
+                            <div class="text-[9px] text-emerald-400/70">+${tp1Pct}%</div>
+                        </div>
+                        <div class="py-1.5 px-1">
+                            <div class="text-[9px] text-emerald-300 uppercase font-semibold mb-0.5">TP 2</div>
+                            <div class="font-black text-emerald-300 text-[11px] font-mono">$${s.tp2}</div>
+                            <div class="text-[9px] text-emerald-300/70">+${tp2Pct}%</div>
+                        </div>
+                    </div>
+                    <!-- Extended TP3 + Suggested Leverage footer -->
+                    <div class="flex items-center justify-between px-2.5 py-1 bg-slate-950/60 border-t border-slate-800">
+                        <span class="text-[10px] text-slate-400 font-mono">TP3: <strong class="text-emerald-300">$${s.tp3 || '—'}</strong> <span class="text-slate-500">(+${tp3Pct}%)</span></span>
+                        <span class="inline-flex items-center gap-1 text-[10px] font-bold text-purple-300">💡 ${recLeverage} Suggested</span>
+                    </div>
+                </div>
+            `;
+
+            const reasoning = s.detailed_reasoning || {};
+            const reasoningHtml = `
+                <details class="mb-2.5 text-xs rounded-xl bg-slate-900/60 border border-slate-800 p-2 text-slate-300">
+                    <summary class="font-bold text-[11px] text-cyan-300 cursor-pointer flex items-center justify-between select-none">
+                        <span>🧠 Market Analysis & Reasoning</span>
+                        <span class="text-[10px] text-slate-400">View Edge ▾</span>
+                    </summary>
+                    <div class="mt-2 space-y-1.5 text-[10px] font-mono border-t border-slate-800 pt-2 text-slate-300">
+                        <div><strong class="text-cyan-400">Structure:</strong> ${reasoning.market_structure || 'Identified breakout inception from coiled multi-timeframe consolidation.'}</div>
+                        <div><strong class="text-emerald-400">Volume Ignition:</strong> ${reasoning.volume_ignition || `${s.volume_ratio || '1.5'}x average volume confirming institutional accumulation.`}</div>
+                        <div><strong class="text-purple-400">Momentum Confluence:</strong> ${reasoning.trend_momentum || `RSI at ${s.rsi || '55'} confirming trend inception with room for 24h expansion.`}</div>
+                        <div><strong class="text-amber-400">Execution Rule:</strong> ${reasoning.execution_strategy || 'Enter at breakout, set SL below structure. Move SL to breakeven at TP1. Let runner reach TP2/TP3.'}</div>
+                    </div>
+                </details>
+            `;
+
+            const htfConfluenceHtml = `
+                <div class="mb-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-[10px] font-mono flex items-center justify-between">
+                    <span class="text-slate-400 truncate max-w-[65%]">1H: <strong class="${isBuy ? 'text-emerald-400' : 'text-rose-400'}">${s.htf_summary || (isBuy ? '1H Bullish Expansion' : '1H Bearish Trend')}</strong></span>
+                    <span class="text-slate-400">BTC: <strong class="text-cyan-300 font-bold">${s.btc_macro || 'Aligned'}</strong></span>
+                </div>
+            `;
+
             const breakoutInfoHtml = (s.breakout_level) ? `
                 <div class="mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between text-xs font-mono">
                     <span class="text-amber-400 font-bold flex items-center gap-1">🎯 Breakout Level: <span class="text-white">${s.breakout_level}</span></span>
                     <span class="text-amber-300 font-bold bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/30">${s.distance_pct !== undefined ? `${s.distance_pct}% away` : 'Imminent'}</span>
                 </div>
             ` : '';
-
-            const profitMetricsHtml = `
-                <div class="mb-3 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between text-[11px] font-mono">
-                    <span class="text-slate-400">Target Profit: <strong class="text-emerald-400 font-bold">+${s.target_profit_pct || '2.8'}%</strong> <span class="text-emerald-300/80">(${s.target_profit_leveraged_pct ? `+${s.target_profit_leveraged_pct}% 10x` : '+28% 10x'})</span></span>
-                    <span class="text-slate-400">R:R: <strong class="text-cyan-300 font-bold">${s.risk_reward || '1 : 2.8'}</strong></span>
-                </div>
-            `;
 
             html += `
                 <div class="p-4 rounded-xl bg-slate-950/80 border ${borderCls} transition shadow-xl relative flex flex-col justify-between hover:bg-slate-900/60">
@@ -2633,39 +2830,23 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                             </span>
                         </div>
 
+                        ${htfConfluenceHtml}
+                        ${srHudHtml}
+                        ${reasoningHtml}
                         ${breakoutInfoHtml}
-                        ${profitMetricsHtml}
-
-                        <!-- Price targets -->
-                        <div class="grid grid-cols-2 gap-1.5 text-xs font-mono mb-3 bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                            <div>
-                                <span class="text-[10px] text-slate-500 uppercase block">Entry</span>
-                                <span class="font-bold text-white">${s.entry}</span>
-                            </div>
-                            <div>
-                                <span class="text-[10px] text-rose-400 uppercase block">Stop Loss</span>
-                                <span class="font-bold text-rose-400">${s.sl}</span>
-                            </div>
-                            <div>
-                                <span class="text-[10px] text-emerald-400 uppercase block">TP 1</span>
-                                <span class="font-semibold text-emerald-300">${s.tp1}</span>
-                            </div>
-                            <div>
-                                <span class="text-[10px] text-emerald-400 uppercase block">TP 2</span>
-                                <span class="font-semibold text-emerald-300">${s.tp2}</span>
-                            </div>
-                        </div>
 
                         <!-- Technical confluence factors -->
-                        <div class="flex flex-wrap gap-2 text-[11px] font-mono text-slate-400 mb-3">
+                        <div class="flex flex-wrap gap-1.5 text-[10px] font-mono text-slate-400 mb-3">
+                            <span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">Entry: <strong class="text-white">$${s.entry}</strong></span>
                             ${s.rsi ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">RSI: <strong class="text-slate-200">${s.rsi}</strong></span>` : ''}
                             ${s.adx ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">ADX: <strong class="text-slate-200">${s.adx}</strong></span>` : ''}
                             ${s.volume_ratio ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">Vol: <strong class="text-slate-200">${s.volume_ratio}x</strong></span>` : ''}
+                            ${s.atr_pct ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">ATR: <strong class="text-slate-200">${s.atr_pct}%</strong></span>` : ''}
                         </div>
                     </div>
 
                     <!-- Action buttons -->
-                    <div class="mt-3 flex items-center gap-2">
+                    <div class="mt-2 flex items-center gap-2">
                         <button type="button" onclick="executeManualScanTrade('${s.symbol}', '${isBuy ? 'LONG' : 'SHORT'}', this)"
                             class="flex-1 py-2 px-3 text-xs font-black rounded-lg ${isBuy ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/50' : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950/50'} shadow-md transition flex items-center justify-center space-x-1.5 cursor-pointer touch-manipulation active:scale-[0.98]">
                             <span>⚡ Place ${isBuy ? 'LONG' : 'SHORT'} Trade</span>

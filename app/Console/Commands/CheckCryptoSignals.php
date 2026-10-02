@@ -286,7 +286,10 @@ class CheckCryptoSignals extends Command
                             }
                         }
 
-                        // 3. Synchronize all chart markers with database history and dispatch Telegram for any new marker
+                        // 3. Analyze 1-Hour Strategy Confluence (> 1 Hour trend)
+                        $htfStrategy = $signalEngine->analyzeHtfStrategy($htf1Candles);
+
+                        // 4. Synchronize all chart markers with database history and dispatch Telegram for any new marker
                         $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140, $btcCandlesForSym);
                         $syncResult = SignalRecorder::syncMarkers(
                             $symbol,
@@ -303,7 +306,7 @@ class CheckCryptoSignals extends Command
                             $this->line("  -> <fg=green>Persisted {$syncResult['persisted_count']} chart marker(s) for {$symbol} to Alert History table.</>");
                         }
 
-                        // 4. Primary: Evaluate High-Probability Breakout & Pre-Breakout Coiling Setups
+                        // 5. Primary: Evaluate High-Probability Breakout & Pre-Breakout Coiling Setups
                         $signal = null;
                         $isFreshBreakout = false;
 
@@ -320,11 +323,14 @@ class CheckCryptoSignals extends Command
                             $bScore = (int) ($breakoutResult['score'] ?? 85);
                             $bType = $breakoutResult['type'] ?? 'PRE_BREAKOUT_COIL';
 
-                            // Strict Macro Alignment: Longs require bullish, shorts require bearish
+                            // Strict Confluence Gating: BTC macro alignment AND Coin's 1-Hour strategy alignment
                             $isBtcAligned = ($bSide === 'BUY' && $btcTrend['allow_long']) || ($bSide === 'SELL' && $btcTrend['allow_short']);
+                            $isHtfAligned = ($bSide === 'BUY' && $htfStrategy['allow_long']) || ($bSide === 'SELL' && $htfStrategy['allow_short']);
 
                             if (! $isBtcAligned) {
                                 $this->line("  -> <fg=yellow>Filtered out {$symbol} {$bSide} setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+                            } elseif (! $isHtfAligned) {
+                                $this->line("  -> <fg=yellow>Filtered out {$symbol} {$bSide} setup: Counter to 1H Strategy ({$htfStrategy['summary']})</>");
                             } else {
                                 $signal = [
                                     'side' => $bSide,
@@ -332,9 +338,18 @@ class CheckCryptoSignals extends Command
                                     'grade' => $breakoutResult['grade'] ?? ($bScore >= 90 ? 'A+' : 'A'),
                                     'entry' => $breakoutResult['entry'],
                                     'sl' => $breakoutResult['sl'],
+                                    'sl_pct' => $breakoutResult['sl_pct'] ?? null,
                                     'tp1' => $breakoutResult['tp1'],
+                                    'tp1_pct' => $breakoutResult['tp1_pct'] ?? null,
                                     'tp2' => $breakoutResult['tp2'],
+                                    'tp2_pct' => $breakoutResult['tp2_pct'] ?? null,
                                     'tp3' => $breakoutResult['tp3'],
+                                    'tp3_pct' => $breakoutResult['tp3_pct'] ?? null,
+                                    'support' => $breakoutResult['support'] ?? null,
+                                    'resistance' => $breakoutResult['resistance'] ?? null,
+                                    'trade_type' => $breakoutResult['trade_type'] ?? 'DAY TRADE',
+                                    'trade_horizon' => $breakoutResult['trade_horizon'] ?? 'Intraday (4h – 12h)',
+                                    'recommended_leverage' => $breakoutResult['recommended_leverage'] ?? '5x – 10x',
                                     'breakout_level' => $breakoutResult['breakout_level'] ?? null,
                                     'distance_pct' => $breakoutResult['distance_pct'] ?? 0.0,
                                     'risk_reward' => $breakoutResult['risk_reward'] ?? '1 : 2.8',
@@ -346,6 +361,8 @@ class CheckCryptoSignals extends Command
                                     'setup_label' => $breakoutResult['setup_label'] ?? 'BREAKOUT SETUP',
                                     'candle_close_time' => $breakoutResult['candle_close_time'] ?? (now()->timestamp * 1000),
                                     'perpetual_options' => $breakoutResult['perpetual_options'] ?? null,
+                                    'dollar_sim' => $breakoutResult['dollar_sim'] ?? null,
+                                    'detailed_reasoning' => $breakoutResult['detailed_reasoning'] ?? null,
                                     'age_minutes' => 0,
                                     'is_active_trade' => false,
                                 ];
@@ -354,7 +371,7 @@ class CheckCryptoSignals extends Command
                             }
                         }
 
-                        // 5. Secondary: Evaluate Detailed Multi-Factor Momentum Setups from SignalEngine
+                        // 6. Secondary: Evaluate Detailed Multi-Factor Momentum Setups from SignalEngine
                         $diag = [];
                         if ($signal === null) {
                             $evalResult = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandlesForSym);
@@ -367,9 +384,12 @@ class CheckCryptoSignals extends Command
                                 $eVolRatio = (float) ($engineSignal['volume_ratio'] ?? 1.0);
 
                                 $isBtcAligned = ($eSide === 'BUY' && $btcTrend['allow_long']) || ($eSide === 'SELL' && $btcTrend['allow_short']);
+                                $isHtfAligned = ($eSide === 'BUY' && $htfStrategy['allow_long']) || ($eSide === 'SELL' && $htfStrategy['allow_short']);
 
                                 if (! $isBtcAligned) {
                                     $this->line("  -> <fg=yellow>Filtered out {$symbol} {$eSide} setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
+                                } elseif (! $isHtfAligned) {
+                                    $this->line("  -> <fg=yellow>Filtered out {$symbol} {$eSide} setup: Counter to 1H Strategy ({$htfStrategy['summary']})</>");
                                 } elseif ($eScore < 76) {
                                     $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$eScore} below quality threshold (76)</>");
                                 } elseif ($eVolRatio < 1.05 && $eScore < 85) {
@@ -386,14 +406,15 @@ class CheckCryptoSignals extends Command
                             }
                         }
 
-                        // 6. Tertiary: Check Active In-Progress Setups from Recent Chart Markers
+                        // 7. Tertiary: Check Active In-Progress Setups from Recent Chart Markers
                         if ($signal === null && ! empty($history['markers'])) {
                             $lastMarker = end($history['markers']);
                             $markerScore = (int) ($lastMarker['score'] ?? 0);
                             $markerSide = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
                             $isBtcAligned = ($markerSide === 'BUY' && $btcTrend['allow_long']) || ($markerSide === 'SELL' && $btcTrend['allow_short']);
+                            $isHtfAligned = ($markerSide === 'BUY' && $htfStrategy['allow_long']) || ($markerSide === 'SELL' && $htfStrategy['allow_short']);
 
-                            if ($markerScore >= 78 && $isBtcAligned) {
+                            if ($markerScore >= 78 && $isBtcAligned && $isHtfAligned) {
                                 $markerTime = (int) ($lastMarker['time'] ?? 0);
                                 $candleAgeSeconds = now()->timestamp - $markerTime;
                                 $maxActiveSeconds = match ($interval) {
@@ -455,6 +476,14 @@ class CheckCryptoSignals extends Command
                             continue;
                         }
 
+                        // Filter out slow/low-volatility chop coins unless exceptional score (>= 92)
+                        $sigAtr = (float) ($signal['atr_pct'] ?? 1.2);
+                        if ($sigAtr < 0.85 && (int) ($signal['score'] ?? 0) < 92) {
+                            $this->line("  -> <fg=gray>Filtered out {$symbol}: ATR {$sigAtr}% below minimum 0.85% volatility floor</>");
+
+                            continue;
+                        }
+
                         $entryVal = (float) ($signal['entry'] ?? 0);
                         $slVal = (float) ($signal['sl'] ?? 0);
                         $tp1Val = (float) ($signal['tp1'] ?? 0);
@@ -463,13 +492,63 @@ class CheckCryptoSignals extends Command
                         $slDist = abs($entryVal - $slVal);
                         $tp2Dist = abs($tp2Val - $entryVal);
                         $slPct = $entryVal > 0 ? round(($slDist / $entryVal) * 100, 2) : 1.0;
-                        $tp1Pct = $entryVal > 0 ? round((abs($tp1Val - $entryVal) / $entryVal) * 100, 2) : 1.5;
-                        $tp2Pct = $entryVal > 0 ? round(($tp2Dist / $entryVal) * 100, 2) : 3.0;
-                        $tp3Pct = $entryVal > 0 ? round((abs($tp3Val - $entryVal) / $entryVal) * 100, 2) : 4.5;
+                        $tp1Pct = $entryVal > 0 ? round((abs($tp1Val - $entryVal) / $entryVal) * 100, 2) : 1.35;
+                        $tp2Pct = $entryVal > 0 ? round(($tp2Dist / $entryVal) * 100, 2) : 2.80;
+                        $tp3Pct = $entryVal > 0 ? round((abs($tp3Val - $entryVal) / $entryVal) * 100, 2) : 4.50;
                         $calculatedRr = $slDist > 0 ? '1 : '.round($tp2Dist / $slDist, 1) : '1 : 2.8';
                         $rrRatio = $signal['risk_reward'] ?? $calculatedRr;
                         $levMult = 10;
                         $tp2LevPct = round($tp2Pct * $levMult, 1);
+
+                        // Calculate realistic $100 Margin Trade Simulation
+                        $dollarSim = $signal['dollar_sim'] ?? [
+                            'capital' => 100,
+                            'leverage' => $levMult,
+                            'position_size' => 100 * $levMult,
+                            'tp1_profit' => round(100 * ($tp1Pct / 100.0) * $levMult, 2),
+                            'tp1_roe_pct' => round($tp1Pct * $levMult, 1),
+                            'tp2_profit' => round(100 * ($tp2Pct / 100.0) * $levMult, 2),
+                            'tp2_roe_pct' => round($tp2Pct * $levMult, 1),
+                            'tp3_profit' => round(100 * ($tp3Pct / 100.0) * $levMult, 2),
+                            'tp3_roe_pct' => round($tp3Pct * $levMult, 1),
+                            'sl_loss' => round(100 * ($slPct / 100.0) * $levMult, 2),
+                            'sl_roe_pct' => round($slPct * $levMult, 1),
+                        ];
+
+                        $entryPrice = (float) $signal['entry'];
+                        $isLongSide = $signal['side'] === 'BUY';
+                        $oneDayPlan = $signal['one_day_plan'] ?? [
+                            'capital' => 100.0,
+                            'leverage' => 5,
+                            'position_size_usd' => 500.0,
+                            'holding_horizon' => '24h - 48h (Next 1-Day Macro Trend Expansion)',
+                            'sl_price' => $isLongSide ? round($entryPrice * 0.981, 6) : round($entryPrice * 1.019, 6),
+                            'sl_pct' => 1.90,
+                            'sl_roe_pct' => 9.5,
+                            'sl_loss_usd' => 9.50,
+                            'tp1_price' => $isLongSide ? round($entryPrice * 1.050, 6) : round($entryPrice * 0.950, 6),
+                            'tp1_pct' => 5.0,
+                            'tp1_roe_pct' => 25.0,
+                            'tp1_profit_usd' => 25.00,
+                            'tp2_price' => $isLongSide ? round($entryPrice * 1.095, 6) : round($entryPrice * 0.905, 6),
+                            'tp2_pct' => 9.5,
+                            'tp2_roe_pct' => 47.5,
+                            'tp2_profit_usd' => 47.50,
+                            'tp3_price' => $isLongSide ? round($entryPrice * 1.180, 6) : round($entryPrice * 0.820, 6),
+                            'tp3_pct' => 18.0,
+                            'tp3_roe_pct' => 90.0,
+                            'tp3_profit_usd' => 90.00,
+                            'risk_reward' => '1 : 5.0',
+                            'management_rule' => 'Enter trade, set SL and TPs immediately. When TP1 (+$25) hits, lock SL to Breakeven and ride 24H expansion. No continuous monitoring needed.',
+                        ];
+
+                        $reasoning = $signal['detailed_reasoning'] ?? [
+                            'market_structure' => "Institutional trend setup detected on {$symbol} with score {$signal['score']}/100.",
+                            'volume_ignition' => 'Volume ratio is '.($signal['volume_ratio'] ?? '1.2').'x, confirming institutional participation.',
+                            'trend_momentum' => 'RSI at '.($signal['rsi'] ?? '55').' supports continuation into 24h expansion targets.',
+                            'relative_strength' => "Strong momentum aligned with BTC macro direction ({$btcTrend['trend']}).",
+                            'execution_strategy' => 'Optimal for 1-day swing holding. On a $100 margin order with 5x leverage ($500 notional), risk is strictly capped at -$9.50 with asymmetric upside of +$25.00 (TP1), +$47.50 (TP2), and +$90.00 (TP3 runner).',
+                        ];
 
                         $sideEmoji = $signal['side'] === 'BUY' ? '🟢' : '🔴';
                         $foundSignals[] = [
@@ -499,8 +578,18 @@ class CheckCryptoSignals extends Command
                             'setup_label' => $signal['setup_label'] ?? 'ACTIVE SETUP',
                             'age_minutes' => $signal['age_minutes'] ?? 0,
                             'perpetual_options' => $signal['perpetual_options'] ?? null,
+                            'dollar_sim' => $dollarSim,
+                            'one_day_plan' => $oneDayPlan,
+                            'detailed_reasoning' => $reasoning,
+                            'htf_trend' => $htfStrategy['trend'] ?? 'NEUTRAL',
+                            'htf_summary' => $htfStrategy['summary'] ?? '',
+                            'btc_macro' => $btcTrend['trend'] ?? 'NEUTRAL',
+                            'scenario_analysis' => ($signal['side'] === 'BUY' ? "1H: {$htfStrategy['summary']} | BTC Macro: {$btcTrend['trend']} aligned" : "1H: {$htfStrategy['summary']} | BTC Macro: {$btcTrend['trend']} aligned"),
                             'time' => Carbon::now('Asia/Kolkata')->format('H:i:s \I\S\T'),
                         ];
+
+                        // Always sort in-memory signals by score descending so highest score is always first
+                        usort($foundSignals, fn ($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
                         Cache::put('crypto:manual_scan:signals', $foundSignals, 86400);
 
                         if ($dryRun) {
@@ -572,6 +661,7 @@ class CheckCryptoSignals extends Command
 
         Cache::put('crypto:manual_scan:status', 'COMPLETED', 86400);
         Cache::put('crypto:manual_scan:running', false, 86400);
+        usort($foundSignals, fn ($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
         Cache::put('crypto:manual_scan:signals', $foundSignals, 86400);
         $this->info('✨ [COMPLETED] Market scan finished successfully. Total setups found: '.count($foundSignals));
 

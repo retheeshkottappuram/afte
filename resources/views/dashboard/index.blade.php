@@ -78,6 +78,10 @@
                                     <span id="wss-dot" class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-400 mr-1 sm:mr-1.5 animate-pulse"></span>
                                     <span id="wss-text" class="hidden xs:inline">WSS: CONNECTING</span>
                                 </span>
+                                <span id="header-mode-badge" class="inline-flex items-center text-[10px] sm:text-xs px-2 sm:px-2.5 py-0.5 rounded font-mono font-bold transition-all shadow-sm {{ $mode === 'live' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-emerald-500/20' : 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-amber-500/20' }}">
+                                    <span id="header-mode-dot" class="w-1.5 h-1.5 rounded-full mr-1.5 {{ $mode === 'live' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400' }}"></span>
+                                    <span id="header-mode-text">{{ $mode === 'live' ? '🟢 LIVE TRADING • REAL CAPITAL' : '🧪 PAPER TRADING • SIMULATION' }}</span>
+                                </span>
                             </div>
                             <p class="text-xs text-slate-400 hidden sm:block truncate">Binance Futures USDS-M • Autonomous Quantitative Engine</p>
                         </div>
@@ -483,20 +487,18 @@
                         <table class="w-full text-left text-xs">
                             <thead class="bg-cyber-800/80 text-slate-400 font-mono uppercase border-b border-cyber-border">
                                 <tr>
-                                    <th class="px-4 py-3">Pair</th>
-                                    <th class="px-3 py-3">Dir</th>
-                                    <th class="px-3 py-3">Price</th>
-                                    <th class="px-3 py-3">Score</th>
-                                    <th class="px-3 py-3">Volume</th>
-                                    <th class="px-3 py-3">RSI</th>
-                                    <th class="px-3 py-3">AI Verdict</th>
-                                    <th class="px-4 py-3">Reasoning</th>
+                                    <th class="px-4 py-3">Pair / Setup</th>
+                                    <th class="px-3 py-3">Conviction</th>
+                                    <th class="px-3 py-3">Entry Price</th>
+                                    <th class="px-3 py-3">Support / Resistance</th>
+                                    <th class="px-3 py-3">SL / TP1 / TP2</th>
+                                    <th class="px-3 py-3">Type & Leverage</th>
                                     <th class="px-3 py-3 text-right">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="scanner-tbody" class="divide-y divide-cyber-border/40 font-mono">
                                 <tr>
-                                    <td colspan="9" class="px-4 py-8 text-center text-slate-400">
+                                    <td colspan="7" class="px-4 py-8 text-center text-slate-400">
                                         Loading market opportunities... Click "Scan Market" to refresh.
                                     </td>
                                 </tr>
@@ -788,9 +790,24 @@
             });
             const linkHistory = document.getElementById('link-trade-history');
             if (linkHistory) linkHistory.href = `/history?mode=${mode}`;
+
+            const badge = document.getElementById('header-mode-badge');
+            const badgeText = document.getElementById('header-mode-text');
+            const badgeDot = document.getElementById('header-mode-dot');
+            if (badge && badgeText) {
+                if (mode === 'live') {
+                    badge.className = 'inline-flex items-center text-[10px] sm:text-xs px-2 sm:px-2.5 py-0.5 rounded font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-[0_0_10px_rgba(16,185,129,0.25)] transition-all';
+                    badgeText.textContent = '🟢 LIVE TRADING • REAL CAPITAL';
+                    if (badgeDot) badgeDot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse';
+                } else {
+                    badge.className = 'inline-flex items-center text-[10px] sm:text-xs px-2 sm:px-2.5 py-0.5 rounded font-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.25)] transition-all';
+                    badgeText.textContent = '🧪 PAPER TRADING • SIMULATION';
+                    if (badgeDot) badgeDot.className = 'w-1.5 h-1.5 rounded-full bg-amber-400 mr-1.5';
+                }
+            }
         }
 
-        function switchMode(mode) {
+        async function switchMode(mode) {
             if (currentMode === mode) return;
             currentMode = mode;
             localStorage.setItem('afte_trading_mode', mode);
@@ -798,12 +815,14 @@
             window.history.replaceState({}, '', `/?mode=${mode}`);
             updateModeUI(mode);
 
-            // Abort previous in-flight requests to eliminate lag / race conditions
-            if (statsAbort) statsAbort.abort();
-            if (posAbort) posAbort.abort();
-            if (historyAbort) historyAbort.abort();
+            // Abort previous in-flight liveSync immediately
+            if (liveSyncAbort) {
+                liveSyncAbort.abort();
+                liveSyncAbort = null;
+            }
+            isSyncing = false; // Reset mutex immediately
 
-            // Instant responsive UI feedback
+            // Instant responsive UI feedback (React-like optimistic update)
             const statEquity = document.getElementById('stat-equity');
             const statBal = document.getElementById('stat-balance');
             const unPnl = document.getElementById('stat-unrealized-pnl');
@@ -813,10 +832,22 @@
 
             const tbody = document.getElementById('positions-tbody');
             if (tbody) {
-                tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-6 text-center text-cyan-400 font-mono text-xs"><span class="inline-block animate-pulse mr-2">⚡</span> Connecting to ${mode.toUpperCase()} feed...</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-8 text-center text-cyan-400 font-mono text-xs">
+                    <div class="flex items-center justify-center space-x-2">
+                        <div class="w-4 h-4 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin"></div>
+                        <span>Connecting to ${mode.toUpperCase()} feed & fetching real-time Binance data...</span>
+                    </div>
+                </td></tr>`;
             }
 
-            liveSync();
+            const historyTbody = document.getElementById('history-tbody');
+            if (historyTbody) {
+                historyTbody.innerHTML = `<tr><td colspan="8" class="px-5 py-6 text-center text-slate-500 font-mono text-xs">
+                    <span class="inline-block animate-pulse">Switching to ${mode.toUpperCase()} closed trades...</span>
+                </td></tr>`;
+            }
+
+            await liveSync(true);
         }
 
         let liveSyncAbort = null;
@@ -824,15 +855,18 @@
         let isManualScanning = false;
         let activePositionsData = [];
 
-        async function liveSync() {
-            if (isSyncing) return;
+        async function liveSync(force = false) {
+            if (isSyncing && !force) return;
+            if (force && liveSyncAbort) {
+                liveSyncAbort.abort();
+                liveSyncAbort = null;
+            }
             isSyncing = true;
 
             try {
-                if (liveSyncAbort) liveSyncAbort.abort();
                 liveSyncAbort = new AbortController();
 
-                const res = await fetch(`/api/live-sync?mode=${currentMode}`, { signal: liveSyncAbort.signal });
+                const res = await fetch(`/api/live-sync?mode=${currentMode}&t=${Date.now()}`, { signal: liveSyncAbort.signal });
                 const data = await res.json();
 
                 // Discard stale response if user switched mode while request was in-flight
@@ -1223,27 +1257,70 @@
             }
 
             if (!opportunities || opportunities.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="9" class="px-4 py-6 text-center text-slate-400">No high-conviction breakout setup detected right now. Markets are in range; capital protected.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400 font-mono text-xs">No high-conviction breakout setup detected right now. Markets are in range; capital protected.</td></tr>`;
                 return;
             }
 
             tbody.innerHTML = opportunities.map(op => {
                 const isLong = op.direction === 'LONG';
                 const dirBadge = isLong ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-rose-400 bg-rose-500/10 border-rose-500/30';
-                const aiBadge = op.ai_approved ? 'text-emerald-400 font-bold' : 'text-rose-400 font-medium';
+                const plan = op.one_day_plan || {
+                    sl_price: op.sl,
+                    sl_loss_usd: '9.50',
+                    sl_roe_pct: '9.5',
+                    tp1_price: op.tp1,
+                    tp1_profit_usd: '25.00',
+                    tp1_roe_pct: '25.0',
+                    tp2_price: op.tp2,
+                    tp2_profit_usd: '47.50',
+                    tp2_roe_pct: '47.5',
+                    tp3_price: op.tp3 || (isLong ? (op.price * 1.18).toFixed(4) : (op.price * 0.82).toFixed(4)),
+                    tp3_profit_usd: '90.00',
+                    tp3_roe_pct: '90.0'
+                };
+
+                const setupLabel = op.setup_label || (isLong ? 'BULLISH BREAKOUT INCEPTION' : 'BEARISH BREAKDOWN INCEPTION');
+                const reasonText = (op.detailed_reasoning && typeof op.detailed_reasoning === 'object')
+                    ? (op.detailed_reasoning.execution_strategy || op.detailed_reasoning.market_structure || op.ai_reason || '')
+                    : (op.ai_reason || 'Massive breakout inception setup with volume ignition.');
 
                 return `
                     <tr class="hover:bg-cyber-800/40 transition">
-                        <td class="px-4 py-2.5 font-bold text-white">${op.symbol}</td>
-                        <td class="px-3 py-2.5"><span class="px-1.5 py-0.5 rounded text-[10px] border ${dirBadge}">${op.direction}</span></td>
-                        <td class="px-3 py-2.5 text-slate-300 font-mono">$${op.price}</td>
-                        <td class="px-3 py-2.5 font-bold text-cyan-300 font-mono">${op.score}/100</td>
-                        <td class="px-3 py-2.5 text-slate-300 font-mono">${op.indicators.volume_ratio}x</td>
-                        <td class="px-3 py-2.5 text-slate-300 font-mono">${op.indicators.rsi}</td>
-                        <td class="px-3 py-2.5 ${aiBadge}">${op.ai_approved ? '✅ APPROVED' : '❌ REJECTED'}</td>
-                        <td class="px-4 py-2.5 text-[11px] text-slate-400 truncate max-w-xs" title="${op.ai_reason}">${op.ai_reason}</td>
-                        <td class="px-3 py-2.5 text-right whitespace-nowrap">
-                            <button onclick="executeRadarTrade('${op.symbol}', '${op.direction}', this)" class="px-2.5 py-1 text-[11px] font-mono font-bold rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition inline-flex items-center space-x-1 shadow-sm shadow-emerald-500/10">
+                        <td class="px-4 py-3">
+                            <div class="flex items-center space-x-2">
+                                <span class="font-bold text-white text-sm">${op.symbol}</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] border ${dirBadge}">${op.direction}</span>
+                            </div>
+                            <span class="text-[10px] text-cyan-400 font-mono font-medium block mt-0.5">${setupLabel}</span>
+                        </td>
+                        <td class="px-3 py-3">
+                            <div class="font-bold text-cyan-300 font-mono text-sm">${op.score}/100</div>
+                            <span class="text-[10px] px-1.5 py-0.2 rounded bg-amber-400/10 text-amber-300 border border-amber-400/30 font-bold">GRADE ${op.grade || 'A'}</span>
+                        </td>
+                        <td class="px-3 py-3 font-mono">
+                            <div class="space-y-0.5 text-[10px] text-slate-400">
+                                <div class="font-bold text-emerald-400 text-xs">${op.support ? '$' + op.support : '—'}</div>
+                                <div class="text-[9px] text-slate-500 uppercase">Support</div>
+                                <div class="font-bold text-rose-400 text-xs mt-1">${op.resistance ? '$' + op.resistance : '—'}</div>
+                                <div class="text-[9px] text-slate-500 uppercase">Resistance</div>
+                            </div>
+                        </td>
+                        <td class="px-3 py-3 font-mono">
+                            <div class="space-y-0.5 text-[11px]">
+                                <div class="text-rose-400 font-medium">SL: <span class="text-white font-bold">$${op.sl}</span> <span class="text-rose-400/70">(-${op.sl_pct !== undefined ? op.sl_pct : '~'}%)</span></div>
+                                <div class="text-emerald-400 font-medium">TP1: <span class="text-white font-bold">$${op.tp1}</span> <span class="text-emerald-400/70">(+${op.tp1_pct !== undefined ? op.tp1_pct : '~'}%)</span></div>
+                                <div class="text-emerald-300 font-bold">TP2: <span class="text-white font-bold">$${op.tp2}</span> <span class="text-emerald-300/70">(+${op.tp2_pct !== undefined ? op.tp2_pct : '~'}%)</span></div>
+                            </div>
+                        </td>
+                        <td class="px-3 py-3">
+                            <div class="text-[10px] font-bold ${(op.trade_type || '').includes('SWING') ? 'text-blue-300' : 'text-amber-300'}">${(op.trade_type || '').includes('SWING') ? '🌊 SWING' : '⚡ DAY TRADE'}</div>
+                            <div class="text-[10px] text-purple-300 font-mono mt-0.5">💡 ${op.recommended_leverage || '5x – 10x'}</div>
+                            <div class="text-[9px] text-slate-500 mt-0.5">R:R ${op.risk_reward || '—'}</div>
+                            <div class="font-bold text-slate-200 text-[10px] mt-1">${op.indicators?.volume_ratio || '—'}x Vol</div>
+                            <div class="text-[10px] text-slate-400">RSI: ${op.indicators?.rsi || '—'}</div>
+                        </td>
+                        <td class="px-3 py-3 text-right whitespace-nowrap">
+                            <button onclick="executeRadarTrade('${op.symbol}', '${op.direction}', this)" class="px-2.5 py-1.5 text-xs font-mono font-bold rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition inline-flex items-center space-x-1 shadow-sm shadow-emerald-500/10">
                                 <span>⚡</span><span>Trade Now</span>
                             </button>
                         </td>

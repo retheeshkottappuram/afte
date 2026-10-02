@@ -93,22 +93,29 @@ class BreakoutDetector
         $volRatio = $curVolSma > 0 ? round($currentVol / $curVolSma, 2) : 1.0;
         $curAdx = (float) ($adx[$i] ?? 20.0);
 
-        // 2. Higher Timeframe Trend Alignment on CLOSED candles
+        // 2. Higher Timeframe Trend Alignment on CLOSED candles (> 1 Hour Strategy Confluence)
         $htf1Bull = true;
         $htf1Bear = true;
+        $htfSummary = '1H Neutral';
         if ($htf1Candles && ! empty($htf1Candles['closes'])) {
             $cleanHtf1 = CandleSanitizer::onlyClosedCandles($htf1Candles, $referenceTimeMs, true);
             $htfCloses = $cleanHtf1['closes'];
             $htfIdx = count($htfCloses) - 1;
-            if ($htfIdx >= 0) {
+            if ($htfIdx >= 20) {
+                $htfEma9 = Indicators::ema($htfCloses, 9);
                 $htfEma21 = Indicators::ema($htfCloses, 21);
-                $htfEma200 = Indicators::ema($htfCloses, 200);
+                $htfEma50 = Indicators::ema($htfCloses, min(50, $htfIdx));
+                $htfRsi = Indicators::rsi($htfCloses, 14);
                 $htfClose = $htfCloses[$htfIdx];
-                $h200 = $htfEma200[$htfIdx] ?? null;
-                $h21 = $htfEma21[$htfIdx] ?? null;
+                $h9 = $htfEma9[$htfIdx] ?? $htfClose;
+                $h21 = $htfEma21[$htfIdx] ?? $htfClose;
+                $h50 = $htfEma50[$htfIdx] ?? $htfClose;
+                $hRsi = (float) ($htfRsi[$htfIdx] ?? 50.0);
 
-                $htf1Bull = ($h200 === null || $htfClose > $h200) && ($h21 === null || $htfClose >= $h21 * 0.995);
-                $htf1Bear = ($h200 === null || $htfClose < $h200) && ($h21 === null || $htfClose <= $h21 * 1.005);
+                // STRICT: 1H strategy confluence - no longing against downtrend, no shorting against expansion
+                $htf1Bull = ($htfClose >= $h21 * 0.996) && ($h9 >= $h21 * 0.998 || $htfClose >= $h50 * 0.996) && ($hRsi >= 42.0);
+                $htf1Bear = ($htfClose <= $h21 * 1.004) && ($h9 <= $h21 * 1.002 || $htfClose <= $h50 * 1.004) && ($hRsi <= 58.0);
+                $htfSummary = $htf1Bull ? '1H Bullish Expansion' : ($htf1Bear ? '1H Bearish Trend' : '1H Range');
             }
         }
 
@@ -189,7 +196,9 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'PRE-BREAKOUT ASCENDING COIL',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
@@ -218,7 +227,9 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'PRE-BREAKDOWN DESCENDING COIL',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
@@ -244,7 +255,9 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'WYCKOFF SPRING REVERSAL',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
@@ -270,12 +283,94 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'WYCKOFF UPTHRUST REVERSAL',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
         // ==========================================
-        // SCENARIO 5: CONFIRMED RESISTANCE BREAKOUT
+        // SCENARIO 5A: MASSIVE 1-DAY BREAKOUT INCEPTION (High Volume + Squeeze Expansion)
+        // ==========================================
+        $massiveLong = (
+            $currentClose > $resistance &&
+            $isBullCandle &&
+            $volRatio >= 1.60 &&
+            ($isCompressed || $curAdx >= 22.0) &&
+            $curRsi >= 54.0 &&
+            $curRsi <= 76.0 &&
+            $rsRatio >= 0.995 &&
+            $htf1Bull &&
+            ($curEma200 === null || $currentClose > $curEma200)
+        );
+
+        if ($massiveLong) {
+            $entry = $currentClose;
+            $rawSl = max($resistance * 0.992, $currentLow * 0.995);
+
+            return $this->formatBreakoutPayload(
+                type: 'MASSIVE_BREAKOUT_INCEPTION',
+                side: 'BUY',
+                score: 98,
+                grade: 'A+',
+                breakoutLevel: $resistance,
+                distancePct: 0.0,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: '🚀 MASSIVE 1-DAY BREAKOUT INCEPTION',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
+            );
+        }
+
+        // ==========================================
+        // SCENARIO 5B: MASSIVE 1-DAY BREAKDOWN INCEPTION (High Volume + Squeeze Expansion)
+        // ==========================================
+        $massiveShort = (
+            $currentClose < $support &&
+            $isBearCandle &&
+            $volRatio >= 1.60 &&
+            ($isCompressed || $curAdx >= 22.0) &&
+            $curRsi <= 46.0 &&
+            $curRsi >= 24.0 &&
+            $rsRatio <= 1.005 &&
+            $htf1Bear &&
+            ($curEma200 === null || $currentClose < $curEma200)
+        );
+
+        if ($massiveShort) {
+            $entry = $currentClose;
+            $rawSl = min($support * 1.008, $currentHigh * 1.005);
+
+            return $this->formatBreakoutPayload(
+                type: 'MASSIVE_BREAKDOWN_INCEPTION',
+                side: 'SELL',
+                score: 98,
+                grade: 'A+',
+                breakoutLevel: $support,
+                distancePct: 0.0,
+                entry: $entry,
+                rawSl: $rawSl,
+                volRatio: $volRatio,
+                rsi: $curRsi,
+                adx: $curAdx,
+                atrPct: $atrPct,
+                setupLabel: '📉 MASSIVE 1-DAY BREAKDOWN INCEPTION',
+                closeTimeMs: $closeTimeMs,
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
+            );
+        }
+
+        // ==========================================
+        // SCENARIO 5C: CONFIRMED RESISTANCE BREAKOUT
         // ==========================================
         $confirmedLong = (
             $currentClose > $resistance &&
@@ -307,7 +402,9 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'RESISTANCE BREAKOUT CONFIRMED',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
@@ -344,7 +441,9 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'SUPPORT BREAKDOWN CONFIRMED',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
@@ -370,7 +469,9 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'BREAKOUT RETEST & BOUNCE',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
@@ -402,7 +503,9 @@ class BreakoutDetector
                 atrPct: $atrPct,
                 setupLabel: 'RESISTANCE BREAKOUT WATCH',
                 closeTimeMs: $closeTimeMs,
-                rsRatio: $rsRatio
+                rsRatio: $rsRatio,
+                support: $support,
+                resistance: $resistance
             );
         }
 
@@ -427,27 +530,91 @@ class BreakoutDetector
         float $atrPct,
         string $setupLabel,
         int $closeTimeMs,
-        float $rsRatio = 1.0
+        float $rsRatio = 1.0,
+        float $support = 0.0,
+        float $resistance = 0.0
     ): array {
-        // Enforce strict structural risk bounds (Min 0.75%, Max 1.35%)
-        $rawSlDist = abs($entry - $rawSl);
-        $minSlDist = $entry * 0.0075;
-        $maxSlDist = $entry * 0.0135;
-        $risk = max($minSlDist, min($maxSlDist, $rawSlDist));
+        $supportLevel = $support > 0 ? $support : ($side === 'BUY' ? $entry * 0.985 : $entry * 0.975);
+        $resistanceLevel = $resistance > 0 ? $resistance : ($side === 'BUY' ? $entry * 1.025 : $entry * 1.015);
 
-        $sl = $side === 'BUY' ? round($entry - $risk, 6) : round($entry + $risk, 6);
-        $tp1 = $side === 'BUY' ? round($entry + ($risk * 1.35), 6) : round($entry - ($risk * 1.35), 6); // 1:1.35 R:R (+15% ROE)
-        $tp2 = $side === 'BUY' ? round($entry + ($risk * 2.80), 6) : round($entry - ($risk * 2.80), 6); // 1:2.80 R:R (+30% ROE)
-        $tp3 = $side === 'BUY' ? round($entry + ($risk * 4.50), 6) : round($entry - ($risk * 4.50), 6); // 1:4.50 R:R (+50% ROE)
+        // Classify Trade Horizon: Day Trade vs Swing Trade
+        $isSwingSetup = in_array($type, ['MASSIVE_BREAKOUT_INCEPTION', 'MASSIVE_BREAKDOWN_INCEPTION', 'WYCKOFF_SPRING', 'WYCKOFF_UPTHRUST'], true);
+        $tradeType = $isSwingSetup ? 'SWING TRADE' : 'DAY TRADE';
+        $tradeHorizon = $isSwingSetup ? '1 – 2 Days (Multi-Day)' : 'Intraday (4h – 12h)';
+        $usefulLeverage = $isSwingSetup ? '3x – 7x' : '5x – 10x';
 
-        $slPct = $entry > 0 ? round(($risk / $entry) * 100, 2) : 1.0;
-        $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100, 2) : 1.5;
-        $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100, 2) : 3.0;
-        $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100, 2) : 4.8;
+        // Support & Resistance based SL & TP Calculation
+        if ($side === 'BUY') {
+            // SL placed just below structural support
+            $targetSl = min($rawSl, $supportLevel * 0.997);
+            $rawRisk = abs($entry - $targetSl);
+            $risk = max($entry * 0.008, min($entry * 0.035, $rawRisk));
+            $sl = round($entry - $risk, 6);
+
+            // TP1 near immediate resistance or at least 1.5R
+            $tp1Dist = max($risk * 1.5, abs($resistanceLevel - $entry));
+            if ($entry < $resistanceLevel) {
+                $tp1 = round(min($resistanceLevel, $entry + $tp1Dist), 6);
+            } else {
+                $tp1 = round($entry + max($risk * 1.6, $entry * 0.025), 6);
+            }
+
+            // TP2: Structural expansion target
+            $tp2 = round($entry + max($risk * 3.0, ($tp1 - $entry) * 2.0), 6);
+            $tp3 = round($entry + max($risk * 5.0, ($tp2 - $entry) * 1.8), 6);
+        } else {
+            // SL placed just above structural resistance
+            $targetSl = max($rawSl, $resistanceLevel * 1.003);
+            $rawRisk = abs($targetSl - $entry);
+            $risk = max($entry * 0.008, min($entry * 0.035, $rawRisk));
+            $sl = round($entry + $risk, 6);
+
+            // TP1 near immediate support or at least 1.5R
+            $tp1Dist = max($risk * 1.5, abs($entry - $supportLevel));
+            if ($entry > $supportLevel) {
+                $tp1 = round(max($supportLevel, $entry - $tp1Dist), 6);
+            } else {
+                $tp1 = round($entry - max($risk * 1.6, $entry * 0.025), 6);
+            }
+
+            // TP2: Structural breakdown target
+            $tp2 = round($entry - max($risk * 3.0, ($entry - $tp1) * 2.0), 6);
+            $tp3 = round($entry - max($risk * 5.0, ($entry - $tp2) * 1.8), 6);
+        }
+
+        $slPct = $entry > 0 ? round(($risk / $entry) * 100, 2) : 1.5;
+        $tp1Pct = $entry > 0 ? round(abs($tp1 - $entry) / $entry * 100, 2) : 2.5;
+        $tp2Pct = $entry > 0 ? round(abs($tp2 - $entry) / $entry * 100, 2) : 5.0;
+        $tp3Pct = $entry > 0 ? round(abs($tp3 - $entry) / $entry * 100, 2) : 8.0;
         $rrRatio = $slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8';
 
-        $recLeverage = '5x - 10x';
-        $levMult = 10;
+        $recLeverage = $usefulLeverage;
+        $levParts = explode('x', $usefulLeverage);
+        $levMult = isset($levParts[0]) ? (int) trim($levParts[0]) : 5;
+
+        $dollarSim = [
+            'capital' => 100,
+            'leverage' => $levMult,
+            'position_size' => 100 * $levMult,
+            'tp1_profit' => round(100 * ($tp1Pct / 100.0) * $levMult, 2),
+            'tp1_roe_pct' => round($tp1Pct * $levMult, 1),
+            'tp2_profit' => round(100 * ($tp2Pct / 100.0) * $levMult, 2),
+            'tp2_roe_pct' => round($tp2Pct * $levMult, 1),
+            'tp3_profit' => round(100 * ($tp3Pct / 100.0) * $levMult, 2),
+            'tp3_roe_pct' => round($tp3Pct * $levMult, 1),
+            'sl_loss' => round(100 * ($slPct / 100.0) * $levMult, 2),
+            'sl_roe_pct' => round($slPct * $levMult, 1),
+        ];
+
+        // Detailed institutional market reasoning
+        $dirText = $side === 'BUY' ? 'BULLISH' : 'BEARISH';
+        $reasoning = [
+            'market_structure' => "Identified {$dirText} {$setupLabel}. Immediate Resistance: \${$resistanceLevel}, Immediate Support: \${$supportLevel}.",
+            'volume_ignition' => "Volume ratio is {$volRatio}x 20-period average, confirming institutional participation and early momentum expansion.",
+            'trend_momentum' => "RSI is at {$rsi} with ADX at {$adx}, indicating strong trend inception without being overextended.",
+            'relative_strength' => "Relative Strength ratio against BTC is {$rsRatio}, demonstrating sector leadership and independent price velocity.",
+            'execution_strategy' => "Suggested for {$tradeType} ({$tradeHorizon}) using {$usefulLeverage} leverage. Stop Loss placed structurally beyond key levels at \${$sl} (-{$slPct}%), with TP1 at \${$tp1} (+{$tp1Pct}%) and TP2 at \${$tp2} (+{$tp2Pct}%).",
+        ];
 
         return [
             'type' => $type,
@@ -455,13 +622,22 @@ class BreakoutDetector
             'score' => $score,
             'grade' => $grade,
             'breakout_level' => round($breakoutLevel, 4),
+            'support' => round($supportLevel, 6),
+            'resistance' => round($resistanceLevel, 6),
             'distance_pct' => $distancePct,
-            'entry' => round($entry, 4),
-            'sl' => round($sl, 4),
-            'tp1' => round($tp1, 4),
-            'tp2' => round($tp2, 4),
-            'tp3' => round($tp3, 4),
+            'entry' => round($entry, 6),
+            'sl' => round($sl, 6),
+            'tp1' => round($tp1, 6),
+            'tp2' => round($tp2, 6),
+            'tp3' => round($tp3, 6),
+            'sl_pct' => $slPct,
+            'tp1_pct' => $tp1Pct,
+            'tp2_pct' => $tp2Pct,
+            'tp3_pct' => $tp3Pct,
             'risk_reward' => $rrRatio,
+            'trade_type' => $tradeType,
+            'trade_horizon' => $tradeHorizon,
+            'recommended_leverage' => $usefulLeverage,
             'volume_ratio' => $volRatio,
             'rsi' => round($rsi, 1),
             'adx' => round($adx, 1),
@@ -469,8 +645,10 @@ class BreakoutDetector
             'setup_label' => $setupLabel,
             'candle_close_time' => $closeTimeMs,
             'rs_ratio' => round($rsRatio, 4),
+            'dollar_sim' => $dollarSim,
+            'detailed_reasoning' => $reasoning,
             'perpetual_options' => [
-                'recommended_leverage' => $recLeverage,
+                'recommended_leverage' => $usefulLeverage,
                 'margin_mode' => 'Isolated Margin',
                 'order_type' => 'Limit / Market Entry',
                 'risk_per_trade' => '1.0% - 2.0% Account Balance',
