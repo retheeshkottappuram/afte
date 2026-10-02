@@ -197,8 +197,8 @@ class TradingDaemonCommand extends Command
 
                 // 2. High-Frequency Active Position Management Loop (All open trades in DB)
                 try {
-                    // Auto-prune any stray trades that do not match the strictly permitted coin
-                    if (config('trading.single_coin_strict', true)) {
+                    // Auto-prune any stray trades only if strict single-coin mode is explicitly enabled
+                    if (config('trading.single_coin_strict', false)) {
                         $targetCoin = TradingTargetManager::getActiveCoin();
                         $strayTrades = Trade::where('mode', $mode)
                             ->where('status', 'OPEN')
@@ -239,24 +239,25 @@ class TradingDaemonCommand extends Command
                     Log::warning("[TradingDaemon] Position management error: {$e->getMessage()}");
                 }
 
-                // 3. Focused Single-Coin SignalAlgo PRO Strategy Cycle (15m & 1h Chart Monitoring, Reversals, & Profit Following)
+                // 3. Multi-Coin SignalAlgo PRO Strategy Cycle (15m & 1h Chart Monitoring, Reversals, & Profit Following)
                 $now = time();
                 if ($now - $lastScanTime >= $scanInterval || $runOnce) {
                     $lastScanTime = $now;
-                    $targetCoin = TradingTargetManager::getActiveCoin();
+                    $monitoredCoins = TradingTargetManager::getMonitoredCoins();
+                    $coinLabels = implode(', ', array_map([TradingTargetManager::class, 'getBaseCoin'], $monitoredCoins));
 
                     if ($account->canTrade()) {
-                        $this->logLine('['.date('H:i:s')."] SignalAlgo PRO Target: {$targetCoin} (15m & 1h) | Evaluating chart signals...");
+                        $this->logLine('['.date('H:i:s').'] SignalAlgo PRO Multi-Coin Scan ('.count($monitoredCoins)." Coins: {$coinLabels}) | Evaluating chart signals...");
                         try {
                             $algoRes = $signalAlgoTrader->runCycle($mode);
-                            $totalScannedCount++;
+                            $totalScannedCount += count($monitoredCoins);
 
-                            if ($algoRes['action'] === 'OPEN_LONG' || $algoRes['action'] === 'OPEN_SHORT') {
-                                $totalOpenedCount++;
+                            if ($algoRes['opened_count'] > 0 || $algoRes['action'] === 'OPEN_LONG' || $algoRes['action'] === 'OPEN_SHORT') {
+                                $totalOpenedCount += max(1, $algoRes['opened_count']);
                                 $this->logInfo("✅ [SignalAlgo Entry] {$algoRes['message']}");
-                            } elseif (str_starts_with($algoRes['action'], 'REVERSED_TO_')) {
-                                $totalClosedCount++;
-                                $totalOpenedCount++;
+                            } elseif ($algoRes['reversed_count'] > 0 || str_starts_with($algoRes['action'], 'REVERSED_TO_')) {
+                                $totalClosedCount += max(1, $algoRes['reversed_count']);
+                                $totalOpenedCount += max(1, $algoRes['reversed_count']);
                                 $this->logWarn("🔄 [SignalAlgo Reversal] {$algoRes['message']}");
                             } elseif ($algoRes['action'] === 'MANAGE') {
                                 $totalManagedCount++;
@@ -265,7 +266,7 @@ class TradingDaemonCommand extends Command
                                 $this->logLine("👁️ [Monitoring] {$algoRes['message']}");
                             }
                         } catch (Throwable $algoEx) {
-                            Log::error("[TradingDaemon] SignalAlgo cycle error on {$targetCoin}: {$algoEx->getMessage()}");
+                            Log::error("[TradingDaemon] SignalAlgo multi-coin cycle error: {$algoEx->getMessage()}");
                             $this->logError("SignalAlgo cycle error: {$algoEx->getMessage()}");
                         }
                     } else {

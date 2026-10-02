@@ -568,6 +568,19 @@
                         <span>📊</span>
                         <span>TradingView Studio</span>
                     </button>
+                    <button type="button" onclick="openPineScriptModal()"
+                        class="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-indigo-300 hover:text-white hover:bg-indigo-600/30 border border-indigo-500/30 transition flex items-center space-x-1"
+                        title="Pine Script (v5) Indicator Guide & Exporter for TradingView">
+                        <span>📋</span>
+                        <span>Pine Script (v5)</span>
+                    </button>
+                </div>
+
+                <!-- Auto-Order Execution Mode Pill -->
+                <div class="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs shadow-inner" title="Instant Automated Order Execution (Live or Paper) on Signal">
+                    <span class="w-2 h-2 rounded-full {{ ($tradingMode ?? 'paper') === 'live' ? 'bg-rose-400' : 'bg-emerald-400' }} animate-pulse"></span>
+                    <span class="font-bold text-[11px] {{ ($tradingMode ?? 'paper') === 'live' ? 'text-rose-400' : 'text-emerald-400' }}">AUTO-ORDER:</span>
+                    <span class="font-mono uppercase text-[10px] font-black px-1.5 py-0.5 rounded {{ ($tradingMode ?? 'paper') === 'live' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' }}">{{ strtoupper($tradingMode ?? 'paper') }}</span>
                 </div>
 
                 <!-- Timeframe Selector -->
@@ -581,14 +594,25 @@
                     @endforeach
                 </div>
 
-                <!-- In-Chart Quick Coin Selector (Mobile & Desktop) -->
+                <!-- In-Chart Quick Coin Selector (Mobile & Desktop) with 5+ Monitored Highlights -->
                 <div class="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs shadow-inner overflow-x-auto max-w-full touch-pan-x select-none">
                     <span class="text-slate-500 text-[10px] px-2 font-bold uppercase tracking-wider">COIN</span>
-                    @foreach (['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'NEARUSDT', 'AVAXUSDT', 'SUIUSDT', '1000PEPEUSDT'] as $quickSymbol)
+                    @php
+                        $activeMonitoredList = $monitoredCoins ?? ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'NEARUSDT', 'XRPUSDT', 'DOGEUSDT'];
+                        $quickCoins = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'NEARUSDT', 'AVAXUSDT', 'SUIUSDT', '1000PEPEUSDT'];
+                    @endphp
+                    @foreach ($quickCoins as $quickSymbol)
+                        @php
+                            $isMonitored = in_array($quickSymbol, $activeMonitoredList, true);
+                        @endphp
                         <button type="button" onclick="loadFuturesChart('{{ $quickSymbol }}', false)"
-                            class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white font-bold text-xs transition chart-symbol-btn whitespace-nowrap active:scale-95 touch-manipulation cursor-pointer {{ ($quickSymbol === 'BTCUSDT') ? 'bg-emerald-600 text-white shadow' : '' }}"
-                            id="chart-btn-{{ $quickSymbol }}">
-                            {{ str_replace(['1000', 'USDT'], '', $quickSymbol) }}
+                            class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white font-bold text-xs transition chart-symbol-btn whitespace-nowrap active:scale-95 touch-manipulation cursor-pointer inline-flex items-center space-x-1 {{ ($quickSymbol === 'BTCUSDT') ? 'bg-emerald-600 text-white shadow' : '' }}"
+                            id="chart-btn-{{ $quickSymbol }}"
+                            title="{{ $isMonitored ? 'Continuously Monitored for Signals & Auto-Trade Execution' : 'On-Demand Chart' }}">
+                            @if ($isMonitored)
+                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                            @endif
+                            <span>{{ str_replace(['1000', 'USDT'], '', $quickSymbol) }}</span>
                         </button>
                     @endforeach
                 </div>
@@ -665,53 +689,6 @@
 
             <!-- 2. TradingView Iframe Widget (Alternative mode) -->
             <div id="tradingview_futures_chart" class="hidden w-full h-full relative"></div>
-
-            <!-- Floating Signal Overlay HUD for TradingView Studio -->
-            <div id="tvStudioSignalOverlay" class="hidden absolute top-3 left-4 z-20 pointer-events-auto bg-slate-950/95 backdrop-blur-md p-3.5 rounded-2xl border border-slate-700/80 shadow-2xl max-w-xs sm:max-w-sm transition-all duration-200">
-                <div class="flex items-center justify-between pb-2 border-b border-slate-800 gap-2">
-                    <div class="flex items-center space-x-2">
-                        <span id="tvSignalDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
-                        <span id="tvSignalBadge" class="font-black text-xs uppercase tracking-wider text-slate-300">⚪ STANDBY (NO SETUP)</span>
-                    </div>
-                    <span id="tvSignalScore" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-slate-900 text-slate-300 border border-slate-700">SCORE: --</span>
-                </div>
-
-                <div id="tvSignalDetails" class="mt-2 space-y-1.5 text-[11px]">
-                    <div class="flex items-center justify-between text-slate-400">
-                        <span>Setup: <strong id="tvSetupType" class="text-slate-200 font-semibold">Scanning...</strong></span>
-                        <span>R:R <strong id="tvRrRatio" class="text-emerald-400 font-mono">1 : 2.5</strong></span>
-                    </div>
-                    <div class="grid grid-cols-2 gap-1.5 font-mono pt-1 text-[10px]">
-                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
-                            <div class="text-slate-500 text-[9px] uppercase">Entry</div>
-                            <div id="tvEntryVal" class="text-cyan-400 font-bold">--</div>
-                        </div>
-                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
-                            <div class="text-slate-500 text-[9px] uppercase">Stop Loss</div>
-                            <div id="tvSlVal" class="text-rose-400 font-bold">--</div>
-                        </div>
-                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
-                            <div class="text-slate-500 text-[9px] uppercase">Take Profit 1</div>
-                            <div id="tvTp1Val" class="text-emerald-400 font-bold">--</div>
-                        </div>
-                        <div class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-800">
-                            <div class="text-slate-500 text-[9px] uppercase">Take Profit 2</div>
-                            <div id="tvTp2Val" class="text-emerald-400 font-bold">--</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                    <button type="button" onclick="copyPineScript()" class="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 border border-indigo-500/40 transition flex items-center space-x-1">
-                        <span>📋</span>
-                        <span>Copy Pine Script</span>
-                    </button>
-                    <button type="button" onclick="switchChartMode('algo')" class="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600/50 border border-emerald-500/40 transition flex items-center space-x-1">
-                        <span>⚡</span>
-                        <span>Arrows View</span>
-                    </button>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -962,6 +939,123 @@
     </div>
 </div>
 
+<!-- Pine Script (v5) TradingView Guide & Export Modal -->
+<div id="pineScriptModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm hidden" onclick="if(event.target === this) closePineScriptModal()">
+    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <!-- Modal Header -->
+        <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/70">
+            <div class="flex items-center space-x-3">
+                <div class="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 font-bold text-lg">
+                    🌲
+                </div>
+                <div>
+                    <h3 class="text-base font-bold text-white flex items-center space-x-2">
+                        <span>TradingView Pine Script (v5)</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">v5 Script</span>
+                    </h3>
+                    <p class="text-xs text-slate-400">Run SignalAlgo PRO institutional buy/sell indicator on TradingView.com</p>
+                </div>
+            </div>
+            <button type="button" onclick="closePineScriptModal()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 flex items-center justify-center transition text-lg">
+                ✕
+            </button>
+        </div>
+
+        <!-- Modal Body / Explanations -->
+        <div class="p-6 overflow-y-auto space-y-4 text-xs text-slate-300">
+            <!-- Context Callout -->
+            <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex items-start space-x-3">
+                <span class="text-base leading-none">💡</span>
+                <div class="space-y-1">
+                    <p class="font-bold text-amber-100">What is Pine Script & why is this code here?</p>
+                    <p class="text-[11px] text-amber-200/90 leading-relaxed">
+                        Pine Script is TradingView's programming language for custom indicators. Due to TradingView cross-origin browser security, public embedded web widgets cannot run external custom scripts directly inside another website.
+                        Our native <strong>SignalAlgo PRO Signals Chart</strong> tab already plots all signals live. This Pine Script code is exported so you can run the exact same SignalAlgo PRO strategy directly inside your official <strong>TradingView.com</strong> account or TradingView Desktop app!
+                    </p>
+                </div>
+            </div>
+
+            <!-- How to Use in 3 Steps -->
+            <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                <p class="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-2">
+                    <span>🚀</span>
+                    <span>How to use in TradingView (3 Steps):</span>
+                </p>
+                <ol class="space-y-2 text-slate-300 pl-4 list-decimal text-xs leading-relaxed">
+                    <li>Click the <strong class="text-indigo-300">"Copy Pine Script Code"</strong> button below.</li>
+                    <li>Open <a href="https://www.tradingview.com/chart/" target="_blank" class="text-emerald-400 underline font-semibold hover:text-emerald-300">TradingView.com/chart ↗</a> in your browser.</li>
+                    <li>At the bottom panel, click on the <strong class="text-white">"Pine Editor"</strong> tab, click <em>New indicator</em>, paste this script, and click <strong class="text-emerald-400">"Add to chart"</strong>.</li>
+                </ol>
+            </div>
+
+            <!-- Script Code Preview -->
+            <div class="space-y-1.5">
+                <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                    <span>SignalAlgo_PRO_v5.pine</span>
+                    <span>Pine Script v5 (Overlay Mode)</span>
+                </div>
+                <div class="relative bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-[11px] text-emerald-400/90 max-h-44 overflow-y-auto leading-relaxed select-all">
+<pre id="pineScriptPreviewText">//@version=5
+indicator("SignalAlgo PRO™ Institutional Signals", overlay=true)
+
+// --- Moving Averages ---
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema200 = ta.ema(close, 200)
+
+plot(ema9, color=color.cyan, title="EMA 9", linewidth=2)
+plot(ema21, color=color.orange, title="EMA 21", linewidth=2)
+plot(ema200, color=color.purple, title="EMA 200", linewidth=3)
+
+// --- Trend Alignment ---
+bullTrend = close > ema200 and ema9 > ema21
+bearTrend = close < ema200 and ema9 < ema21
+
+// --- High-Confluence Conditions ---
+rsi14 = ta.rsi(close, 14)
+volSma = ta.sma(volume, 20)
+volRatio = volume / volSma
+
+buyPullback = bullTrend and low <= ema21 and close > ema9 and rsi14 >= 46 and rsi14 <= 68 and volRatio >= 1.05
+buyBreakout = bullTrend and close > ta.highest(high[1], 10) and rsi14 >= 55 and rsi14 <= 72 and volRatio >= 1.3
+
+sellPullback = bearTrend and high >= ema21 and close < ema9 and rsi14 >= 22 and rsi14 <= 54 and volRatio >= 1.05
+sellBreakout = bearTrend and close < ta.lowest(low[1], 10) and rsi14 <= 45 and rsi14 >= 20 and volRatio >= 1.3
+
+buySignal = (buyPullback or buyBreakout) and not (buyPullback[1] or buyBreakout[1])
+sellSignal = (sellPullback or sellBreakout) and not (sellPullback[1] or sellBreakout[1])
+
+// --- Plot Shapes on Chart ---
+plotshape(buySignal, title="SignalAlgo BUY", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.normal, text="BUY [Score: 92]")
+plotshape(sellSignal, title="SignalAlgo SELL", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.normal, text="SELL [Score: 92]")
+
+// --- Alerts ---
+alertcondition(buySignal, title="SignalAlgo BUY Alert", message="⚡ SignalAlgo PRO BUY Signal on @{{ticker}} at @{{close}}")
+alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlgo PRO SELL Signal on @{{ticker}} at @{{close}}")
+</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="px-6 py-3.5 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
+            <a href="https://www.tradingview.com/chart/" target="_blank" class="text-xs text-slate-400 hover:text-white flex items-center space-x-1 transition font-medium">
+                <span>Open TradingView.com</span>
+                <span>↗</span>
+            </a>
+            <div class="flex items-center space-x-2">
+                <button type="button" onclick="closePineScriptModal()" class="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition">
+                    Close
+                </button>
+                <button type="button" id="btnCopyPineModal" onclick="copyPineScriptFromModal()" class="px-5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 shadow-lg shadow-indigo-600/30 transition flex items-center space-x-1.5">
+                    <span>📋</span>
+                    <span id="btnCopyPineModalText">Copy Pine Script Code</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- TradingView & Lightweight Charts Scripts with Fail-Safe Fallback -->
 <script type="text/javascript" src="{{ asset('js/lightweight-charts.standalone.production.js') }}"></script>
 <script type="text/javascript">
@@ -1097,7 +1191,6 @@
         const tvContainer = document.getElementById('tradingview_futures_chart');
         const tooltip = document.getElementById('algoChartTooltip');
         const legend = document.getElementById('algoIndicatorLegend');
-        const tvOverlay = document.getElementById('tvStudioSignalOverlay');
 
         if (mode === 'algo') {
             algoTab.className = 'px-3 py-1.5 rounded-lg font-bold transition flex items-center space-x-1.5 bg-emerald-600 text-white shadow';
@@ -1106,7 +1199,6 @@
             tvContainer.classList.add('hidden');
             if (tooltip) tooltip.classList.remove('hidden');
             if (legend) legend.classList.remove('hidden');
-            if (tvOverlay) tvOverlay.classList.add('hidden');
 
             if (chart && algoContainer) {
                 chart.applyOptions({ width: algoContainer.clientWidth, height: algoContainer.clientHeight });
@@ -1119,7 +1211,6 @@
             tvContainer.classList.remove('hidden');
             if (tooltip) tooltip.classList.add('hidden');
             if (legend) legend.classList.add('hidden');
-            if (tvOverlay) tvOverlay.classList.remove('hidden');
 
             initTradingViewWidget(activeSymbol);
         }
@@ -1633,53 +1724,9 @@
                     if (hudHtf) hudHtf.textContent = data.htf_interval.toUpperCase();
                 }
 
-                // Update TradingView Studio Floating Overlay HUD
-                const tvDot = document.getElementById('tvSignalDot');
-                const tvBadge = document.getElementById('tvSignalBadge');
-                const tvScore = document.getElementById('tvSignalScore');
-                const tvSetup = document.getElementById('tvSetupType');
-                const tvRr = document.getElementById('tvRrRatio');
-                const tvEntry = document.getElementById('tvEntryVal');
-                const tvSl = document.getElementById('tvSlVal');
-                const tvTp1 = document.getElementById('tvTp1Val');
-                const tvTp2 = document.getElementById('tvTp2Val');
-
-                if (tvBadge) {
-                    if (sig && sig.side === 'BUY') {
-                        if (tvDot) tvDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping';
-                        tvBadge.className = 'font-black text-xs uppercase tracking-wider text-emerald-400';
-                        tvBadge.textContent = '🟢 BUY / LONG SIGNAL';
-                        if (tvScore) tvScore.textContent = `SCORE: ${sig.score}/100`;
-                        if (tvSetup) tvSetup.textContent = sig.setup_type || 'BULLISH SETUP';
-                        if (tvRr) tvRr.textContent = perp.risk_reward || '1 : 2.5';
-                    } else if (sig && sig.side === 'SELL') {
-                        if (tvDot) tvDot.className = 'w-2.5 h-2.5 rounded-full bg-rose-400 animate-ping';
-                        tvBadge.className = 'font-black text-xs uppercase tracking-wider text-rose-400';
-                        tvBadge.textContent = '🔴 SELL / SHORT SIGNAL';
-                        if (tvScore) tvScore.textContent = `SCORE: ${sig.score}/100`;
-                        if (tvSetup) tvSetup.textContent = sig.setup_type || 'BEARISH SETUP';
-                        if (tvRr) tvRr.textContent = perp.risk_reward || '1 : 2.5';
-                    } else {
-                        if (tvDot) tvDot.className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
-                        tvBadge.className = 'font-black text-xs uppercase tracking-wider text-slate-400';
-                        tvBadge.textContent = '⚪ STANDBY (NO SETUP)';
-                        const rawScore = Math.max(diag.buy_score || 0, diag.sell_score || 0);
-                        if (tvScore) tvScore.textContent = `SCORE: ${rawScore}/100`;
-                        if (tvSetup) tvSetup.textContent = 'SCANNING...';
-                        if (tvRr) tvRr.textContent = '--';
-                    }
-
-                    if (sig && sig.entry) {
-                        if (tvEntry) tvEntry.textContent = fmt(sig.entry);
-                        if (tvSl) tvSl.textContent = fmt(sig.sl);
-                        if (tvTp1) tvTp1.textContent = fmt(sig.tp1);
-                        if (tvTp2) tvTp2.textContent = fmt(sig.tp2);
-                    } else {
-                        if (tvEntry) tvEntry.textContent = '--';
-                        if (tvSl) tvSl.textContent = '--';
-                        if (tvTp1) tvTp1.textContent = '--';
-                        if (tvTp2) tvTp2.textContent = '--';
-                    }
+                // Automated Order Execution Toast & Alert Feedback
+                if (data.auto_order && (data.auto_order.status === 'opened' || data.auto_order.status === 'executed' || data.auto_order.status === 'reversed_and_opened' || data.auto_order.status === 'same_direction')) {
+                    showAutoOrderNotification(data.auto_order);
                 }
             })
             .catch(err => {
@@ -1693,6 +1740,56 @@
                     badge.textContent = 'STATUS: STANDBY';
                 }
             });
+    }
+
+    function showAutoOrderNotification(order) {
+        if (!order) return;
+
+        let container = document.getElementById('autoOrderToastContainer');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'autoOrderToastContainer';
+            container.className = 'fixed bottom-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none max-w-sm';
+            document.body.appendChild(container);
+        }
+
+        const isExecuted = order.status === 'opened' || order.status === 'executed' || order.status === 'reversed_and_opened';
+        const isSame = order.status === 'same_direction';
+
+        const toast = document.createElement('div');
+        const borderClass = isExecuted
+            ? 'border-emerald-500 bg-slate-900/95 text-white shadow-emerald-950/50'
+            : (isSame ? 'border-cyan-500 bg-slate-900/95 text-slate-200 shadow-cyan-950/50' : 'border-slate-700 bg-slate-900/95 text-slate-300');
+
+        toast.className = `p-3.5 rounded-xl shadow-2xl border text-xs pointer-events-auto transform transition-all duration-300 translate-y-3 opacity-0 flex items-start space-x-3 ${borderClass}`;
+
+        const icon = isExecuted ? '🚀' : (isSame ? '🛡️' : 'ℹ️');
+        const modeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+            order.mode === 'live' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+        }">${order.mode || 'PAPER'} ORDER</span>`;
+
+        toast.innerHTML = `
+            <span class="text-xl leading-none mt-0.5">${icon}</span>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center justify-between gap-2 mb-1">
+                    <strong class="font-bold text-slate-100">${isExecuted ? 'Auto-Trade Placed' : 'Position Protected'}</strong>
+                    ${modeBadge}
+                </div>
+                <div class="text-[11px] text-slate-300 leading-snug break-words">${order.message}</div>
+                <div class="text-[10px] text-slate-400 font-mono mt-1">${order.symbol} • ${new Date().toLocaleTimeString()}</div>
+            </div>
+            <button type="button" class="text-slate-400 hover:text-white font-bold ml-1 text-sm cursor-pointer" onclick="this.parentElement.remove()">&times;</button>
+        `;
+
+        container.appendChild(toast);
+        requestAnimationFrame(() => {
+            toast.classList.remove('translate-y-3', 'opacity-0');
+        });
+
+        setTimeout(() => {
+            toast.classList.add('opacity-0', 'translate-y-3');
+            setTimeout(() => toast.remove(), 400);
+        }, 8000);
     }
 
     function loadFuturesChart(rawSymbol, autoScroll = true) {
@@ -1809,8 +1906,22 @@
         });
     }
 
-    function copyPineScript() {
-        const pineCode = `//@version=5
+    function openPineScriptModal() {
+        const modal = document.getElementById('pineScriptModal');
+        if (modal) modal.classList.remove('hidden');
+    }
+
+    function closePineScriptModal() {
+        const modal = document.getElementById('pineScriptModal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    function getPineScriptCode() {
+        const el = document.getElementById('pineScriptPreviewText');
+        if (el && el.textContent.trim().length > 0) {
+            return el.textContent.trim();
+        }
+        return `//@version=5
 indicator("SignalAlgo PRO™ Institutional Signals", overlay=true)
 
 // --- Moving Averages ---
@@ -1822,17 +1933,15 @@ plot(ema9, color=color.cyan, title="EMA 9", linewidth=2)
 plot(ema21, color=color.orange, title="EMA 21", linewidth=2)
 plot(ema200, color=color.purple, title="EMA 200", linewidth=3)
 
-// --- Technical Indicators ---
-rsi14 = ta.rsi(close, 14)
-atr14 = ta.atr(14)
-volSma = ta.sma(volume, 20)
-volRatio = volume / volSma
-
 // --- Trend Alignment ---
 bullTrend = close > ema200 and ema9 > ema21
 bearTrend = close < ema200 and ema9 < ema21
 
 // --- High-Confluence Conditions ---
+rsi14 = ta.rsi(close, 14)
+volSma = ta.sma(volume, 20)
+volRatio = volume / volSma
+
 buyPullback = bullTrend and low <= ema21 and close > ema9 and rsi14 >= 46 and rsi14 <= 68 and volRatio >= 1.05
 buyBreakout = bullTrend and close > ta.highest(high[1], 10) and rsi14 >= 55 and rsi14 <= 72 and volRatio >= 1.3
 
@@ -1850,8 +1959,21 @@ plotshape(sellSignal, title="SignalAlgo SELL", location=location.abovebar, color
 alertcondition(buySignal, title="SignalAlgo BUY Alert", message="⚡ SignalAlgo PRO BUY Signal on @{{ticker}} at @{{close}}")
 alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlgo PRO SELL Signal on @{{ticker}} at @{{close}}")
 `;
+    }
 
+    function copyPineScriptFromModal() {
+        const pineCode = getPineScriptCode();
         copyToClipboard(pineCode, 'SignalAlgo PRO Pine Script v5 copied! Paste into TradingView Pine Editor.');
+        const btnText = document.getElementById('btnCopyPineModalText');
+        if (btnText) {
+            const old = btnText.textContent;
+            btnText.textContent = '✓ Copied to Clipboard!';
+            setTimeout(() => { btnText.textContent = old; }, 2500);
+        }
+    }
+
+    function copyPineScript() {
+        openPineScriptModal();
     }
 
     // ==========================================

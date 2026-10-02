@@ -338,8 +338,8 @@ class TradingDaemonManager
         $managedCount = 0;
         $closedTrades = [];
 
-        // 1. Auto-prune any open trades that do not belong to the selected coin
-        if (config('trading.single_coin_strict', true)) {
+        // 1. Auto-prune any open trades only if single_coin_strict is explicitly enabled
+        if (config('trading.single_coin_strict', false)) {
             $targetCoin = TradingTargetManager::getActiveCoin();
             $strayOpen = Trade::where('mode', $mode)
                 ->where('status', 'OPEN')
@@ -359,7 +359,7 @@ class TradingDaemonManager
             }
         }
 
-        // 2. Position management always protects open trades
+        // 2. Position management always protects all open trades
         $openTrades = Trade::where('mode', $mode)
             ->where('status', 'OPEN')
             ->get();
@@ -376,26 +376,26 @@ class TradingDaemonManager
             }
         }
 
-        // 2. Focused Single-Coin SignalAlgo PRO Strategy Cycle (15m & 1h)
+        // 3. Multi-Coin SignalAlgo PRO Strategy Cycle (15m & 1h)
         $scannedCount = 0;
         $openedTrade = null;
-        $targetCoin = TradingTargetManager::getActiveCoin();
+        $monitoredCoins = TradingTargetManager::getMonitoredCoins();
 
         if ($account->canTrade()) {
             try {
                 $algoRes = $this->signalAlgoTrader->runCycle($mode);
-                $scannedCount = 1;
+                $scannedCount = count($monitoredCoins);
 
-                if ($algoRes['action'] === 'OPEN_LONG' || $algoRes['action'] === 'OPEN_SHORT') {
-                    $openedTrade = "{$targetCoin} {$algoRes['action']} opened!";
-                    Log::info("[AutonomousTrader] Order Executed: {$targetCoin} - {$algoRes['message']}");
-                } elseif (str_starts_with($algoRes['action'], 'REVERSED_TO_')) {
-                    $openedTrade = "{$targetCoin} {$algoRes['action']} reversed!";
-                    $closedTrades[] = "{$targetCoin} reversed on chart signal";
-                    Log::info("[AutonomousTrader] Reversal Executed: {$targetCoin} - {$algoRes['message']}");
+                if (($algoRes['opened_count'] ?? 0) > 0 || $algoRes['action'] === 'OPEN_LONG' || $algoRes['action'] === 'OPEN_SHORT') {
+                    $openedTrade = "{$algoRes['symbol']} {$algoRes['action']} opened!";
+                    Log::info("[AutonomousTrader] Order Executed: {$algoRes['symbol']} - {$algoRes['message']}");
+                } elseif (($algoRes['reversed_count'] ?? 0) > 0 || str_starts_with($algoRes['action'], 'REVERSED_TO_')) {
+                    $openedTrade = "{$algoRes['symbol']} {$algoRes['action']} reversed!";
+                    $closedTrades[] = "{$algoRes['symbol']} reversed on chart signal";
+                    Log::info("[AutonomousTrader] Reversal Executed: {$algoRes['symbol']} - {$algoRes['message']}");
                 }
             } catch (Throwable $e) {
-                Log::error("[AutonomousTrader] SignalAlgo cycle error on {$targetCoin}: {$e->getMessage()}");
+                Log::error("[AutonomousTrader] SignalAlgo multi-coin cycle error: {$e->getMessage()}");
             }
         }
 

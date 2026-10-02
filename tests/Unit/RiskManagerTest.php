@@ -129,6 +129,7 @@ class RiskManagerTest extends TestCase
 
     public function test_stage_1_excludes_heavy_coins(): void
     {
+        config(['trading.single_coin_strict' => true]);
         $riskManager = app(RiskManager::class);
 
         $account = TradingAccount::create([

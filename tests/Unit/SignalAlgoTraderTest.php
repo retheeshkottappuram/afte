@@ -12,6 +12,7 @@ use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\SignalAlgoTrader;
 use App\Services\Trading\TradingTargetManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Mockery;
 use Tests\TestCase;
 
@@ -22,6 +23,7 @@ class SignalAlgoTraderTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Http::fake();
         TradingTargetManager::setActiveCoin('NEARUSDT');
     }
 
@@ -264,5 +266,68 @@ class SignalAlgoTraderTest extends TestCase
         $this->assertEquals('CLOSED', $trade->stage);
         // Gain: (5.08 - 5.00) * 1.0 = +$0.08
         $this->assertEquals(0.08, $trade->realized_pnl);
+    }
+
+    public function test_it_resolves_trading_mode_defaults_to_paper_when_not_live(): void
+    {
+        config(['trading.mode' => 'paper']);
+        $binanceClient = Mockery::mock(BinanceClient::class);
+        $signalEngine = Mockery::mock(SignalEngine::class);
+        $orderExecutor = Mockery::mock(OrderExecutor::class);
+        $tradeManager = app(DynamicTradeManager::class);
+        $notifier = Mockery::mock(TelegramNotifier::class);
+
+        $trader = new SignalAlgoTrader($binanceClient, $signalEngine, $orderExecutor, $tradeManager, $notifier);
+        $mode = $trader->resolveTradingMode();
+
+        $this->assertEquals('paper', $mode);
+    }
+
+    public function test_process_signal_for_execution_triggers_paper_order(): void
+    {
+        TradingAccount::create([
+            'mode' => 'paper',
+            'initial_balance' => 100.0,
+            'balance' => 100.0,
+            'equity' => 100.0,
+            'peak_equity' => 100.0,
+            'is_running' => true,
+        ]);
+
+        $binanceClient = Mockery::mock(BinanceClient::class);
+        $signalEngine = Mockery::mock(SignalEngine::class);
+        $orderExecutor = Mockery::mock(OrderExecutor::class);
+        $tradeManager = app(DynamicTradeManager::class);
+        $notifier = Mockery::mock(TelegramNotifier::class);
+
+        $orderExecutor->shouldReceive('executeSignal')->once()->andReturn([
+            'status' => 'opened',
+            'trade' => null,
+            'message' => 'LONG trade placed on BTCUSDT',
+        ]);
+
+        $trader = new SignalAlgoTrader($binanceClient, $signalEngine, $orderExecutor, $tradeManager, $notifier);
+
+        $signal = [
+            'symbol' => 'BTCUSDT',
+            'interval' => '15m',
+            'side' => 'BUY',
+            'direction' => 'LONG',
+            'score' => 95,
+            'grade' => 'A',
+            'price' => 65000.0,
+            'initial_sl' => 64000.0,
+            'tp1' => 66500.0,
+            'tp2' => 68000.0,
+            'risk_reward' => '1 : 2.5',
+            'marker_time' => now()->timestamp,
+            'setup_type' => 'PULLBACK_VALUE',
+        ];
+
+        $res = $trader->processSignalForExecution('BTCUSDT', $signal, 'paper');
+
+        $this->assertEquals('opened', $res['status']);
+        $this->assertEquals('paper', $res['mode']);
+        $this->assertEquals('OPEN_LONG', $res['action']);
     }
 }

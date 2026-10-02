@@ -13,13 +13,14 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Targeted Single-Coin Trading Asset
+    | Monitored Trading Assets (At least 5 coins)
     |--------------------------------------------------------------------------
-    | The dedicated asset monitored continuously on 15m & 1h SignalAlgo PRO charts.
+    | The dedicated assets monitored continuously on 15m & 1h SignalAlgo PRO charts.
     */
     'symbol' => env('TRADING_SYMBOL', 'NEARUSDT'),
     'active_coin' => env('TRADING_ACTIVE_COIN', 'NEARUSDT'),
-    'single_coin_strict' => (bool) env('TRADING_SINGLE_COIN_STRICT', true),
+    'single_coin_strict' => (bool) env('TRADING_SINGLE_COIN_STRICT', false),
+    'monitored_coins' => array_values(array_filter(array_map('trim', explode(',', env('TRADING_MONITORED_COINS', 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,NEARUSDT,XRPUSDT,DOGEUSDT'))))),
 
     /*
     |--------------------------------------------------------------------------
@@ -55,12 +56,12 @@ return [
         // Stage 1: Seed ($3 to $25) - High-velocity micro compounding on momentum altcoins
         'stage_1' => [
             'max_equity' => 25.0,
-            'max_positions' => 3,     // Allows up to 3 concurrent positions
-            'max_unprotected' => 2,   // Allows up to 2 unprotected positions; protected (BE/TP1) positions don't count
+            'max_positions' => 3,
+            'max_unprotected' => 2,
             'default_leverage' => 10,
             'max_risk_pct' => 5.0,
             'min_score' => 80,
-            'max_coin_price' => 50.0, // Exclude heavy coins (BTC/ETH) to allow fine-grained lot sizing
+            'max_coin_price' => 15.0,
             'exclude_symbols' => ['BTCUSDT', 'ETHUSDT'],
         ],
         // Stage 2: Acceleration ($25 to $100)

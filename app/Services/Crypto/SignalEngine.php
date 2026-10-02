@@ -272,140 +272,196 @@ class SignalEngine
         $rawSl = 0.0;
         $score = 0;
 
-        // Long Setup 1: Wyckoff Spring Liquidity Reversal
-        $isSpringLong = ($low < $previousLow || $lows[$i - 1] < $previousLow)
-            && ($close > $previousLow)
-            && ($close > $open)
-            && ($lowerWickRatio >= 0.40)
-            && ! $htf1Bear
-            && $close > $emaFast[$i]
-            && $above200Ema
-            && $rsRatio >= 0.995;
+        $valAtr = ($atr[$i] !== null && (float) $atr[$i] > 0) ? (float) $atr[$i] : max(0.0001, $close * 0.012);
+        $isClimaxCandle = ($candleRange > $valAtr * 2.5);
+        $isLongExtended = ($close > (float) $emaFast[$i] * 1.018) || ((float) $rsi[$i] > 68.0);
+        $isShortExtended = ($close < (float) $emaFast[$i] * 0.982) || ((float) $rsi[$i] < 34.0);
 
-        // Long Setup 2: Pre-Breakout Ascending Coil Squeeze
-        $isPreBreakoutLong = ($distToResPct >= 0.10 && $distToResPct <= 0.85)
-            && ($hasHigherLows || $close > $emaFast[$i])
+        // EMA Golden / Death Cross
+        $emaCrossBull = ($i >= 1 && $emaFast[$i - 1] !== null && $emaSlow[$i - 1] !== null && $emaFast[$i - 1] <= $emaSlow[$i - 1] && $emaFast[$i] > $emaSlow[$i]);
+        $emaCrossBear = ($i >= 1 && $emaFast[$i - 1] !== null && $emaSlow[$i - 1] !== null && $emaFast[$i - 1] >= $emaSlow[$i - 1] && $emaFast[$i] < $emaSlow[$i]);
+
+        // 1. Market State & Structural Range Calculation
+        $rangePct = $previousLow > 0 ? (($previousHigh - $previousLow) / $previousLow) * 100.0 : 0.0;
+        $isChopZone = ($rangePct < 2.0) && ($adx[$i] < 22.0);
+
+        $fastVal = (float) $emaFast[$i];
+        $slowVal = (float) $emaSlow[$i];
+        $trendVal = $emaTrend[$i] !== null ? (float) $emaTrend[$i] : null;
+
+        // Dynamic Trend Strengths
+        $isStrongBullMomentum = ($fastVal > $slowVal * 1.002) && ($close >= $fastVal);
+        $isStrongBearMomentum = ($fastVal < $slowVal * 0.998) && ($close <= $fastVal);
+
+        // 2. High-Conviction Breakout / Breakdown Direction Starts
+        $isBreakoutStartLong = ! $isLongExtended
+            && ! $isClimaxCandle
+            && ($close > ($previousHigh * (1.0 + $breakoutBuffer)))
+            && ($close <= $fastVal * 1.018)
             && $bullCandle
-            && $upperWickRatio <= 0.25
-            && $rsRatio >= 0.995
-            && $htf1OK
+            && ($volRatio >= 1.20 || $isCompressed)
+            && ($rsi[$i] >= 50.0 && $rsi[$i] <= 70.0)
+            && $fastVal >= $slowVal * 0.998;
+
+        $isBreakdownStartShort = ! $isShortExtended
+            && ! $isClimaxCandle
+            && ($close < ($previousLow * (1.0 - $breakoutBuffer)))
+            && ($close >= $fastVal * 0.982)
+            && $bearCandle
+            && ($volRatio >= 1.20 || $isCompressed)
+            && ($rsi[$i] <= 50.0 && $rsi[$i] >= 30.0)
+            && $fastVal <= $slowVal * 1.002;
+
+        // 3. Trend Continuation 21-EMA Pullback (Requires confirmed trend ADX >= 20, never in chop)
+        $isPullbackBounceLong = ! $isChopZone
+            && ($adx[$i] >= 20.0)
             && $trendBull
-            && $above200Ema;
+            && ! $isLongExtended
+            && ($low <= $slowVal * 1.003 && $close >= $slowVal * 0.996)
+            && ($close > $fastVal || $lowerWickRatio >= 0.25 || $bullCandle)
+            && ($rsi[$i] >= 42.0 && $rsi[$i] <= 62.0);
 
-        // Long Setup 3: Institutional 21-EMA Value Pullback Bounce
-        $isPullbackBounceLong = $trendBull
-            && $htf1OK
-            && $above200Ema
-            && $rsRatio >= 0.995
-            && ($low <= $emaSlow[$i] * 1.003 && $close > $emaFast[$i])
-            && $bullCandle
-            && ($lowerWickRatio >= 0.25)
-            && ($rsi[$i] >= 46.0 && $rsi[$i] <= 68.0);
-
-        // Long Setup 4: Confirmed Donchian Breakout
-        $isDonchianBreakoutLong = $close > ($previousHigh * (1.0 + $breakoutBuffer))
-            && $bullCandle && $htf1OK && $volRatio >= 1.15 && $above200Ema && $rsRatio >= 0.995;
-
-        // Long Setup 5: Breakout Retest Bounce
-        $isRetestLong = ($i >= 2 && $closes[$i - 1] > $previousHigh && $low <= ($previousHigh * 1.003) && $close >= $previousHigh && $bullCandle && $htf1OK && $above200Ema);
-
-        // Short Setup 1: Wyckoff Upthrust Liquidity Reversal
-        $isUpthrustShort = ($high > $previousHigh || $highs[$i - 1] > $previousHigh)
-            && ($close < $previousHigh)
-            && ($close < $open)
-            && ($upperWickRatio >= 0.40)
-            && ! $htf1Bull
-            && $close < $emaFast[$i]
-            && $below200Ema
-            && $rsRatio <= 1.005;
-
-        // Short Setup 2: Pre-Breakdown Descending Coil Squeeze
-        $isPreBreakdownShort = ($distToSupPct >= 0.10 && $distToSupPct <= 0.85)
-            && ($hasLowerHighs || $close < $emaFast[$i])
-            && $bearCandle
-            && $lowerWickRatio <= 0.25
-            && $rsRatio <= 1.005
-            && $htf1OKBear
+        $isPullbackRejectShort = ! $isChopZone
+            && ($adx[$i] >= 20.0)
             && $trendBear
-            && $below200Ema;
+            && ! $isShortExtended
+            && ($high >= $slowVal * 0.997 && $close <= $slowVal * 1.004)
+            && ($close < $fastVal || $upperWickRatio >= 0.25 || $bearCandle)
+            && ($rsi[$i] <= 58.0 && $rsi[$i] >= 38.0);
 
-        // Short Setup 3: Institutional 21-EMA Value Pullback Rejection
-        $isPullbackRejectShort = $trendBear
-            && $htf1OKBear
-            && $below200Ema
-            && $rsRatio <= 1.005
-            && ($high >= $emaSlow[$i] * 0.997 && $close < $emaFast[$i])
+        // Dynamic Trend & Momentum Protections
+        // 1. NEVER short if price is above EMA 9 (eliminates XRP 1.54 and SOL 121 fake short)
+        $allowPeakShort = ! $isChopZone && ($close < $fastVal);
+
+        // 2. NEVER buy if price is below EMA 9 (eliminates NEAR 5.20 waterfall dump fake buy)
+        $allowTroughLong = ! $isChopZone && ($close > $fastVal);
+
+        $recentHighMax = max($high, $highs[$i - 1] ?? $high, $highs[$i - 2] ?? $high);
+        $recentLowMin = min($low, $lows[$i - 1] ?? $low, $lows[$i - 2] ?? $low);
+        $isNearSwingPeak = ($recentHighMax >= $previousHigh * 0.997);
+        $isNearSwingTrough = ($recentLowMin <= $previousLow * 1.003);
+
+        $prevRsi = $rsi[$i - 1] ?? 50.0;
+        $prev2Rsi = $rsi[$i - 2] ?? 50.0;
+        $rsiPeaked = max($rsi[$i], $prevRsi, $prev2Rsi) >= 54.0 && ($rsi[$i] < $prevRsi || $close < $open);
+        $rsiBottomed = min($rsi[$i], $prevRsi, $prev2Rsi) <= 46.0 && ($rsi[$i] > $prevRsi || $close > $open);
+
+        $isPeakEngulfingShort = $allowPeakShort
+            && $isNearSwingPeak
+            && ($close < $fastVal)
+            && ($close < ($opens[$i - 1] ?? $open))
             && $bearCandle
-            && ($upperWickRatio >= 0.25)
-            && ($rsi[$i] <= 54.0 && $rsi[$i] >= 32.0);
+            && ! $isShortExtended
+            && $rsiPeaked;
 
-        // Short Setup 4: Confirmed Donchian Breakdown
-        $isDonchianBreakdownShort = $close < ($previousLow * (1.0 - $breakoutBuffer))
-            && $bearCandle && $htf1OKBear && $volRatio >= 1.15 && $below200Ema && $rsRatio <= 1.005;
+        $isPeakUpthrustShort = $allowPeakShort
+            && $isNearSwingPeak
+            && ($upperWickRatio >= 0.35)
+            && ($close < $fastVal)
+            && ($close < $open)
+            && ! $isShortExtended
+            && $rsiPeaked;
 
-        // Short Setup 5: Breakdown Retest Rejection
-        $isRetestShort = ($i >= 2 && $closes[$i - 1] < $previousLow && $high >= ($previousLow * 0.997) && $close <= $previousLow && $bearCandle && $htf1OKBear && $below200Ema);
+        $isPeakEma9LossShort = $allowPeakShort
+            && $isNearSwingPeak
+            && ($close < $fastVal)
+            && (($closes[$i - 1] ?? $close) >= ($emaFast[$i - 1] ?? $fastVal) * 0.998)
+            && ($close < $open)
+            && ! $isShortExtended
+            && $rsiPeaked;
 
-        if ($isSpringLong) {
+        $isSwingPeakShort = ($isPeakEngulfingShort || $isPeakUpthrustShort || $isPeakEma9LossShort);
+
+        $isTroughEngulfingLong = $allowTroughLong
+            && $isNearSwingTrough
+            && ($close > $fastVal)
+            && ($close > ($opens[$i - 1] ?? $open))
+            && $bullCandle
+            && ! $isLongExtended
+            && $rsiBottomed;
+
+        $isTroughSpringLong = $allowTroughLong
+            && $isNearSwingTrough
+            && ($lowerWickRatio >= 0.35)
+            && ($close > $fastVal)
+            && ($close > $open)
+            && ! $isLongExtended
+            && $rsiBottomed;
+
+        $isTroughEma9ReclaimLong = $allowTroughLong
+            && $isNearSwingTrough
+            && ($close > $fastVal)
+            && (($closes[$i - 1] ?? $close) <= ($emaFast[$i - 1] ?? $fastVal) * 1.002)
+            && ($close > $open)
+            && ! $isLongExtended
+            && $rsiBottomed;
+
+        $isSwingTroughLong = ($isTroughEngulfingLong || $isTroughSpringLong || $isTroughEma9ReclaimLong);
+
+        // 5. EMA 9/21 Cross Momentum (Golden & Death Cross)
+        $isEmaCrossLong = $emaCrossBull
+            && ! $isChopZone
+            && $close > $fastVal
+            && $bullCandle
+            && ($rsi[$i] >= 48.0 && $rsi[$i] <= 66.0)
+            && ! $isLongExtended;
+
+        $isEmaCrossShort = $emaCrossBear
+            && ! $isChopZone
+            && $close < $fastVal
+            && $bearCandle
+            && ($rsi[$i] <= 52.0 && $rsi[$i] >= 34.0)
+            && ! $isShortExtended;
+
+        // Priority Hierarchy Setup Execution: Breakouts first, then confirmed swing reversals, then pullbacks, then crosses
+        if ($isBreakoutStartLong) {
             $side = 'BUY';
-            $setupType = 'WYCKOFF_SPRING';
-            $setupLabel = 'WYCKOFF SPRING REVERSAL';
-            $score = 95;
-            $rawSl = min($low, $lows[$i - 1]) * 0.998;
-        } elseif ($isPreBreakoutLong) {
+            $setupType = 'BREAKOUT_START';
+            $setupLabel = 'BREAKOUT DIRECTION START';
+            $score = 96;
+            $rawSl = max($previousHigh * 0.995, $low * 0.998);
+        } elseif ($isBreakdownStartShort) {
+            $side = 'SELL';
+            $setupType = 'BREAKDOWN_START';
+            $setupLabel = 'BREAKDOWN DIRECTION START';
+            $score = 96;
+            $rawSl = min($previousLow * 1.005, $high * 1.002);
+        } elseif ($isSwingPeakShort) {
+            $side = 'SELL';
+            $setupType = 'SWING_PEAK_REVERSAL';
+            $setupLabel = 'SWING PEAK REVERSAL';
+            $score = 94;
+            $rawSl = max($high, $highs[$i - 1] ?? $high, $highs[$i - 2] ?? $high) * 1.003;
+        } elseif ($isSwingTroughLong) {
             $side = 'BUY';
-            $setupType = 'PRE_BREAKOUT_COIL';
-            $setupLabel = 'PRE-BREAKOUT ASCENDING COIL';
-            $score = 92;
-            $rawSl = min($low1, $low2) * 0.998;
-        } elseif ($isUpthrustShort) {
-            $side = 'SELL';
-            $setupType = 'WYCKOFF_UPTHRUST';
-            $setupLabel = 'WYCKOFF UPTHRUST REVERSAL';
-            $score = 95;
-            $rawSl = max($high, $highs[$i - 1]) * 1.002;
-        } elseif ($isPreBreakdownShort) {
-            $side = 'SELL';
-            $setupType = 'PRE_BREAKOUT_COIL';
-            $setupLabel = 'PRE-BREAKDOWN DESCENDING COIL';
-            $score = 92;
-            $rawSl = max($high1, $high2) * 1.002;
+            $setupType = 'SWING_TROUGH_REVERSAL';
+            $setupLabel = 'SWING TROUGH REVERSAL';
+            $score = 94;
+            $rawSl = min($low, $lows[$i - 1] ?? $low, $lows[$i - 2] ?? $low) * 0.997;
         } elseif ($isPullbackBounceLong) {
             $side = 'BUY';
             $setupType = 'PULLBACK_VALUE';
-            $setupLabel = '21-EMA VALUE PULLBACK BOUNCE';
-            $score = 88;
-            $rawSl = $low * 0.998;
+            $setupLabel = '21-EMA TREND PULLBACK BOUNCE';
+            $score = 90;
+            $rawSl = min($low, $slowVal) * 0.998;
         } elseif ($isPullbackRejectShort) {
             $side = 'SELL';
             $setupType = 'PULLBACK_VALUE';
-            $setupLabel = '21-EMA VALUE PULLBACK REJECTION';
-            $score = 88;
-            $rawSl = $high * 1.002;
-        } elseif ($isDonchianBreakoutLong) {
+            $setupLabel = '21-EMA TREND PULLBACK REJECTION';
+            $score = 90;
+            $rawSl = max($high, $slowVal) * 1.002;
+        } elseif ($isEmaCrossLong) {
             $side = 'BUY';
-            $setupType = 'BREAKOUT_CONFIRMED';
-            $setupLabel = 'RESISTANCE BREAKOUT CONFIRMED';
+            $setupType = 'EMA_CROSS_MOMENTUM';
+            $setupLabel = 'EMA 9/21 GOLDEN CROSS';
             $score = 88;
-            $rawSl = max($previousHigh * 0.995, $low * 0.998);
-        } elseif ($isDonchianBreakdownShort) {
+            $rawSl = min($low1, $low2) * 0.998;
+        } elseif ($isEmaCrossShort) {
             $side = 'SELL';
-            $setupType = 'BREAKDOWN_CONFIRMED';
-            $setupLabel = 'SUPPORT BREAKDOWN CONFIRMED';
+            $setupType = 'EMA_CROSS_MOMENTUM';
+            $setupLabel = 'EMA 9/21 DEATH CROSS';
             $score = 88;
-            $rawSl = min($previousLow * 1.005, $high * 1.002);
-        } elseif ($isRetestLong) {
-            $side = 'BUY';
-            $setupType = 'RETEST_ENTRY';
-            $setupLabel = 'BREAKOUT RETEST & BOUNCE';
-            $score = 86;
-            $rawSl = $low * 0.998;
-        } elseif ($isRetestShort) {
-            $side = 'SELL';
-            $setupType = 'RETEST_ENTRY';
-            $setupLabel = 'BREAKDOWN RETEST & REJECTION';
-            $score = 86;
-            $rawSl = $high * 1.002;
+            $rawSl = max($high1, $high2) * 1.002;
         }
 
         if ($side !== null) {
@@ -676,104 +732,223 @@ class SignalEngine
                 $above200Ema = $emaTrend[$i] === null || $curClose > (float) $emaTrend[$i];
                 $below200Ema = $emaTrend[$i] === null || $curClose < (float) $emaTrend[$i];
 
+                $valAtr = ($atr[$i] !== null && (float) $atr[$i] > 0) ? (float) $atr[$i] : max(0.0001, $curClose * 0.012);
+                $isClimaxCandle = ($candleRange > $valAtr * 2.5);
+                $isLongExtended = ($curClose > (float) $emaFast[$i] * 1.018) || ((float) $rsi[$i] > 68.0);
+                $isShortExtended = ($curClose < (float) $emaFast[$i] * 0.982) || ((float) $rsi[$i] < 34.0);
+
+                // EMA Golden / Death Cross
+                $emaCrossBull = ($i >= 1 && $emaFast[$i - 1] !== null && $emaSlow[$i - 1] !== null && $emaFast[$i - 1] <= $emaSlow[$i - 1] && $emaFast[$i] > $emaSlow[$i]);
+                $emaCrossBear = ($i >= 1 && $emaFast[$i - 1] !== null && $emaSlow[$i - 1] !== null && $emaFast[$i - 1] >= $emaSlow[$i - 1] && $emaFast[$i] < $emaSlow[$i]);
+
                 $histSide = null;
                 $histSetupType = null;
                 $histSetupLabel = null;
                 $histScore = 0;
                 $histRawSl = 0.0;
 
-                // Long Setups (Only when bullish trend aligned or strong breakout with momentum)
-                if ($rsi[$i] >= 46.0 && $rsi[$i] <= 68.0) {
-                    // Setup 1: Confirmed Resistance Breakout
-                    if ($curClose > ($previousHigh * (1.0 + $breakoutBuffer)) && $bullCandle && $volRatio >= 1.15 && $above200Ema) {
-                        $histSide = 'BUY';
-                        $histSetupType = 'BREAKOUT_CONFIRMED';
-                        $histSetupLabel = 'RESISTANCE BREAKOUT CONFIRMED';
-                        $histScore = 94;
-                        $histRawSl = max($previousHigh * 0.995, $curLow * 0.998);
-                    }
-                    // Setup 2: 21-EMA Value Pullback Bounce
-                    elseif ($trendBull && ($curLow <= $emaSlow[$i] * 1.003 && $curClose > $emaFast[$i]) && $bullCandle && $lowerWickRatio >= 0.25) {
-                        $histSide = 'BUY';
-                        $histSetupType = 'PULLBACK_VALUE';
-                        $histSetupLabel = '21-EMA VALUE PULLBACK BOUNCE';
-                        $histScore = 90;
-                        $histRawSl = $curLow * 0.998;
-                    }
-                    // Setup 3: Pre-Breakout Ascending Coil
-                    elseif ($trendBull && $distToResPct >= 0.10 && $distToResPct <= 0.85 && $curClose > $emaFast[$i] && $bullCandle && $upperWickRatio <= 0.25 && $volRatio >= 1.10) {
-                        $histSide = 'BUY';
-                        $histSetupType = 'PRE_BREAKOUT_COIL';
-                        $histSetupLabel = 'PRE-BREAKOUT ASCENDING COIL';
-                        $histScore = 88;
-                        $histRawSl = min($curLow, $lows[$i - 1]) * 0.998;
-                    }
-                    // Setup 4: Wyckoff Spring Liquidity Reversal
-                    elseif (($curLow < $previousLow || $lows[$i - 1] < $previousLow) && $curClose > $previousLow && $curClose > $curOpen && $lowerWickRatio >= 0.40 && $volRatio >= 1.10 && $curClose > $emaFast[$i] && $above200Ema) {
-                        $histSide = 'BUY';
-                        $histSetupType = 'WYCKOFF_SPRING';
-                        $histSetupLabel = 'WYCKOFF SPRING REVERSAL';
-                        $histScore = 95;
-                        $histRawSl = min($curLow, $lows[$i - 1]) * 0.998;
-                    }
-                    // Setup 5: Breakout Retest Bounce
-                    elseif ($i >= 2 && $closes[$i - 1] > $previousHigh && $curLow <= ($previousHigh * 1.003) && $curClose >= $previousHigh && $bullCandle && $above200Ema) {
-                        $histSide = 'BUY';
-                        $histSetupType = 'RETEST_ENTRY';
-                        $histSetupLabel = 'BREAKOUT RETEST & BOUNCE';
-                        $histScore = 86;
-                        $histRawSl = $curLow * 0.998;
-                    }
-                }
+                // 1. Market State & Structural Range Calculation
+                $rangePct = $previousLow > 0 ? (($previousHigh - $previousLow) / $previousLow) * 100.0 : 0.0;
+                $isChopZone = ($rangePct < 2.0) && ($adx[$i] < 22.0);
 
-                // Short Setups (Only when bearish trend aligned or strong breakdown with momentum)
-                if ($histSide === null && $rsi[$i] <= 54.0 && $rsi[$i] >= 22.0) {
-                    // Setup 1: Confirmed Support Breakdown
-                    if ($curClose < ($previousLow * (1.0 - $breakoutBuffer)) && $bearCandle && $volRatio >= 1.15 && $below200Ema) {
-                        $histSide = 'SELL';
-                        $histSetupType = 'BREAKDOWN_CONFIRMED';
-                        $histSetupLabel = 'SUPPORT BREAKDOWN CONFIRMED';
-                        $histScore = 94;
-                        $histRawSl = min($previousLow * 1.005, $curHigh * 1.002);
-                    }
-                    // Setup 2: 21-EMA Value Pullback Rejection
-                    elseif ($trendBear && ($curHigh >= $emaSlow[$i] * 0.997 && $curClose < $emaFast[$i]) && $bearCandle && $upperWickRatio >= 0.25) {
-                        $histSide = 'SELL';
-                        $histSetupType = 'PULLBACK_VALUE';
-                        $histSetupLabel = '21-EMA VALUE PULLBACK REJECTION';
-                        $histScore = 90;
-                        $histRawSl = $curHigh * 1.002;
-                    }
-                    // Setup 3: Pre-Breakdown Descending Coil
-                    elseif ($trendBear && $distToSupPct >= 0.10 && $distToSupPct <= 0.85 && $curClose < $emaFast[$i] && $bearCandle && $lowerWickRatio <= 0.25 && $volRatio >= 1.10) {
-                        $histSide = 'SELL';
-                        $histSetupType = 'PRE_BREAKOUT_COIL';
-                        $histSetupLabel = 'PRE-BREAKDOWN DESCENDING COIL';
-                        $histScore = 88;
-                        $histRawSl = max($curHigh, $highs[$i - 1]) * 1.002;
-                    }
-                    // Setup 4: Wyckoff Upthrust Liquidity Reversal
-                    elseif (($curHigh > $previousHigh || $highs[$i - 1] > $previousHigh) && $curClose < $previousHigh && $curClose < $curOpen && $upperWickRatio >= 0.40 && $volRatio >= 1.10 && $curClose < $emaFast[$i] && $below200Ema) {
-                        $histSide = 'SELL';
-                        $histSetupType = 'WYCKOFF_UPTHRUST';
-                        $histSetupLabel = 'WYCKOFF UPTHRUST REVERSAL';
-                        $histScore = 95;
-                        $histRawSl = max($curHigh, $highs[$i - 1]) * 1.002;
-                    }
-                    // Setup 5: Breakdown Retest Rejection
-                    elseif ($i >= 2 && $closes[$i - 1] < $previousLow && $curHigh >= ($previousLow * 0.997) && $curClose <= $previousLow && $bearCandle && $below200Ema) {
-                        $histSide = 'SELL';
-                        $histSetupType = 'RETEST_ENTRY';
-                        $histSetupLabel = 'BREAKDOWN RETEST & REJECTION';
-                        $histScore = 86;
-                        $histRawSl = $curHigh * 1.002;
-                    }
+                $fastVal = (float) $emaFast[$i];
+                $slowVal = (float) $emaSlow[$i];
+                $trendVal = $emaTrend[$i] !== null ? (float) $emaTrend[$i] : null;
+
+                // Dynamic Trend Strengths
+                $isStrongBullMomentum = ($fastVal > $slowVal * 1.002) && ($curClose >= $fastVal);
+                $isStrongBearMomentum = ($fastVal < $slowVal * 0.998) && ($curClose <= $fastVal);
+
+                // 2. High-Conviction Breakout / Breakdown Direction Starts
+                $isBreakoutStartLong = ! $isLongExtended
+                    && ! $isClimaxCandle
+                    && ($curClose > ($previousHigh * (1.0 + $breakoutBuffer)))
+                    && ($curClose <= $fastVal * 1.018)
+                    && $bullCandle
+                    && ($volRatio >= 1.20)
+                    && ($rsi[$i] >= 50.0 && $rsi[$i] <= 70.0)
+                    && $fastVal >= $slowVal * 0.998;
+
+                $isBreakdownStartShort = ! $isShortExtended
+                    && ! $isClimaxCandle
+                    && ($curClose < ($previousLow * (1.0 - $breakoutBuffer)))
+                    && ($curClose >= $fastVal * 0.982)
+                    && $bearCandle
+                    && ($volRatio >= 1.20)
+                    && ($rsi[$i] <= 50.0 && $rsi[$i] >= 30.0)
+                    && $fastVal <= $slowVal * 1.002;
+
+                // 3. Trend Continuation 21-EMA Pullback (Requires confirmed trend ADX >= 20, never in chop)
+                $isPullbackBounceLong = ! $isChopZone
+                    && ($adx[$i] >= 20.0)
+                    && $trendBull
+                    && ! $isLongExtended
+                    && ($curLow <= $slowVal * 1.003 && $curClose >= $slowVal * 0.996)
+                    && ($curClose > $fastVal || $lowerWickRatio >= 0.25 || $bullCandle)
+                    && ($rsi[$i] >= 42.0 && $rsi[$i] <= 62.0);
+
+                $isPullbackRejectShort = ! $isChopZone
+                    && ($adx[$i] >= 20.0)
+                    && $trendBear
+                    && ! $isShortExtended
+                    && ($curHigh >= $slowVal * 0.997 && $curClose <= $slowVal * 1.004)
+                    && ($curClose < $fastVal || $upperWickRatio >= 0.25 || $bearCandle)
+                    && ($rsi[$i] <= 58.0 && $rsi[$i] >= 38.0);
+
+                // Dynamic Trend & Momentum Protections
+                // 1. NEVER short if price is above EMA 9 (eliminates XRP 1.54 and SOL 121 fake short)
+                $allowPeakShort = ! $isChopZone && ($curClose < $fastVal);
+
+                // 2. NEVER buy if price is below EMA 9 (eliminates NEAR 5.20 waterfall dump fake buy)
+                $allowTroughLong = ! $isChopZone && ($curClose > $fastVal);
+
+                $recentHighMax = max($curHigh, $highs[$i - 1] ?? $curHigh, $highs[$i - 2] ?? $curHigh);
+                $recentLowMin = min($curLow, $lows[$i - 1] ?? $curLow, $lows[$i - 2] ?? $curLow);
+                $isNearSwingPeak = ($recentHighMax >= $previousHigh * 0.997);
+                $isNearSwingTrough = ($recentLowMin <= $previousLow * 1.003);
+
+                $prevRsi = $rsi[$i - 1] ?? 50.0;
+                $prev2Rsi = $rsi[$i - 2] ?? 50.0;
+                $rsiPeaked = max($rsi[$i], $prevRsi, $prev2Rsi) >= 54.0 && ($rsi[$i] < $prevRsi || $curClose < $curOpen);
+                $rsiBottomed = min($rsi[$i], $prevRsi, $prev2Rsi) <= 46.0 && ($rsi[$i] > $prevRsi || $curClose > $curOpen);
+
+                $isPeakEngulfingShort = $allowPeakShort
+                    && $isNearSwingPeak
+                    && ($curClose < $fastVal)
+                    && ($curClose < ($opens[$i - 1] ?? $curOpen))
+                    && $bearCandle
+                    && ! $isShortExtended
+                    && $rsiPeaked;
+
+                $isPeakUpthrustShort = $allowPeakShort
+                    && $isNearSwingPeak
+                    && ($upperWickRatio >= 0.35)
+                    && ($curClose < $fastVal)
+                    && ($curClose < $curOpen)
+                    && ! $isShortExtended
+                    && $rsiPeaked;
+
+                $isPeakEma9LossShort = $allowPeakShort
+                    && $isNearSwingPeak
+                    && ($curClose < $fastVal)
+                    && (($closes[$i - 1] ?? $curClose) >= ($emaFast[$i - 1] ?? $fastVal) * 0.998)
+                    && ($curClose < $curOpen)
+                    && ! $isShortExtended
+                    && $rsiPeaked;
+
+                $isSwingPeakShort = ($isPeakEngulfingShort || $isPeakUpthrustShort || $isPeakEma9LossShort);
+
+                $isTroughEngulfingLong = $allowTroughLong
+                    && $isNearSwingTrough
+                    && ($curClose > $fastVal)
+                    && ($curClose > ($opens[$i - 1] ?? $curOpen))
+                    && $bullCandle
+                    && ! $isLongExtended
+                    && $rsiBottomed;
+
+                $isTroughSpringLong = $allowTroughLong
+                    && $isNearSwingTrough
+                    && ($lowerWickRatio >= 0.35)
+                    && ($curClose > $fastVal)
+                    && ($curClose > $curOpen)
+                    && ! $isLongExtended
+                    && $rsiBottomed;
+
+                $isTroughEma9ReclaimLong = $allowTroughLong
+                    && $isNearSwingTrough
+                    && ($curClose > $fastVal)
+                    && (($closes[$i - 1] ?? $curClose) <= ($emaFast[$i - 1] ?? $fastVal) * 1.002)
+                    && ($curClose > $curOpen)
+                    && ! $isLongExtended
+                    && $rsiBottomed;
+
+                $isSwingTroughLong = ($isTroughEngulfingLong || $isTroughSpringLong || $isTroughEma9ReclaimLong);
+
+                // 5. EMA 9/21 Cross Momentum (Golden & Death Cross)
+                $isEmaCrossLong = $emaCrossBull
+                    && ! $isChopZone
+                    && $curClose > $fastVal
+                    && $bullCandle
+                    && ($rsi[$i] >= 48.0 && $rsi[$i] <= 66.0)
+                    && ! $isLongExtended;
+
+                $isEmaCrossShort = $emaCrossBear
+                    && ! $isChopZone
+                    && $curClose < $fastVal
+                    && $bearCandle
+                    && ($rsi[$i] <= 52.0 && $rsi[$i] >= 34.0)
+                    && ! $isShortExtended;
+
+                // Priority Hierarchy Setup Execution: Breakouts first, then confirmed swing reversals, then pullbacks, then crosses
+                if ($isBreakoutStartLong) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'BREAKOUT_START';
+                    $histSetupLabel = 'BREAKOUT DIRECTION START';
+                    $histScore = 96;
+                    $histRawSl = max($previousHigh * 0.995, $curLow * 0.998);
+                } elseif ($isBreakdownStartShort) {
+                    $histSide = 'SELL';
+                    $histSetupType = 'BREAKDOWN_START';
+                    $histSetupLabel = 'BREAKDOWN DIRECTION START';
+                    $histScore = 96;
+                    $histRawSl = min($previousLow * 1.005, $curHigh * 1.002);
+                } elseif ($isSwingPeakShort) {
+                    $histSide = 'SELL';
+                    $histSetupType = 'SWING_PEAK_REVERSAL';
+                    $histSetupLabel = 'SWING PEAK REVERSAL';
+                    $histScore = 94;
+                    $histRawSl = max($curHigh, $highs[$i - 1] ?? $curHigh, $highs[$i - 2] ?? $curHigh) * 1.003;
+                } elseif ($isSwingTroughLong) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'SWING_TROUGH_REVERSAL';
+                    $histSetupLabel = 'SWING TROUGH REVERSAL';
+                    $histScore = 94;
+                    $histRawSl = min($curLow, $lows[$i - 1] ?? $curLow, $lows[$i - 2] ?? $curLow) * 0.997;
+                } elseif ($isPullbackBounceLong) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'PULLBACK_VALUE';
+                    $histSetupLabel = '21-EMA TREND PULLBACK BOUNCE';
+                    $histScore = 90;
+                    $histRawSl = min($curLow, $slowVal) * 0.998;
+                } elseif ($isPullbackRejectShort) {
+                    $histSide = 'SELL';
+                    $histSetupType = 'PULLBACK_VALUE';
+                    $histSetupLabel = '21-EMA TREND PULLBACK REJECTION';
+                    $histScore = 90;
+                    $histRawSl = max($curHigh, $slowVal) * 1.002;
+                } elseif ($isEmaCrossLong) {
+                    $histSide = 'BUY';
+                    $histSetupType = 'EMA_CROSS_MOMENTUM';
+                    $histSetupLabel = 'EMA 9/21 GOLDEN CROSS';
+                    $histScore = 88;
+                    $histRawSl = min($low1, $low2) * 0.998;
+                } elseif ($isEmaCrossShort) {
+                    $histSide = 'SELL';
+                    $histSetupType = 'EMA_CROSS_MOMENTUM';
+                    $histSetupLabel = 'EMA 9/21 DEATH CROSS';
+                    $histScore = 88;
+                    $histRawSl = max($high1, $high2) * 1.002;
                 }
 
                 if ($histSide !== null && $histScore >= $minScore) {
-                    $activeCooldown = ($activePosition === $histSide) ? max(8, $cooldownBars) : max(4, $oppositeCooldownBars);
-                    $priceMovedEnough = abs($curClose - ($lastSignalPrice ?? 0.0)) >= ($atr[$i] * 0.8);
-                    $canTrade = ($barsSinceSignal >= $activeCooldown) && ($activePosition !== $histSide || $priceMovedEnough);
+                    $isReversal = ($activePosition !== 'NONE' && $activePosition !== $histSide);
+                    $isFirstSignal = ($activePosition === 'NONE');
+                    $isSameSide = ($activePosition === $histSide);
+
+                    $canTrade = false;
+                    if ($isFirstSignal) {
+                        $canTrade = true;
+                    } elseif ($isReversal) {
+                        // Reversal pivot: Debounce at least 8 bars (2 hours on 15m) AND require that price has moved
+                        // at least 1.5 ATR from the previous signal to prevent flipping in sideways chop!
+                        $priceMovedEnough = abs($curClose - ($lastSignalPrice ?? 0.0)) >= ($atr[$i] * 1.5);
+                        $canTrade = ($barsSinceSignal >= 8) && $priceMovedEnough;
+                    } elseif ($isSameSide) {
+                        // Anti-Spam: Never clutter a sideways range with repeat signals in the same direction!
+                        // Only allowed after at least 15 bars AND a major new structural move (>= 2.5 ATR away)
+                        $priceMovedEnough = abs($curClose - ($lastSignalPrice ?? 0.0)) >= ($atr[$i] * 2.5);
+                        $canTrade = ($barsSinceSignal >= 15) && $priceMovedEnough;
+                    }
 
                     if ($canTrade) {
                         $minRisk = $curClose * 0.0075;

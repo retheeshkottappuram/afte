@@ -65,6 +65,7 @@ class DashboardController extends Controller
             'activeCoin' => TradingTargetManager::getActiveCoin(),
             'activeBase' => TradingTargetManager::getBaseCoin(),
             'availableCoins' => TradingTargetManager::getAvailableCoins(),
+            'monitoredCoins' => TradingTargetManager::getMonitoredCoins(),
             'timeframes' => TradingTargetManager::getMonitoredTimeframes(),
         ]);
     }
@@ -858,6 +859,7 @@ class DashboardController extends Controller
             'success' => true,
             'active_coin' => TradingTargetManager::getActiveCoin(),
             'base' => TradingTargetManager::getBaseCoin(),
+            'monitored_coins' => TradingTargetManager::getMonitoredCoins(),
             'available_coins' => TradingTargetManager::getAvailableCoins(),
             'timeframes' => TradingTargetManager::getMonitoredTimeframes(),
         ]);
@@ -881,9 +883,10 @@ class DashboardController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => "Target trading asset updated to {$activeCoin} ({$base})! The 24/7 autonomous bot is now monitoring {$activeCoin} on 15m & 1h SignalAlgo PRO charts.",
+            'message' => "Target trading asset updated to {$activeCoin} ({$base})! The 24/7 autonomous bot is monitoring at least 5 coins on 15m & 1h SignalAlgo PRO charts.",
             'active_coin' => $activeCoin,
             'base' => $base,
+            'monitored_coins' => TradingTargetManager::getMonitoredCoins(),
             'available_coins' => TradingTargetManager::getAvailableCoins(),
         ]);
     }

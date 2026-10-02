@@ -31,15 +31,15 @@ class OrderExecutor
         $symbol = TradingTargetManager::normalizeSymbol((string) $signal['symbol']);
         $score = (int) $signal['score'];
 
-        // 0. Strict single-coin strategy gate: Block any coin other than the user's selected coin
-        if (config('trading.single_coin_strict', true) && ! TradingTargetManager::isCoinAllowed($symbol)) {
+        // 0. Strict single-coin strategy gate: Block any coin other than permitted monitored coins
+        if (config('trading.single_coin_strict', false) && ! TradingTargetManager::isCoinAllowed($symbol)) {
             $activeCoin = TradingTargetManager::getActiveCoin();
-            Log::warning("OrderExecutor: Blocked trade for {$symbol}. Active single-coin strategy is locked to {$activeCoin}.");
+            Log::warning("OrderExecutor: Blocked trade for {$symbol}. Active strategy is locked to {$activeCoin}.");
 
             return [
                 'status' => 'rejected',
                 'trade' => null,
-                'message' => "Trading is strictly restricted to selected coin ({$activeCoin}). Trades on {$symbol} are not allowed.",
+                'message' => "Trading is restricted to permitted monitored coins. Trades on {$symbol} are not allowed.",
             ];
         }
 

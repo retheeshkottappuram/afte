@@ -7,11 +7,18 @@ use App\Models\TradingAccount;
 use App\Services\Trading\DynamicTradeManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class DynamicTradeManagerTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Http::fake();
+    }
 
     public function test_breakeven_lock_triggered_at_one_percent_gain(): void
     {
@@ -272,6 +279,11 @@ class DynamicTradeManagerTest extends TestCase
 
     public function test_stepped_ratchet_moves_stop_loss_at_point_nine_percent_gain(): void
     {
+        config([
+            'trading.management.lock2_gain_pct' => 0.90,
+            'trading.management.lock2_sl_pct' => 0.45,
+        ]);
+
         $manager = app(DynamicTradeManager::class);
 
         TradingAccount::create([

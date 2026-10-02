@@ -114,13 +114,13 @@ class RiskManager
             return ['allowed' => false, 'reason' => "Symbol {$symbol} is excluded in {$stage['stage']} to preserve micro-capital lot sizing."];
         }
 
-        // Strict single-coin strategy enforcement: Only the selected coin is permitted to trade
-        if (config('trading.single_coin_strict', true) && ! TradingTargetManager::isCoinAllowed($symbol)) {
+        // Strict single-coin strategy enforcement: Only permitted monitored coins
+        if (config('trading.single_coin_strict', false) && ! TradingTargetManager::isCoinAllowed($symbol)) {
             $activeCoin = TradingTargetManager::getActiveCoin();
 
             return [
                 'allowed' => false,
-                'reason' => "Trading is strictly restricted to selected coin ({$activeCoin}). Trades on {$symbol} are not allowed.",
+                'reason' => "Trading is strictly restricted to permitted monitored coins. Trades on {$symbol} are not allowed.",
             ];
         }
 

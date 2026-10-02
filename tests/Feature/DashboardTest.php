@@ -342,6 +342,7 @@ class DashboardTest extends TestCase
 
     public function test_radar_trade_blocked_if_coin_is_not_selected(): void
     {
+        config(['trading.single_coin_strict' => true]);
         $user = User::factory()->create();
         TradingTargetManager::setActiveCoin('NEARUSDT');
 
