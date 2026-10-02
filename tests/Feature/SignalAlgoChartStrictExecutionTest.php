@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
+use App\Services\Notifications\TelegramNotifier;
 use App\Services\Trading\SignalAlgoTrader;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -18,7 +19,18 @@ class SignalAlgoChartStrictExecutionTest extends TestCase
     {
         parent::setUp();
         Cache::flush();
-        config(['trading.mode' => 'paper']);
+        $this->mock(TelegramNotifier::class, function ($mock): void {
+            $mock->shouldIgnoreMissing();
+        });
+        $this->mock(\App\Services\Crypto\TelegramNotifier::class, function ($mock): void {
+            $mock->shouldIgnoreMissing();
+        });
+        config([
+            'trading.mode' => 'paper',
+            'trading.telegram.enabled' => false,
+            'crypto.telegram.bot_token' => '',
+            'crypto.telegram.chat_id' => '',
+        ]);
     }
 
     public function test_trade_is_placed_when_signalalgo_pro_chart_marker_is_detected(): void
