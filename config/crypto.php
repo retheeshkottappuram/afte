@@ -13,7 +13,7 @@ return [
     */
     'symbols' => array_values(array_filter(array_map('trim', explode(',', env('CRYPTO_SYMBOLS', 'BTCUSDT,ETHUSDT,SOLUSDT,SUIUSDT,NEARUSDT,1000PEPEUSDT,DOGEUSDT,AVAXUSDT,BNBUSDT,XRPUSDT,LINKUSDT,FETUSDT'))))),
     'all_symbols' => (bool) env('CRYPTO_ALL_SYMBOLS', true),
-    'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 100000000.0),
+    'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 2500000.0),
 
     /*
     |--------------------------------------------------------------------------
@@ -24,7 +24,7 @@ return [
     |
     */
     'universe' => [
-        'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 100000000.0), // $100M USD
+        'min_24h_volume' => (float) env('CRYPTO_MIN_24H_VOLUME', 2500000.0), // $2.5M USD baseline for active futures
         'max_spread_pct' => (float) env('CRYPTO_MAX_SPREAD_PCT', 0.03),        // 0.03%
         'min_listing_days' => (int) env('CRYPTO_MIN_LISTING_DAYS', 30),        // 30 days
         'exclude_non_ascii' => (bool) env('CRYPTO_EXCLUDE_NON_ASCII', true),

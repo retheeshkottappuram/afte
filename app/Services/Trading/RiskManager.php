@@ -81,8 +81,13 @@ class RiskManager
      *
      * @return array{allowed: bool, reason: string}
      */
-    public function canOpenTrade(TradingAccount $account, string $symbol, int $signalScore, bool $isManual = false): array
-    {
+    public function canOpenTrade(
+        TradingAccount $account,
+        string $symbol,
+        int $signalScore,
+        bool $isManual = false,
+        bool $isReversal = false
+    ): array {
         if ($account->mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return ['allowed' => false, 'reason' => 'LIVE trading is disabled in this environment to prevent dual-instance collisions with production.'];
         }
@@ -91,7 +96,7 @@ class RiskManager
             return ['allowed' => false, 'reason' => 'Emergency Kill Switch is ACTIVE. Trading halted.'];
         }
 
-        if ($account->paused_until !== null && $account->paused_until->isFuture()) {
+        if (! $isReversal && $account->paused_until !== null && $account->paused_until->isFuture()) {
             $remaining = $account->paused_until->diffForHumans();
 
             return ['allowed' => false, 'reason' => "Circuit breaker active after consecutive losses. Paused until {$remaining}."];
@@ -124,14 +129,16 @@ class RiskManager
             ];
         }
 
-        // Check if there is already an open trade for this exact symbol
-        $existingTrade = Trade::where('mode', $account->mode)
-            ->where('symbol', $symbol)
-            ->where('status', 'OPEN')
-            ->exists();
+        // Check if there is already an open trade for this exact symbol (unless flipping in a reversal)
+        if (! $isReversal) {
+            $existingTrade = Trade::where('mode', $account->mode)
+                ->where('symbol', $symbol)
+                ->where('status', 'OPEN')
+                ->exists();
 
-        if ($existingTrade) {
-            return ['allowed' => false, 'reason' => "An active trade for {$symbol} is already open."];
+            if ($existingTrade) {
+                return ['allowed' => false, 'reason' => "An active trade for {$symbol} is already open."];
+            }
         }
 
         // Fetch all currently open trades
@@ -268,7 +275,7 @@ class RiskManager
 
         // Check if an explicit amount added per trade (in USD) is configured
         $configuredAmount = config('trading.fund_management.amount_per_trade');
-        $isSingleCoin = (bool) config('trading.single_coin_strict', true);
+        $isSingleCoin = (bool) config('trading.single_coin_strict', false);
         $singleCoinFundPct = (float) config('trading.fund_management.single_coin_fund_percent', 50.0);
         $maxAllocPct = (float) config('trading.fund_management.max_fund_allocation_pct', 75.0);
 

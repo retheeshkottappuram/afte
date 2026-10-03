@@ -142,6 +142,7 @@ class SignalAlgoTrader
                 $this->closeTradeOnReversal($openTrade, $exitPrice, $freshSignal);
 
                 // Immediately open the new reverse trade
+                $freshSignal['is_reversal'] = true;
                 $execResult = $this->executeChartEntry($symbol, $freshSignal, $mode);
 
                 return [
@@ -348,7 +349,7 @@ class SignalAlgoTrader
         } elseif (config('trading.single_coin_strict', false)) {
             $targetCoins = [TradingTargetManager::getActiveCoin()];
         } else {
-            $targetCoins = TradingTargetManager::getMonitoredCoins();
+            $targetCoins = TradingTargetManager::getAllTargetCoins($effectiveMode);
         }
 
         $results = [];
@@ -522,6 +523,71 @@ class SignalAlgoTrader
                 }
             } catch (Throwable $e) {
                 Log::debug("SignalAlgoTrader detection error on {$symbol} ({$interval}): {$e->getMessage()}");
+            }
+        }
+
+        // Fallback: If coin is currently an active Breakout Scanner Radar opportunity with score >= 80,
+        // construct the SignalAlgo Pro chart signal and sync to chart database
+        $radarOpportunities = Cache::get('trading:radar_opportunities', []);
+        foreach ($radarOpportunities as $op) {
+            if (strtoupper($op['symbol'] ?? '') === $symbol && (int) ($op['score'] ?? 0) >= 80) {
+                $dir = strtoupper((string) ($op['direction'] ?? 'LONG'));
+                $side = $dir === 'LONG' ? 'BUY' : 'SELL';
+                $entry = (float) ($op['price'] ?? 0);
+                $sl = (float) ($op['sl'] ?? 0);
+                $tp1 = (float) ($op['tp1'] ?? 0);
+                $tp2 = (float) ($op['tp2'] ?? 0);
+                $tp3 = (float) ($op['tp3'] ?? 0);
+                $score = (int) ($op['score'] ?? 85);
+                $nowSec = now()->timestamp;
+
+                $radarMarker = [
+                    'time' => $nowSec,
+                    'side' => $side,
+                    'entry' => $entry,
+                    'sl' => $sl,
+                    'tp1' => $tp1,
+                    'tp2' => $tp2,
+                    'tp3' => $tp3,
+                    'score' => $score,
+                    'grade' => (string) ($op['grade'] ?? 'A'),
+                    'setup_type' => (string) ($op['setup_type'] ?? 'RADAR_BREAKOUT'),
+                    'setup_label' => (string) ($op['setup_label'] ?? 'BREAKOUT SCANNER RADAR'),
+                    'risk_reward' => (string) ($op['risk_reward'] ?? '1 : 2.5'),
+                    'rsi' => $op['indicators']['rsi'] ?? 55,
+                    'adx' => $op['indicators']['adx'] ?? 25,
+                    'atr_pct' => $op['indicators']['atr_pct'] ?? 1.5,
+                    'volume_ratio' => $op['indicators']['volume_ratio'] ?? 1.5,
+                    'rs_ratio' => $op['indicators']['rs_ratio'] ?? 1.2,
+                ];
+
+                SignalRecorder::syncMarkers(
+                    $symbol,
+                    '15m',
+                    [$radarMarker],
+                    $this->binanceClient->getMarketLabel(),
+                    dispatchTelegram: false
+                );
+
+                return [
+                    'symbol' => $symbol,
+                    'interval' => '15m',
+                    'side' => $side,
+                    'direction' => $dir,
+                    'score' => $score,
+                    'grade' => (string) ($op['grade'] ?? 'A'),
+                    'price' => $entry,
+                    'initial_sl' => $sl,
+                    'tp1' => $tp1,
+                    'tp2' => $tp2,
+                    'tp3' => $tp3,
+                    'risk_reward' => (string) ($op['risk_reward'] ?? '1 : 2.5'),
+                    'marker_time' => $nowSec,
+                    'setup_type' => (string) ($op['setup_type'] ?? 'RADAR_BREAKOUT'),
+                    'setup_label' => (string) ($op['setup_label'] ?? 'BREAKOUT SCANNER RADAR'),
+                    'indicators' => $op['indicators'] ?? [],
+                    'raw_marker' => $radarMarker,
+                ];
             }
         }
 

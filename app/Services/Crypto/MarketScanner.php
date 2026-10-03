@@ -173,17 +173,11 @@ class MarketScanner
         string $baseInterval = '15m'
     ): array {
         $detectionStart = microtime(true);
-        $minQuoteVolume24h ??= (float) config('crypto.universe.min_24h_volume', 100000000.0);
+        $minQuoteVolume24h ??= (float) config('crypto.universe.min_24h_volume', 2500000.0);
 
-        // 1. Evaluate explicit BTC Macro Alignment first
+        // 1. Evaluate explicit BTC Macro Alignment
         $btcTrend = $this->binanceClient->getBtcMarketTrend();
-
-        // If BTC is neutral or choppy, rule requires all signals to be blocked
-        if (! $btcTrend['allow_long'] && ! $btcTrend['allow_short']) {
-            Log::info("MarketScanner: BTC macro regime is {$btcTrend['trend']} ({$btcTrend['reason']}). Neutral/choppy BTC blocks all signals.");
-
-            return [];
-        }
+        $isBtcNeutral = (! $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
 
         // 2. Discover and rank candidate pairs from entire Binance Futures universe passing institutional filter
         $targetSymbols = $this->getRankedCandidateSymbols($minQuoteVolume24h, $maxCandidateSymbols);
@@ -261,14 +255,12 @@ class MarketScanner
                     );
 
                     if ($breakoutResult !== null) {
-                        // Strict BTC Macro Trend Gate
-                        if ($breakoutResult['side'] === 'BUY' && ! $btcTrend['allow_long']) {
-                            Log::info("MarketScanner: Filtered out {$symbol} BUY setup - Counter to BTC {$btcTrend['trend']} macro trend");
+                        // Confluence Check: Block only if strongly counter to a trending BTC (unless score >= 90)
+                        $isBtcCounter = ($breakoutResult['side'] === 'BUY' && $btcTrend['allow_short'] && ! $btcTrend['allow_long'])
+                            || ($breakoutResult['side'] === 'SELL' && $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
 
-                            continue;
-                        }
-                        if ($breakoutResult['side'] === 'SELL' && ! $btcTrend['allow_short']) {
-                            Log::info("MarketScanner: Filtered out {$symbol} SELL setup - Counter to BTC {$btcTrend['trend']} macro trend");
+                        if ($isBtcCounter && ($breakoutResult['score'] ?? 0) < 90) {
+                            Log::info("MarketScanner: Filtered out {$symbol} {$breakoutResult['side']} setup - Counter to BTC {$btcTrend['trend']} trend");
 
                             continue;
                         }
@@ -300,24 +292,21 @@ class MarketScanner
                     $trendEval = $this->signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandlesForSym);
                     $trendSignal = $trendEval['signal'];
 
-                    if ($trendSignal !== null && ($trendSignal['score'] ?? 0) >= 82) {
+                    if ($trendSignal !== null && ($trendSignal['score'] ?? 0) >= 80) {
                         $side = $trendSignal['side'];
 
-                        // Strict BTC Macro Trend Gate
-                        if ($side === 'BUY' && ! $btcTrend['allow_long']) {
-                            Log::info("MarketScanner: Filtered out {$symbol} BUY trend setup - Counter to BTC {$btcTrend['trend']} macro trend");
+                        $isBtcCounter = ($side === 'BUY' && $btcTrend['allow_short'] && ! $btcTrend['allow_long'])
+                            || ($side === 'SELL' && $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
 
-                            continue;
-                        }
-                        if ($side === 'SELL' && ! $btcTrend['allow_short']) {
-                            Log::info("MarketScanner: Filtered out {$symbol} SELL trend setup - Counter to BTC {$btcTrend['trend']} macro trend");
+                        if ($isBtcCounter && ($trendSignal['score'] ?? 0) < 90) {
+                            Log::info("MarketScanner: Filtered out {$symbol} {$side} trend setup - Counter to BTC {$btcTrend['trend']} trend");
 
                             continue;
                         }
 
                         // Minimum Volume Surge Requirement
                         $volRatio = (float) ($trendSignal['volume_ratio'] ?? 1.0);
-                        if ($volRatio < 1.25) {
+                        if ($volRatio < 1.15 && ($trendSignal['score'] ?? 0) < 85) {
                             continue;
                         }
                         $entry = (float) $trendSignal['entry'];
@@ -375,11 +364,12 @@ class MarketScanner
      *
      * @return array<int, string>
      */
-    public function getRankedCandidateSymbols(?float $minVolume = null, int $limit = 35): array
+    public function getRankedCandidateSymbols(?float $minVolume = null, ?int $limit = 35): array
     {
-        $minVol = $minVolume ?? (float) config('crypto.universe.min_24h_volume', 100000000.0);
+        $minVol = $minVolume ?? (float) config('crypto.universe.min_24h_volume', 2500000.0);
+        $limitKey = $limit !== null ? (string) $limit : 'all';
 
-        return Cache::remember("crypto:market:ranked_candidates:{$minVol}:{$limit}", 20, function () use ($limit): array {
+        return Cache::remember("crypto:market:ranked_candidates:{$minVol}:{$limitKey}", 20, function () use ($limit): array {
             try {
                 $tickers = $this->binanceClient->get24hrTickers();
                 if (empty($tickers)) {
@@ -389,7 +379,7 @@ class MarketScanner
                 $bookTickers = $this->binanceClient->getBookTickers();
                 $exchangeInfo = $this->binanceClient->getExchangeInfo();
 
-                // Apply institutional universe gates: Volume >= $100M, Spread < 0.03%, Age > 30d, blacklist & ASCII
+                // Apply institutional universe gates: Volume >= $2.5M, Spread < 0.03%, Age > 30d, blacklist & ASCII
                 $universeResult = $this->universeFilter->filterCandidates($tickers, $bookTickers, $exchangeInfo);
                 $eligibleSymbols = $universeResult['eligible_symbols'];
 
@@ -434,12 +424,16 @@ class MarketScanner
                 }
 
                 usort($ranked, fn ($a, $b) => $b['score'] <=> $a['score']);
-                $topDynamic = array_slice(array_column($ranked, 'symbol'), 0, $limit);
+                $rankedSymbols = array_column($ranked, 'symbol');
 
-                // Always include core institutional pairs that pass universe filters at the front
-                $corePassed = array_values(array_intersect(self::CORE_PAIRS, $eligibleSymbols));
+                if ($limit !== null && $limit > 0) {
+                    $topDynamic = array_slice($rankedSymbols, 0, $limit);
+                    $corePassed = array_values(array_intersect(self::CORE_PAIRS, $eligibleSymbols));
 
-                return array_values(array_unique(array_merge($corePassed, $topDynamic)));
+                    return array_values(array_unique(array_merge($corePassed, $topDynamic)));
+                }
+
+                return $rankedSymbols;
             } catch (Throwable $e) {
                 Log::warning("MarketScanner: Failed to rank candidates ({$e->getMessage()})");
 

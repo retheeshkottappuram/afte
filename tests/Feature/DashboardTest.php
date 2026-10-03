@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Tests\TestCase;
 
 class DashboardTest extends TestCase
@@ -323,6 +324,30 @@ class DashboardTest extends TestCase
             'is_running' => false,
             'kill_switch' => false,
         ]);
+
+        Cache::put('trading:radar_opportunities', [
+            [
+                'symbol' => 'SOLUSDT',
+                'direction' => 'LONG',
+                'price' => 150.0,
+                'score' => 88,
+                'grade' => 'A',
+                'setup_type' => 'RADAR_BREAKOUT',
+                'setup_label' => 'BREAKOUT SCANNER RADAR',
+                'sl' => 147.15,
+                'tp1' => 156.75,
+                'tp2' => 163.50,
+                'tp3' => 177.00,
+                'risk_reward' => '1 : 2.5',
+                'indicators' => [
+                    'volume_ratio' => 1.5,
+                    'rsi' => 55,
+                    'adx' => 25,
+                    'atr_pct' => 1.5,
+                    'rs_ratio' => 1.2,
+                ],
+            ],
+        ], now()->addMinutes(10));
 
         $response = $this->actingAs($user)->postJson('/api/execute-radar-trade', [
             'symbol' => 'SOLUSDT',

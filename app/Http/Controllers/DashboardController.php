@@ -8,7 +8,9 @@ use App\Models\TradingAccount;
 use App\Models\TradingSignal;
 use App\Services\AI\SignalValidator;
 use App\Services\Binance\BinanceFuturesClient;
+use App\Services\Crypto\BinanceClient;
 use App\Services\Crypto\BreakoutDetector;
+use App\Services\Crypto\SignalRecorder;
 use App\Services\Trading\BacktestingEngine;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
@@ -142,7 +144,7 @@ class DashboardController extends Controller
             $pausedReason = 'STANDBY: Auto-trading is paused. Start Auto Trading to resume automated execution.';
         }
 
-        $isSingleCoin = (bool) config('trading.single_coin_strict', true);
+        $isSingleCoin = (bool) config('trading.single_coin_strict', false);
         $singleCoinFundPct = (float) config('trading.fund_management.single_coin_fund_percent', 50.0);
         $configuredAmount = config('trading.fund_management.amount_per_trade');
 
@@ -226,8 +228,8 @@ class DashboardController extends Controller
             }
         }
 
-        // Auto-prune any open trades in the database that do not match the selected coin
-        if (config('trading.single_coin_strict', true)) {
+        // Auto-prune any open trades in the database only if strict single-coin mode is explicitly enabled
+        if (config('trading.single_coin_strict', false)) {
             $targetCoin = TradingTargetManager::getActiveCoin();
             $strayPositions = Trade::where('mode', $mode)
                 ->where('status', 'OPEN')
@@ -382,10 +384,11 @@ class DashboardController extends Controller
 
                     if ($breakoutResult !== null) {
                         $bSide = $breakoutResult['side'];
-                        if ($bSide === 'BUY' && ! $btcTrend['allow_long']) {
+                        $isBtcNeutral = ($btcTrend['trend'] ?? '') === 'NEUTRAL' || (! $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
+                        if ($bSide === 'BUY' && ! $btcTrend['allow_long'] && (! $isBtcNeutral || $breakoutResult['score'] < 90)) {
                             continue;
                         }
-                        if ($bSide === 'SELL' && ! $btcTrend['allow_short']) {
+                        if ($bSide === 'SELL' && ! $btcTrend['allow_short'] && (! $isBtcNeutral || $breakoutResult['score'] < 90)) {
                             continue;
                         }
 
@@ -433,10 +436,11 @@ class DashboardController extends Controller
 
                     if ($eval !== null) {
                         // Condition 1: Bitcoin Macro Trend Filter
-                        if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long']) {
+                        $isBtcNeutral = ($btcTrend['trend'] ?? '') === 'NEUTRAL' || (! $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
+                        if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long'] && (! $isBtcNeutral || ($eval['score'] ?? 0) < 90)) {
                             continue;
                         }
-                        if ($eval['direction'] === 'SHORT' && ! $btcTrend['allow_short']) {
+                        if ($eval['direction'] === 'SHORT' && ! $btcTrend['allow_short'] && (! $isBtcNeutral || ($eval['score'] ?? 0) < 90)) {
                             continue;
                         }
 
@@ -509,6 +513,9 @@ class DashboardController extends Controller
             // Sort descending by score
             usort($results, fn ($a, $b) => $b['score'] <=> $a['score']);
 
+            // Save radar opportunities to cache so TradingTargetManager and SignalAlgoTrader pick them up
+            Cache::put('trading:radar_opportunities', $results, now()->addMinutes(30));
+
             return [
                 'total_scanned' => count($scanSymbols),
                 'btc_macro' => [
@@ -543,7 +550,7 @@ class DashboardController extends Controller
         }
 
         $activeCoin = TradingTargetManager::getActiveCoin();
-        if (config('trading.single_coin_strict', true) && ! TradingTargetManager::isCoinAllowed($symbol)) {
+        if (config('trading.single_coin_strict', false) && ! TradingTargetManager::isCoinAllowed($symbol)) {
             return response()->json([
                 'success' => false,
                 'message' => "Trading is strictly restricted to selected coin ({$activeCoin}). Please select {$symbol} as the active trading coin first.",
@@ -561,10 +568,117 @@ class DashboardController extends Controller
             $algoTrader = app(SignalAlgoTrader::class);
             $freshSignal = $algoTrader->detectSignalOnChart($symbol);
 
+            // If not found in immediate 1.5 candle markers, check Breakout Scanner Radar opportunities or evaluate breakout
+            if ($freshSignal === null) {
+                $radarOpportunities = Cache::get('trading:radar_opportunities', []);
+                $matchedOp = null;
+                foreach ($radarOpportunities as $op) {
+                    if (strtoupper($op['symbol'] ?? '') === $symbol) {
+                        $matchedOp = $op;
+                        break;
+                    }
+                }
+
+                if ($matchedOp === null) {
+                    try {
+                        $marketEngine = app(\App\Services\Crypto\MarketEngine::class);
+                        $klines = $marketEngine->getMultiTimeframeKlines($symbol);
+                        $btcBase = $marketEngine->getBtcBaseKlines();
+                        $breakoutDetector = new BreakoutDetector;
+                        $bRes = $breakoutDetector->evaluate($klines['base'], $klines['htf1'], $klines['htf2'], null, $btcBase);
+                        if ($bRes !== null) {
+                            $matchedOp = [
+                                'symbol' => $symbol,
+                                'direction' => $bRes['side'] === 'BUY' ? 'LONG' : 'SHORT',
+                                'price' => $bRes['entry'],
+                                'score' => $bRes['score'],
+                                'grade' => $bRes['grade'],
+                                'setup_type' => $bRes['type'],
+                                'setup_label' => $bRes['setup_label'],
+                                'sl' => $bRes['sl'],
+                                'tp1' => $bRes['tp1'],
+                                'tp2' => $bRes['tp2'],
+                                'tp3' => $bRes['tp3'],
+                                'risk_reward' => $bRes['risk_reward'],
+                                'indicators' => [
+                                    'volume_ratio' => $bRes['volume_ratio'],
+                                    'rsi' => $bRes['rsi'],
+                                    'adx' => $bRes['adx'],
+                                    'atr_pct' => $bRes['atr_pct'],
+                                    'rs_ratio' => $bRes['rs_ratio'],
+                                ],
+                            ];
+                        }
+                    } catch (\Throwable) {
+                        // ignore evaluation error
+                    }
+                }
+
+                if ($matchedOp !== null && ($matchedOp['direction'] ?? '') === $direction) {
+                    $markerTime = now()->timestamp;
+                    $markerSide = $direction === 'LONG' ? 'BUY' : 'SELL';
+                    $entryPrice = (float) $matchedOp['price'];
+                    $exactSl = (float) $matchedOp['sl'];
+                    $tp1 = (float) $matchedOp['tp1'];
+                    $tp2 = (float) $matchedOp['tp2'];
+                    $tp3 = (float) ($matchedOp['tp3'] ?? 0);
+                    $markerScore = (int) ($matchedOp['score'] ?? 85);
+
+                    $radarMarker = [
+                        'time' => $markerTime,
+                        'side' => $markerSide,
+                        'entry' => $entryPrice,
+                        'sl' => $exactSl,
+                        'tp1' => $tp1,
+                        'tp2' => $tp2,
+                        'tp3' => $tp3,
+                        'score' => $markerScore,
+                        'grade' => (string) ($matchedOp['grade'] ?? 'A'),
+                        'setup_type' => (string) ($matchedOp['setup_type'] ?? 'RADAR_BREAKOUT'),
+                        'setup_label' => (string) ($matchedOp['setup_label'] ?? 'BREAKOUT SCANNER RADAR'),
+                        'risk_reward' => (string) ($matchedOp['risk_reward'] ?? '1 : 2.5'),
+                        'rsi' => $matchedOp['indicators']['rsi'] ?? 55,
+                        'adx' => $matchedOp['indicators']['adx'] ?? 25,
+                        'atr_pct' => $matchedOp['indicators']['atr_pct'] ?? 1.5,
+                        'volume_ratio' => $matchedOp['indicators']['volume_ratio'] ?? 1.5,
+                        'rs_ratio' => $matchedOp['indicators']['rs_ratio'] ?? 1.2,
+                    ];
+
+                    // Sync marker directly into database so it is placed on the chart
+                    SignalRecorder::syncMarkers(
+                        $symbol,
+                        '15m',
+                        [$radarMarker],
+                        app(BinanceClient::class)->getMarketLabel(),
+                        dispatchTelegram: false
+                    );
+
+                    $freshSignal = [
+                        'symbol' => $symbol,
+                        'interval' => '15m',
+                        'side' => $markerSide,
+                        'direction' => $direction,
+                        'score' => $markerScore,
+                        'grade' => (string) ($matchedOp['grade'] ?? 'A'),
+                        'price' => $entryPrice,
+                        'initial_sl' => $exactSl,
+                        'tp1' => $tp1,
+                        'tp2' => $tp2,
+                        'tp3' => $tp3,
+                        'risk_reward' => (string) ($matchedOp['risk_reward'] ?? '1 : 2.5'),
+                        'marker_time' => $markerTime,
+                        'setup_type' => (string) ($matchedOp['setup_type'] ?? 'RADAR_BREAKOUT'),
+                        'setup_label' => (string) ($matchedOp['setup_label'] ?? 'BREAKOUT SCANNER RADAR'),
+                        'indicators' => $matchedOp['indicators'] ?? [],
+                        'raw_marker' => $radarMarker,
+                    ];
+                }
+            }
+
             if ($freshSignal === null) {
                 return response()->json([
                     'success' => false,
-                    'message' => "Trade rejected: No active SignalAlgo Pro signal found on {$symbol}. Trades can only be placed when a confirmed SignalAlgo Pro chart signal appears.",
+                    'message' => "Trade rejected: No active SignalAlgo Pro signal or verified Breakout Radar setup found on {$symbol}.",
                 ], 422);
             }
 
@@ -578,6 +692,8 @@ class DashboardController extends Controller
             $execResult = $algoTrader->processSignalForExecution($symbol, $freshSignal, $mode);
 
             if (($execResult['status'] ?? '') === 'opened' || ($execResult['status'] ?? '') === 'reversed') {
+                TradingTargetManager::addMonitoredCoin($symbol);
+
                 return response()->json([
                     'success' => true,
                     'message' => $execResult['message'],

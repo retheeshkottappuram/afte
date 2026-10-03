@@ -22,7 +22,7 @@ class UniverseFilter
     {
         $cfg = $config ?? (array) config('crypto.universe', []);
 
-        $this->min24hVolume = (float) ($cfg['min_24h_volume'] ?? config('crypto.min_24h_volume', 100000000.0));
+        $this->min24hVolume = (float) ($cfg['min_24h_volume'] ?? config('crypto.min_24h_volume', 2500000.0));
         $this->maxSpreadPct = (float) ($cfg['max_spread_pct'] ?? 0.03);
         $this->minListingDays = (int) ($cfg['min_listing_days'] ?? 30);
         $this->excludeNonAscii = (bool) ($cfg['exclude_non_ascii'] ?? true);

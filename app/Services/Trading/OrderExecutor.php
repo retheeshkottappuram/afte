@@ -43,8 +43,10 @@ class OrderExecutor
             ];
         }
 
+        $isReversal = (bool) ($signal['is_reversal'] ?? false);
+
         // 1. Verify Risk Engine permission
-        $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $score, $isManual);
+        $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $score, $isManual, $isReversal);
         if (! $canOpen['allowed']) {
             return ['status' => 'rejected', 'trade' => null, 'message' => $canOpen['reason']];
         }

@@ -84,4 +84,34 @@ class TradingTargetManagerTest extends TestCase
         $this->assertNotContains('AVAXUSDT', TradingTargetManager::getMonitoredCoins());
         $this->assertGreaterThanOrEqual(5, count(TradingTargetManager::getMonitoredCoins()));
     }
+
+    public function test_it_allows_any_valid_usdt_perpetual_when_not_in_strict_mode(): void
+    {
+        config(['trading.single_coin_strict' => false]);
+
+        $this->assertTrue(TradingTargetManager::isCoinAllowed('DOGEUSDT'));
+        $this->assertTrue(TradingTargetManager::isCoinAllowed('PEPEUSDT'));
+        $this->assertTrue(TradingTargetManager::isCoinAllowed('TRUMPUSDT'));
+
+        // Empty or blacklisted tokens
+        $this->assertFalse(TradingTargetManager::isCoinAllowed(''));
+        $this->assertFalse(TradingTargetManager::isCoinAllowed('GRAMUSDT'));
+    }
+
+    public function test_it_retrieves_radar_coins_and_includes_in_all_target_coins(): void
+    {
+        Cache::put('trading:radar_opportunities', [
+            ['symbol' => 'RENDERUSDT', 'score' => 90, 'direction' => 'LONG'],
+            ['symbol' => 'INJUSDT', 'score' => 88, 'direction' => 'SHORT'],
+        ], now()->addMinutes(10));
+
+        $radarCoins = TradingTargetManager::getRadarCoins();
+        $this->assertContains('RENDERUSDT', $radarCoins);
+        $this->assertContains('INJUSDT', $radarCoins);
+
+        $allTargets = TradingTargetManager::getAllTargetCoins();
+        $this->assertContains('RENDERUSDT', $allTargets);
+        $this->assertContains('INJUSDT', $allTargets);
+        $this->assertContains('BTCUSDT', $allTargets);
+    }
 }

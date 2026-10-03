@@ -243,7 +243,7 @@ class TradingDaemonCommand extends Command
                 $now = time();
                 if ($now - $lastScanTime >= $scanInterval || $runOnce) {
                     $lastScanTime = $now;
-                    $monitoredCoins = TradingTargetManager::getMonitoredCoins();
+                    $monitoredCoins = TradingTargetManager::getAllTargetCoins($mode);
                     $coinLabels = implode(', ', array_map([TradingTargetManager::class, 'getBaseCoin'], $monitoredCoins));
 
                     if ($account->canTrade()) {

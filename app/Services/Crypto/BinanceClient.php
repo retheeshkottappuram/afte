@@ -432,23 +432,27 @@ class BinanceClient
 
     /**
      * Fetch active liquid USDT perpetual trading pairs from Binance Futures.
+    /**
+     * Fetch all active Binance USDT Perpetual Futures symbols sorted by 24h quote volume.
+     * Excludes non-USDT pairs, stablecoins, and blacklisted toxic assets.
      *
-     * @param  float  $minQuoteVolume24h  Minimum 24h quote volume in USDT (e.g., 100,000,000 = $100M)
+     * @param  float  $minQuoteVolume24h  Minimum 24h quote volume in USDT (default 1,000,000 = $1M)
      * @return array<int, string>
      */
-    public function getActiveFuturesSymbols(float $minQuoteVolume24h = 100000000.0): array
+    public function getActiveFuturesSymbols(float $minQuoteVolume24h = 1000000.0): array
     {
         $tickers = $this->get24hrTickers();
         if (empty($tickers)) {
             return [];
         }
 
+        $bannedSymbols = ['GRAMUSDT', 'AKEUSDT', 'GUSDT', 'USUSDT', 'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'EURUSDT', 'BUSDUSDT', 'DAIUSDT'];
         $symbols = [];
         foreach ($tickers as $ticker) {
             $sym = (string) ($ticker['symbol'] ?? '');
             $quoteVol = (float) ($ticker['quoteVolume'] ?? 0.0);
 
-            if (preg_match('/^[A-Z0-9]+USDT$/', $sym) && $quoteVol >= $minQuoteVolume24h) {
+            if (preg_match('/^[A-Z0-9]+USDT$/', $sym) && ! in_array($sym, $bannedSymbols, true) && $quoteVol >= $minQuoteVolume24h) {
                 $symbols[] = [
                     'symbol' => $sym,
                     'volume' => $quoteVol,

@@ -79,21 +79,24 @@ class CheckCryptoSignals extends Command
         if ($singleSymbol) {
             $symbols = [strtoupper((string) $singleSymbol)];
         } elseif ($scanAll || $isConfiguredAll) {
-            $scanLimit = $limitOption !== null ? max(10, (int) $limitOption) : 60;
-            $this->info("Discovering top liquid candidate Binance Futures contracts (min 24h volume: \${$minVolume}, limit: {$scanLimit})...");
+            $hasExplicitLimit = $limitOption !== null && (int) $limitOption > 0;
+            $scanLimit = $hasExplicitLimit ? (int) $limitOption : null;
+            $scanVol = $scanAll ? 1000000.0 : $minVolume;
+            $limitLabel = $scanLimit !== null ? (string) $scanLimit : 'ALL Available Market Contracts';
+            $this->info("Discovering Binance Futures contracts for whole-market scanning (min 24h volume: \${$scanVol}, limit: {$limitLabel})...");
             try {
-                $symbols = $marketScanner->getRankedCandidateSymbols($minVolume, $scanLimit);
-                $this->info('Selected '.count($symbols).' high-liquidity candidate symbols for scanning.');
-            } catch (Throwable $e) {
-                $this->warn("Failed to fetch ranked dynamic symbols ({$e->getMessage()}). Falling back to active liquid symbols.");
-                try {
-                    $allLiquid = Cache::remember('crypto:futures:liquid_symbols', 1800, function () use ($binanceClient, $minVolume): array {
-                        return $binanceClient->getActiveFuturesSymbols($minVolume);
-                    });
+                $allLiquid = Cache::remember("crypto:futures:liquid_symbols_{$scanVol}", 300, function () use ($binanceClient, $scanVol): array {
+                    return $binanceClient->getActiveFuturesSymbols($scanVol);
+                });
+                if ($scanLimit !== null && $scanLimit > 0) {
                     $symbols = array_slice($allLiquid, 0, $scanLimit);
-                } catch (Throwable) {
-                    $symbols = array_values(array_diff($configuredSymbols, ['ALL']));
+                } else {
+                    $symbols = $allLiquid;
                 }
+                $this->info('Selected '.count($symbols).' symbols across whole Binance Futures market for scanning.');
+            } catch (Throwable $e) {
+                $this->warn("Failed to fetch dynamic symbols ({$e->getMessage()}). Falling back to configured symbols.");
+                $symbols = array_values(array_diff($configuredSymbols, ['ALL']));
             }
         } else {
             $symbols = array_values(array_diff($configuredSymbols, ['ALL']));
@@ -323,15 +326,19 @@ class CheckCryptoSignals extends Command
                             $bScore = (int) ($breakoutResult['score'] ?? 85);
                             $bType = $breakoutResult['type'] ?? 'PRE_BREAKOUT_COIL';
 
-                            // Strict Confluence Gating: BTC macro alignment AND Coin's 1-Hour strategy alignment
+                            // Confluence Gating: BTC macro alignment AND Coin's 1-Hour strategy alignment
                             $isBtcAligned = ($bSide === 'BUY' && $btcTrend['allow_long']) || ($bSide === 'SELL' && $btcTrend['allow_short']);
+                            $isBtcCounter = ($bSide === 'BUY' && $btcTrend['allow_short'] && ! $btcTrend['allow_long']) || ($bSide === 'SELL' && $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
                             $isHtfAligned = ($bSide === 'BUY' && $htfStrategy['allow_long']) || ($bSide === 'SELL' && $htfStrategy['allow_short']);
 
-                            if (! $isBtcAligned) {
-                                $this->line("  -> <fg=yellow>Filtered out {$symbol} {$bSide} setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
-                            } elseif (! $isHtfAligned) {
+                            if ($isBtcCounter && $bScore < 90) {
+                                $this->line("  -> <fg=yellow>Filtered out {$symbol} {$bSide} setup: Counter to strong BTC {$btcTrend['trend']} macro trend</>");
+                            } elseif (! $isHtfAligned && $bScore < 92) {
                                 $this->line("  -> <fg=yellow>Filtered out {$symbol} {$bSide} setup: Counter to 1H Strategy ({$htfStrategy['summary']})</>");
                             } else {
+                                if ($isBtcAligned) {
+                                    $bScore = min(100, $bScore + 3);
+                                }
                                 $signal = [
                                     'side' => $bSide,
                                     'score' => $bScore,
@@ -384,18 +391,23 @@ class CheckCryptoSignals extends Command
                                 $eVolRatio = (float) ($engineSignal['volume_ratio'] ?? 1.0);
 
                                 $isBtcAligned = ($eSide === 'BUY' && $btcTrend['allow_long']) || ($eSide === 'SELL' && $btcTrend['allow_short']);
+                                $isBtcCounter = ($eSide === 'BUY' && $btcTrend['allow_short'] && ! $btcTrend['allow_long']) || ($eSide === 'SELL' && $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
                                 $isHtfAligned = ($eSide === 'BUY' && $htfStrategy['allow_long']) || ($eSide === 'SELL' && $htfStrategy['allow_short']);
 
-                                if (! $isBtcAligned) {
-                                    $this->line("  -> <fg=yellow>Filtered out {$symbol} {$eSide} setup: Counter to BTC {$btcTrend['trend']} macro trend</>");
-                                } elseif (! $isHtfAligned) {
+                                if ($isBtcCounter && $eScore < 90) {
+                                    $this->line("  -> <fg=yellow>Filtered out {$symbol} {$eSide} setup: Counter to strong BTC {$btcTrend['trend']} macro trend</>");
+                                } elseif (! $isHtfAligned && $eScore < 92) {
                                     $this->line("  -> <fg=yellow>Filtered out {$symbol} {$eSide} setup: Counter to 1H Strategy ({$htfStrategy['summary']})</>");
                                 } elseif ($eScore < 76) {
                                     $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Score {$eScore} below quality threshold (76)</>");
                                 } elseif ($eVolRatio < 1.05 && $eScore < 85) {
                                     $this->line("  -> <fg=gray>Filtered out {$symbol} setup: Volume ratio {$eVolRatio}x below minimum threshold (1.05x)</>");
                                 } else {
+                                    if ($isBtcAligned) {
+                                        $eScore = min(100, $eScore + 3);
+                                    }
                                     $signal = $engineSignal;
+                                    $signal['score'] = $eScore;
                                     $signal['setup_type'] = 'MOMENTUM_TREND';
                                     $signal['setup_label'] = 'MOMENTUM TREND';
                                     $signal['age_minutes'] = 0;
@@ -412,9 +424,10 @@ class CheckCryptoSignals extends Command
                             $markerScore = (int) ($lastMarker['score'] ?? 0);
                             $markerSide = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
                             $isBtcAligned = ($markerSide === 'BUY' && $btcTrend['allow_long']) || ($markerSide === 'SELL' && $btcTrend['allow_short']);
+                            $isBtcCounter = ($markerSide === 'BUY' && $btcTrend['allow_short'] && ! $btcTrend['allow_long']) || ($markerSide === 'SELL' && $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
                             $isHtfAligned = ($markerSide === 'BUY' && $htfStrategy['allow_long']) || ($markerSide === 'SELL' && $htfStrategy['allow_short']);
 
-                            if ($markerScore >= 78 && $isBtcAligned && $isHtfAligned) {
+                            if ($markerScore >= 78 && ! ($isBtcCounter && $markerScore < 90) && ($isHtfAligned || $markerScore >= 90)) {
                                 $markerTime = (int) ($lastMarker['time'] ?? 0);
                                 $candleAgeSeconds = now()->timestamp - $markerTime;
                                 $maxActiveSeconds = match ($interval) {

@@ -2,6 +2,7 @@
 
 namespace App\Services\Trading;
 
+use App\Models\Trade;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -200,19 +201,92 @@ class TradingTargetManager
     }
 
     /**
-     * Check if a symbol is allowed to be traded (permitted if in monitored list).
+     * Check if a symbol is allowed to be traded.
+     * When single_coin_strict is false, allows ANY valid Binance Futures USDT perpetual pair
+     * that meets conditions (not in toxic/banned symbols).
      */
     public static function isCoinAllowed(string $symbol): bool
     {
-        $normalized = self::normalizeSymbol($symbol);
+        $raw = trim($symbol);
+        if (empty($raw)) {
+            return false;
+        }
+
+        $normalized = self::normalizeSymbol($raw);
+
+        // Toxic / illiquid altcoins banned from execution
+        $bannedSymbols = ['GRAMUSDT', '牛来USDT', 'AKEUSDT', 'GUSDT', 'USUSDT'];
+        if (in_array($normalized, $bannedSymbols, true)) {
+            return false;
+        }
 
         // If strict single coin is forced in config and explicitly active
         if (config('trading.single_coin_strict', false)) {
             return $normalized === self::normalizeSymbol(self::getActiveCoin());
         }
 
-        // Otherwise allow any coin in the monitored list
-        return in_array($normalized, self::getMonitoredCoins(), true);
+        // Must be a valid USDT perpetual symbol format (e.g. BTCUSDT, SUIUSDT, 1000PEPEUSDT)
+        if (! preg_match('/^[A-Z0-9]+USDT$/', $normalized)) {
+            return false;
+        }
+
+        // Allow any coin meeting conditions across Binance Futures
+        return true;
+    }
+
+    /**
+     * Get list of coins currently identified by Breakout Scanner Radar.
+     *
+     * @return array<int, string>
+     */
+    public static function getRadarCoins(): array
+    {
+        $cached = Cache::get('trading:radar_opportunities', []);
+        if (! is_array($cached)) {
+            return [];
+        }
+
+        $symbols = [];
+        foreach ($cached as $item) {
+            $sym = is_array($item) ? ($item['symbol'] ?? null) : $item;
+            if ($sym && is_string($sym)) {
+                $symbols[] = self::normalizeSymbol($sym);
+            }
+        }
+
+        return array_values(array_unique($symbols));
+    }
+
+    /**
+     * Get combined list of coins to monitor and cycle:
+     * - Coins with active OPEN positions
+     * - Breakout Scanner Radar candidate coins
+     * - Configured monitored coins
+     *
+     * @return array<int, string>
+     */
+    public static function getAllTargetCoins(?string $mode = null): array
+    {
+        $coins = self::getMonitoredCoins();
+
+        // 1. Include coins with active OPEN trades
+        try {
+            $openSymbols = Trade::when($mode, fn ($q) => $q->where('mode', $mode))
+                ->where('status', 'OPEN')
+                ->pluck('symbol')
+                ->toArray();
+            foreach ($openSymbols as $sym) {
+                $coins[] = self::normalizeSymbol((string) $sym);
+            }
+        } catch (\Throwable) {
+        }
+
+        // 2. Include Breakout Scanner Radar opportunities
+        foreach (self::getRadarCoins() as $radarSym) {
+            $coins[] = $radarSym;
+        }
+
+        return array_values(array_unique(array_filter($coins, fn ($sym) => self::isCoinAllowed($sym))));
     }
 
     /**
