@@ -2,79 +2,102 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Strategy\MarketScanService;
+use App\Services\Strategy\SymbolAnalyzer;
 use App\Services\Trading\BacktestingEngine;
 use Illuminate\Console\Command;
 
 class BacktestCommand extends Command
 {
     /**
-     * The name and signature of the console command.
-     *
      * @var string
      */
     protected $signature = 'trade:backtest
-                            {symbol=SOLUSDT : Trading pair to test}
-                            {--interval=15m : Candlestick timeframe}
-                            {--limit=600 : Number of historical candles}
-                            {--balance=5.0 : Initial starting capital}';
+                            {symbols?* : Symbols to test (default: top liquid universe)}
+                            {--months=12 : History length in months}
+                            {--interval=1h : Base timeframe}
+                            {--top=20 : Number of top-volume symbols when none are given}
+                            {--balance=5.0 : Starting capital for the portfolio simulation}
+                            {--seed : Store results as backtest signals so setup stats and the AI model have data from day one}
+                            {--setups= : Comma-separated setups included in the portfolio simulation (default: core setups)}';
 
     /**
-     * The console command description.
-     *
      * @var string
      */
-    protected $description = 'Run historical backtesting simulation on Binance Futures historical data';
+    protected $description = 'Backtest the live strategy (same engine, exits, fees and risk rules) on Binance history';
 
-    /**
-     * Execute the console command.
-     */
-    public function handle(BacktestingEngine $engine): int
+    public function handle(BacktestingEngine $engine, SymbolAnalyzer $analyzer): int
     {
-        $symbol = strtoupper((string) $this->argument('symbol'));
         $interval = (string) $this->option('interval');
-        $limit = (int) $this->option('limit');
-        $balance = (float) $this->option('balance');
+        $symbols = array_map('strtoupper', (array) $this->argument('symbols'));
 
-        $this->info("⏳ Running Backtest on Binance Futures [{$symbol} - {$interval}] over {$limit} candles...");
+        if ($symbols === []) {
+            $symbols = array_keys($analyzer->universe((int) $this->option('top')));
+        }
 
-        $results = $engine->run($symbol, $interval, $limit, $balance);
+        if ($symbols === []) {
+            $this->error('No symbols to test (could not load the futures universe).');
+
+            return self::FAILURE;
+        }
+
+        $barSeconds = MarketScanService::barSeconds($interval);
+        $endMs = intdiv(time(), $barSeconds) * $barSeconds * 1000;
+        $startMs = $endMs - (int) $this->option('months') * 30 * 86400 * 1000;
+
+        $this->info(sprintf('Backtesting %d symbols on %s from %s to %s...', count($symbols), $interval, date('Y-m-d', intdiv($startMs, 1000)), date('Y-m-d', intdiv($endMs, 1000))));
+
+        $result = $engine->runPortfolio(
+            $symbols,
+            $interval,
+            $startMs,
+            $endMs,
+            (float) $this->option('balance'),
+            (bool) $this->option('seed'),
+            fn (string $symbol, int $count) => $this->line("  {$symbol}: {$count} signals"),
+            $this->option('setups') ? array_map('trim', explode(',', strtoupper((string) $this->option('setups')))) : null
+        );
 
         $this->newLine();
-        $this->info('====================================================');
-        $this->info("        BACKTEST PERFORMANCE REPORT [{$symbol}]");
-        $this->info('====================================================');
+        $this->info('Per setup (fees and slippage included, R = initial risk)');
+        $this->table(['Setup', 'Type', 'Trades', 'Win %', 'Avg R', 'Profit factor'], array_map(fn (array $s): array => [
+            $s['label'],
+            $s['shadow'] ? 'shadow' : 'core',
+            $s['n'],
+            $s['win_rate'] ?? '-',
+            $s['expectancy'] ?? '-',
+            $s['profit_factor'] ?? '-',
+        ], $result['setups']));
 
-        $pnlSign = $results['net_profit'] >= 0 ? '+' : '';
-        $color = $results['net_profit'] >= 0 ? 'info' : 'error';
+        $this->info("Portfolio simulation from \${$result['initial_balance']} (2% risk per trade, live position limits) using: ".implode(', ', $result['portfolio_setups']));
+        $this->table(['Metric', 'Value'], [
+            ['Trades taken', $result['total_trades']],
+            ['Win rate', $result['win_rate'].'%'],
+            ['Expectancy', $result['expectancy_r'].'R per trade'],
+            ['Profit factor', $result['profit_factor']],
+            ['Final balance', '$'.$result['final_balance'].' ('.$result['net_profit_pct'].'%)'],
+            ['Max drawdown', $result['max_drawdown_pct'].'%'],
+            ['Longest losing streak', $result['longest_losing_streak']],
+        ]);
 
-        $this->$color("Initial Balance:    \${$results['initial_balance']}");
-        $this->$color("Final Balance:      \${$results['final_balance']}");
-        $this->$color("Net Profit:         {$pnlSign}\${$results['net_profit']} ({$pnlSign}{$results['net_profit_pct']}%)");
-        $this->line("Total Trades:       {$results['total_trades']}");
-        $this->line("Winning Trades:     {$results['wins']}");
-        $this->line("Losing Trades:      {$results['losses']}");
-        $this->line("Win Rate:           {$results['win_rate']}%");
-        $this->line("Profit Factor:      {$results['profit_factor']}");
-        $this->line("Max Drawdown:       {$results['max_drawdown_pct']}%");
-        $this->info('====================================================');
+        $mc = $result['monte_carlo'];
+        if ($mc['runs'] > 0) {
+            $this->info("Monte Carlo ({$mc['runs']} bootstrapped years of the same trade count)");
+            $this->table(['Metric', 'Value'], [
+                ['Chance of falling below $4 (cannot trade)', $mc['ruin_probability'].'%'],
+                ['Chance of doubling', $mc['double_probability'].'%'],
+                ['Median final balance', '$'.$mc['median_final']],
+                ['10th / 90th percentile', '$'.$mc['p10_final'].' / $'.$mc['p90_final']],
+            ]);
+        }
 
-        if (! empty($results['trades'])) {
-            $this->newLine();
-            $this->line('Recent simulated trades:');
-            $table = [];
-            foreach ($results['trades'] as $t) {
-                $table[] = [
-                    $t['time'],
-                    $t['side'],
-                    '$'.$t['entry_price'],
-                    '$'.$t['exit_price'],
-                    ($t['net_pnl'] >= 0 ? '+' : '').'$'.$t['net_pnl'],
-                    $t['pnl_pct'].'%',
-                    $t['exit_reason'],
-                ];
-            }
+        $gate = $result['total_trades'] >= 200 && $result['profit_factor'] >= 1.3;
+        $this->{$gate ? 'info' : 'warn'}($gate
+            ? 'GO-LIVE GATE (backtest part): PASSED. Next: 2+ weeks of paper trading.'
+            : 'GO-LIVE GATE (backtest part): NOT PASSED (needs >= 200 trades and profit factor >= 1.3). Keep trading on paper.');
 
-            $this->table(['Time', 'Side', 'Entry', 'Exit', 'PnL ($)', 'ROE (%)', 'Exit Reason'], $table);
+        foreach ($result['errors'] as $symbol => $error) {
+            $this->warn("{$symbol}: {$error}");
         }
 
         return self::SUCCESS;

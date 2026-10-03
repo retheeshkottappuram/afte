@@ -147,6 +147,8 @@ class BinanceFuturesClient
      */
     protected function signedPost(string $path, array $params = [], bool $isRetry = false): array
     {
+        $this->assertCanMutate($path);
+
         $params['timestamp'] = $this->getTimestamp();
         $params['recvWindow'] = $this->recvWindow;
         $params['signature'] = $this->sign($params);
@@ -176,6 +178,8 @@ class BinanceFuturesClient
      */
     protected function signedDelete(string $path, array $params = [], bool $isRetry = false): array
     {
+        $this->assertCanMutate($path);
+
         $params['timestamp'] = $this->getTimestamp();
         $params['recvWindow'] = $this->recvWindow;
         $params['signature'] = $this->sign($params);
@@ -196,6 +200,16 @@ class BinanceFuturesClient
                 return $this->signedDelete($path, $params, true);
             }
             throw $e;
+        }
+    }
+
+    /**
+     * Hard guard: a paper-mode client must never place, change or cancel real orders.
+     */
+    protected function assertCanMutate(string $path): void
+    {
+        if ($this->mode === 'paper') {
+            throw new RuntimeException("Blocked signed write [{$path}] from a PAPER mode client. Paper trading never touches the exchange.");
         }
     }
 
@@ -225,7 +239,7 @@ class BinanceFuturesClient
      */
     public function getExchangeInfo(): array
     {
-        return Cache::remember('binance:futures:exchange_info', 3600, function (): array {
+        return Cache::remember('binance:futures:exchange_info:'.($this->mode === 'testnet' ? 'testnet' : 'live'), 3600, function (): array {
             try {
                 $response = Http::timeout(10)->get("{$this->baseUrl}/fapi/v1/exchangeInfo");
 
@@ -433,6 +447,24 @@ class BinanceFuturesClient
     }
 
     /**
+     * Get the current signed position amount for a symbol, bypassing caches.
+     * Returns null when Binance does not report the symbol.
+     */
+    public function getPositionAmount(string $symbol): ?float
+    {
+        $rows = $this->signedGet('/fapi/v2/positionRisk', ['symbol' => strtoupper($symbol)]);
+        $total = null;
+
+        foreach ($rows as $row) {
+            if (strtoupper((string) ($row['symbol'] ?? '')) === strtoupper($symbol)) {
+                $total = ($total ?? 0.0) + (float) ($row['positionAmt'] ?? 0);
+            }
+        }
+
+        return $total;
+    }
+
+    /**
      * Set leverage for a symbol (signed).
      */
     public function setLeverage(string $symbol, int $leverage): array
@@ -526,6 +558,7 @@ class BinanceFuturesClient
                 'side' => strtoupper($side),
                 'type' => 'STOP_MARKET',
                 'triggerPrice' => $formattedPrice,
+                'workingType' => 'MARK_PRICE',
             ];
 
             if ($closePosition) {
@@ -543,6 +576,7 @@ class BinanceFuturesClient
                 'side' => strtoupper($side),
                 'type' => 'STOP_MARKET',
                 'stopPrice' => $formattedPrice,
+                'workingType' => 'MARK_PRICE',
             ];
 
             if ($closePosition) {
@@ -759,7 +793,7 @@ class BinanceFuturesClient
     {
         $info = $this->getExchangeInfo()[$symbol] ?? null;
         if (! $info) {
-            return round($price, 2);
+            return round($price, $price >= 1 ? 4 : 8);
         }
 
         $tick = (float) $info['tickSize'];

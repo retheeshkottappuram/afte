@@ -5,204 +5,162 @@ namespace Tests\Unit;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Trading\RiskManager;
-use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class RiskManagerTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_compounding_stages_classification(): void
+    protected function setUp(): void
     {
-        $riskManager = app(RiskManager::class);
-
-        $seedAccount = TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-        $stage1 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(3, $stage1['max_positions']);
-        $this->assertEquals(10, $stage1['default_leverage']);
-
-        $seedAccount->balance = 50.0;
-        $stage2 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(3, $stage2['max_positions']);
-        $this->assertEquals(8, $stage2['default_leverage']);
-
-        $seedAccount->balance = 250.0;
-        $stage3 = $riskManager->getCompoundingStage($seedAccount);
-        $this->assertEquals(4, $stage3['max_positions']);
-        $this->assertEquals(5, $stage3['default_leverage']);
+        parent::setUp();
+        Http::fake(); // exchange info falls back to the built-in lot sizes
     }
 
-    public function test_binance_minimum_notional_compliance(): void
+    protected function account(float $balance, array $overrides = []): TradingAccount
     {
-        $riskManager = app(RiskManager::class);
-
-        $account = TradingAccount::create([
+        return TradingAccount::create(array_merge([
             'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
+            'balance' => $balance,
+            'initial_balance' => $balance,
+            'equity' => $balance,
+            'peak_equity' => $balance,
+            'is_running' => true,
+        ], $overrides));
+    }
 
-        $sizing = $riskManager->calculatePositionSize($account, 'SOLUSDT', 150.0, 148.0);
+    protected function openTrade(string $symbol, string $side, float $margin = 1.0): Trade
+    {
+        return Trade::create([
+            'symbol' => $symbol, 'side' => $side, 'mode' => 'paper', 'status' => 'OPEN', 'stage' => 'ENTRY',
+            'entry_price' => 100.0, 'quantity' => 0.1, 'remaining_quantity' => 0.1, 'margin_used' => $margin, 'leverage' => 5,
+            'initial_sl' => 99.0, 'current_sl' => 99.0, 'tp1_price' => 101.5, 'tp2_price' => 103.0, 'opened_at' => now(),
+        ]);
+    }
+
+    public function test_max_positions_scale_with_equity(): void
+    {
+        $risk = app(RiskManager::class);
+
+        $this->assertSame(1, $risk->maxPositions(5.0));
+        $this->assertSame(2, $risk->maxPositions(50.0));
+        $this->assertSame(3, $risk->maxPositions(500.0));
+    }
+
+    public function test_position_is_sized_to_two_percent_risk_at_the_stop(): void
+    {
+        $sizing = app(RiskManager::class)->calculatePositionSize($this->account(100.0), 'SOLUSDT', 150.0, 148.5);
 
         $this->assertTrue($sizing['allowed']);
-        $this->assertGreaterThanOrEqual(5.0, $sizing['notional'], 'Position notional must meet Binance $5.00 minNotional');
-        $this->assertLessThanOrEqual($account->balance, $sizing['margin'], 'Margin required must not exceed account balance');
-        $this->assertEquals(10, $sizing['leverage']);
+        $this->assertEqualsWithDelta(1.33, $sizing['quantity'], 1e-9);
+        $this->assertEqualsWithDelta(1.995, $sizing['risk_usd'], 1e-9);
+        $this->assertSame(5, $sizing['leverage']);
+        $this->assertLessThanOrEqual(2.0, $sizing['risk_pct']);
     }
 
-    public function test_circuit_breaker_activates_on_consecutive_losses(): void
+    public function test_five_dollar_account_can_trade_within_the_risk_limit(): void
     {
-        $riskManager = app(RiskManager::class);
-
-        $account = TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-            'consecutive_losses' => 2,
-            'paused_until' => Carbon::now()->addHours(2),
-        ]);
-
-        $canOpen = $riskManager->canOpenTrade($account, 'BTCUSDT', 90);
-        $this->assertFalse($canOpen['allowed']);
-        $this->assertStringContainsString('Circuit breaker', $canOpen['reason']);
-    }
-
-    public function test_emergency_kill_switch_halts_trading(): void
-    {
-        $riskManager = app(RiskManager::class);
-
-        $account = TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-            'kill_switch' => true,
-        ]);
-
-        $canOpen = $riskManager->canOpenTrade($account, 'SOLUSDT', 95);
-        $this->assertFalse($canOpen['allowed']);
-        $this->assertStringContainsString('Kill Switch', $canOpen['reason']);
-    }
-
-    public function test_sizing_returns_amount_added_and_trade_accessor(): void
-    {
-        $riskManager = app(RiskManager::class);
-
-        $account = TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-
-        $sizing = $riskManager->calculatePositionSize($account, 'SOLUSDT', 150.0, 147.0);
-
-        $this->assertArrayHasKey('amount_added', $sizing);
-        $this->assertGreaterThan(0, $sizing['amount_added']);
-        $this->assertEquals($sizing['margin'], $sizing['amount_added']);
-
-        $trade = Trade::create([
-            'symbol' => 'SOLUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 150.0,
-            'quantity' => 0.04,
-            'remaining_quantity' => 0.04,
-            'margin_used' => 0.60,
-            'leverage' => 10,
-            'initial_sl' => 147.0,
-            'current_sl' => 147.0,
-            'tp1_price' => 153.0,
-            'tp2_price' => 156.0,
-            'opened_at' => now(),
-        ]);
-
-        $this->assertEquals(0.60, $trade->amount_added);
-        $this->assertEquals(6.00, $trade->position_size_usd);
-    }
-
-    public function test_stage_1_excludes_heavy_coins(): void
-    {
-        config(['trading.single_coin_strict' => true]);
-        config(['trading.stages.stage_1.exclude_symbols' => ['BTCUSDT', 'ETHUSDT']]);
-        $riskManager = app(RiskManager::class);
-
-        $account = TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-            'is_running' => true,
-        ]);
-
-        $canOpenBtc = $riskManager->canOpenTrade($account, 'BTCUSDT', 95);
-        $this->assertFalse($canOpenBtc['allowed']);
-        $this->assertStringContainsString('excluded', $canOpenBtc['reason']);
-
-        $canOpenEth = $riskManager->canOpenTrade($account, 'ETHUSDT', 95);
-        $this->assertFalse($canOpenEth['allowed']);
-        $this->assertStringContainsString('excluded', $canOpenEth['reason']);
-
-        TradingTargetManager::setActiveCoin('SUIUSDT');
-        $canOpenSui = $riskManager->canOpenTrade($account, 'SUIUSDT', 95);
-        $this->assertTrue($canOpenSui['allowed']);
-
-        // Non-target coin must be strictly blocked
-        $canOpenNear = $riskManager->canOpenTrade($account, 'NEARUSDT', 95);
-        $this->assertFalse($canOpenNear['allowed']);
-        $this->assertStringContainsString('Trading is strictly restricted', $canOpenNear['reason']);
-    }
-
-    public function test_single_coin_utilizes_at_least_50_percent_of_available_fund(): void
-    {
-        config(['trading.single_coin_strict' => true]);
-        config(['trading.fund_management.single_coin_fund_percent' => 50.0]);
-        config(['trading.fund_management.amount_per_trade' => null]);
-
-        $riskManager = app(RiskManager::class);
-
-        $account = TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 10.0,
-            'initial_balance' => 10.0,
-            'is_running' => true,
-        ]);
-
-        $sizing = $riskManager->calculatePositionSize($account, 'NEARUSDT', 2.50, 2.46);
+        $sizing = app(RiskManager::class)->calculatePositionSize($this->account(5.0), 'SOLUSDT', 150.0, 148.5);
 
         $this->assertTrue($sizing['allowed']);
-        $this->assertGreaterThanOrEqual(5.00, $sizing['margin'], 'Single-coin position must utilize at least 50% of available funds ($5.00 of $10.00)');
-        $this->assertLessThanOrEqual(7.50, $sizing['margin'], 'Single-coin position margin must not exceed 75% safety cap');
-        $this->assertGreaterThanOrEqual(50.0, $sizing['notional'], 'Position notional at 10x leverage must be at least $50.00');
+        $this->assertGreaterThanOrEqual(5.0, $sizing['notional'], 'Must meet the Binance minimum order');
+        $this->assertLessThanOrEqual(3.0, $sizing['risk_pct']);
+        $this->assertLessThan(5.0, $sizing['margin']);
     }
 
-    public function test_asset_protection_stop_loss_clamping(): void
+    public function test_rejects_when_the_minimum_order_would_risk_too_much(): void
     {
-        $riskManager = app(RiskManager::class);
+        $sizing = app(RiskManager::class)->calculatePositionSize($this->account(5.0), 'BTCUSDT', 60000.0, 59400.0);
 
-        // 1. Long: Dangerously wide SL (5% away) clamped to max 1.60%
-        $wideLongSl = $riskManager->calculateAssetProtectionStopLoss('LONG', 100.0, 95.0);
-        $this->assertEquals(98.40, $wideLongSl, 'Wide Long SL must be clamped to 1.6% max distance for asset protection');
+        $this->assertFalse($sizing['allowed']);
+        $this->assertStringContainsString('Stop too wide for this account size', $sizing['reason']);
+    }
 
-        // 2. Long: Too tight SL (0.2% away) clamped to min 0.80%
-        $tightLongSl = $riskManager->calculateAssetProtectionStopLoss('LONG', 100.0, 99.80);
-        $this->assertEquals(99.20, $tightLongSl, 'Tight Long SL must be clamped to 0.8% min distance');
+    public function test_one_position_at_a_time_below_twenty_five_dollars(): void
+    {
+        $account = $this->account(5.0);
+        $this->openTrade('ETHUSDT', 'LONG', 0.5);
 
-        // 3. Long: Inverted SL (above entry price) healed to safe default (1.25%)
-        $invertedLongSl = $riskManager->calculateAssetProtectionStopLoss('LONG', 100.0, 105.0);
-        $this->assertEquals(98.75, $invertedLongSl, 'Inverted Long SL must be healed to default 1.25% distance');
+        $result = app(RiskManager::class)->canOpenTrade($account, 'SOLUSDT', 'LONG');
 
-        // 4. Short: Dangerously wide SL (5% away) clamped to max 1.60%
-        $wideShortSl = $riskManager->calculateAssetProtectionStopLoss('SHORT', 100.0, 105.0);
-        $this->assertEquals(101.60, $wideShortSl, 'Wide Short SL must be clamped to 1.6% max distance');
+        $this->assertFalse($result['allowed']);
+        $this->assertStringContainsString('Max open positions', $result['reason']);
+    }
 
-        // 5. Short: Inverted SL (below entry price) healed to safe default (1.25%)
-        $invertedShortSl = $riskManager->calculateAssetProtectionStopLoss('SHORT', 100.0, 95.0);
-        $this->assertEquals(101.25, $invertedShortSl, 'Inverted Short SL must be healed to default 1.25% distance');
+    public function test_correlation_limit_on_same_side_positions(): void
+    {
+        $account = $this->account(500.0);
+        $this->openTrade('ETHUSDT', 'LONG');
+        $this->openTrade('SOLUSDT', 'LONG');
+
+        $risk = app(RiskManager::class);
+        $this->assertFalse($risk->canOpenTrade($account, 'XRPUSDT', 'LONG')['allowed']);
+        $this->assertTrue($risk->canOpenTrade($account, 'XRPUSDT', 'SHORT')['allowed']);
+    }
+
+    public function test_daily_loss_limit_pauses_entries_until_next_utc_day(): void
+    {
+        $account = $this->account(93.0, ['day_start_equity' => 100.0, 'day_start_date' => Carbon::now('UTC')->startOfDay()]);
+
+        $result = app(RiskManager::class)->canOpenTrade($account, 'SOLUSDT', 'LONG');
+        $account->refresh();
+
+        $this->assertFalse($result['allowed']);
+        $this->assertStringContainsString('daily loss limit', $result['reason']);
+        $this->assertTrue($account->paused_until->equalTo(Carbon::now('UTC')->addDay()->startOfDay()));
+    }
+
+    public function test_three_losses_in_a_row_pause_entries_for_twelve_hours(): void
+    {
+        config(['trading.circuit_breakers.max_consecutive_losses' => 3, 'trading.circuit_breakers.loss_cooldown_minutes' => 720]);
+        $account = $this->account(100.0);
+        $risk = app(RiskManager::class);
+
+        foreach ([1, 2, 3] as $n) {
+            $trade = $this->openTrade("COIN{$n}USDT", 'LONG');
+            $trade->update(['status' => 'CLOSED', 'realized_pnl' => -0.5]);
+            $risk->handleTradeClosed($account, $trade);
+        }
+
+        $account->refresh();
+        $this->assertSame(3, $account->consecutive_losses);
+        $this->assertNotNull($account->paused_until);
+        $this->assertEqualsWithDelta(12 * 60, now()->diffInMinutes($account->paused_until), 1);
+        $this->assertFalse($risk->canOpenTrade($account, 'SOLUSDT', 'LONG')['allowed']);
+    }
+
+    public function test_drawdown_from_peak_engages_the_kill_switch(): void
+    {
+        $account = $this->account(69.0, ['peak_equity' => 100.0]);
+
+        $result = app(RiskManager::class)->canOpenTrade($account, 'SOLUSDT', 'LONG');
+
+        $this->assertFalse($result['allowed']);
+        $this->assertTrue($account->refresh()->kill_switch);
+    }
+
+    public function test_kill_switch_and_stopped_engine_block_auto_entries(): void
+    {
+        $risk = app(RiskManager::class);
+
+        $this->assertFalse($risk->canOpenTrade($this->account(50.0, ['kill_switch' => true]), 'SOLUSDT', 'LONG')['allowed']);
+
+        $stopped = TradingAccount::create(['mode' => 'live', 'balance' => 50.0, 'initial_balance' => 50.0, 'peak_equity' => 50.0, 'is_running' => false]);
+        config(['trading.allow_live_trading' => true]);
+        $this->assertFalse($risk->canOpenTrade($stopped, 'SOLUSDT', 'LONG')['allowed']);
+        $this->assertTrue($risk->canOpenTrade($stopped, 'SOLUSDT', 'LONG', isManual: true)['allowed'], 'Manual trades do not need auto-trading to be running');
+    }
+
+    public function test_fallback_stop_is_clamped_into_the_allowed_band(): void
+    {
+        $risk = app(RiskManager::class);
+
+        $this->assertEqualsWithDelta(98.2, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 97.0), 1e-9);
+        $this->assertEqualsWithDelta(99.4, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 99.8), 1e-9);
+        $this->assertEqualsWithDelta(101.8, $risk->calculateAssetProtectionStopLoss('SHORT', 100.0, 104.0), 1e-9);
+        $this->assertEqualsWithDelta(98.75, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 101.0), 1e-9, 'Wrong-side stop falls back to the default distance');
     }
 }

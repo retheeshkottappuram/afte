@@ -49,7 +49,7 @@ class TelegramNotifier
      *     error: ?string
      * }
      */
-    public function sendWithDetails(string $message, int $maxRetries = 3): array
+    public function sendWithDetails(string $message, int $maxRetries = 3, ?int $replyToMessageId = null): array
     {
         if (empty($this->botToken) || empty($this->chatId)) {
             Log::warning('TelegramNotifier: Bot token or chat ID is not configured.');
@@ -68,8 +68,12 @@ class TelegramNotifier
             'chat_id' => $this->chatId,
             'text' => $message,
             'parse_mode' => 'HTML',
-            'disable_web_page_preview' => false,
+            'disable_web_page_preview' => true,
         ];
+
+        if ($replyToMessageId !== null) {
+            $payload['reply_parameters'] = ['message_id' => $replyToMessageId, 'allow_sending_without_reply' => true];
+        }
 
         $attempt = 0;
         $startTime = microtime(true);

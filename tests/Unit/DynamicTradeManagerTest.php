@@ -5,9 +5,11 @@ namespace Tests\Unit;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Trading\DynamicTradeManager;
+use App\Services\Trading\ExchangeOrders;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 class DynamicTradeManagerTest extends TestCase
@@ -20,303 +22,141 @@ class DynamicTradeManagerTest extends TestCase
         Http::fake();
     }
 
-    public function test_breakeven_lock_triggered_at_one_percent_gain(): void
+    /**
+     * SOL long from 100 with the stop at 99 (R = 1), TP1 101.5, TP2 103.
+     */
+    protected function trade(string $mode = 'paper', array $overrides = []): Trade
     {
-        $manager = app(DynamicTradeManager::class);
+        TradingAccount::firstOrCreate(['mode' => $mode], ['balance' => 100.0, 'initial_balance' => 100.0, 'equity' => 100.0, 'peak_equity' => 100.0]);
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-
-        $trade = Trade::create([
-            'symbol' => 'SOLUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 100.0,
-            'quantity' => 0.5,
-            'remaining_quantity' => 0.5,
-            'margin_used' => 5.0,
-            'leverage' => 10,
-            'initial_sl' => 98.5,
-            'current_sl' => 98.5,
-            'tp1_price' => 102.0,
-            'tp2_price' => 104.0,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
+        return Trade::create(array_merge([
+            'symbol' => 'SOLUSDT', 'side' => 'LONG', 'mode' => $mode, 'status' => 'OPEN', 'stage' => 'ENTRY',
+            'entry_price' => 100.0, 'quantity' => 0.5, 'remaining_quantity' => 0.5, 'margin_used' => 10.0, 'leverage' => 5,
+            'initial_sl' => 99.0, 'current_sl' => 99.0, 'tp1_price' => 101.5, 'tp2_price' => 103.0,
+            'highest_price' => 100.0, 'lowest_price' => 100.0, 'meta' => ['interval' => '1h'],
             'opened_at' => Carbon::now(),
-        ]);
+        ], $overrides));
+    }
 
-        // Price moves up to 101.35 (+1.35% gain, exceeding 1.30% threshold)
-        $manager->manageTrade($trade, 101.35);
+    public function test_breakeven_plus_fees_at_one_r(): void
+    {
+        $trade = $this->trade();
+
+        app(DynamicTradeManager::class)->manageTrade($trade, 101.0);
         $trade->refresh();
 
         $this->assertTrue($trade->be_locked);
-        $this->assertGreaterThan(100.0, $trade->current_sl, 'SL must be moved above entry price to cover round-trip taker fees');
-        $this->assertEquals('BE_LOCKED', $trade->stage);
+        $this->assertEqualsWithDelta(100.1, $trade->current_sl, 1e-9);
+        $this->assertSame('BE_LOCKED', $trade->stage);
+        $this->assertSame('OPEN', $trade->status);
     }
 
-    public function test_tp1_partial_profit_booked(): void
+    public function test_tp1_books_half_and_locks_profit(): void
     {
-        $manager = app(DynamicTradeManager::class);
+        $trade = $this->trade();
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-
-        $trade = Trade::create([
-            'symbol' => 'SOLUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 100.0,
-            'quantity' => 1.0,
-            'remaining_quantity' => 1.0,
-            'margin_used' => 5.0,
-            'leverage' => 10,
-            'initial_sl' => 98.5,
-            'current_sl' => 98.5,
-            'tp1_price' => 102.0,
-            'tp2_price' => 104.0,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
-            'opened_at' => Carbon::now(),
-        ]);
-
-        // Price reaches TP1 at 102.1
-        $manager->manageTrade($trade, 102.1);
+        app(DynamicTradeManager::class)->manageTrade($trade, 101.6);
         $trade->refresh();
 
         $this->assertTrue($trade->tp1_hit);
-        $this->assertGreaterThan(0.0, $trade->realized_pnl, 'Realized partial PnL must be recorded');
-        $this->assertLessThan(1.0, $trade->remaining_quantity, 'Remaining quantity must be reduced by 33% partial close');
+        $this->assertSame('TP1_HIT', $trade->stage);
+        $this->assertEqualsWithDelta(0.25, $trade->remaining_quantity, 1e-9);
+        $this->assertEqualsWithDelta(100.5, $trade->current_sl, 1e-9);
+        $this->assertEqualsWithDelta(0.375, $trade->meta['partial_gross'], 1e-9, '0.25 SOL booked at +1.5');
+        $this->assertGreaterThan(0, $trade->realized_pnl);
     }
 
-    public function test_stop_loss_execution(): void
+    public function test_partial_profit_is_included_when_the_runner_closes(): void
     {
+        $trade = $this->trade();
         $manager = app(DynamicTradeManager::class);
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-
-        $trade = Trade::create([
-            'symbol' => 'SOLUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 100.0,
-            'quantity' => 0.5,
-            'remaining_quantity' => 0.5,
-            'margin_used' => 5.0,
-            'leverage' => 10,
-            'initial_sl' => 98.5,
-            'current_sl' => 98.5,
-            'tp1_price' => 102.0,
-            'tp2_price' => 104.0,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
-            'opened_at' => Carbon::now(),
-        ]);
-
-        // Price crashes to 98.0 (below current SL 98.5)
-        $manager->manageTrade($trade, 98.0);
+        $manager->manageTrade($trade, 101.6);
+        $manager->manageTrade($trade->refresh(), 100.45);
         $trade->refresh();
 
-        $this->assertEquals('CLOSED', $trade->status);
-        $this->assertEquals(0.0, $trade->remaining_quantity);
-        $this->assertNotNull($trade->closed_at);
+        $this->assertSame('CLOSED', $trade->status);
+        $this->assertSame('TRAILING_STOP', $trade->exit_reason);
+        // 0.25 x 1.5 on TP1 + 0.25 x 0.45 on the runner, minus fees
+        $this->assertEqualsWithDelta(0.375 + 0.1125, $trade->gross_pnl, 1e-6);
+        $this->assertGreaterThan(0.4, $trade->net_pnl);
+        $this->assertEqualsWithDelta(100.0 + $trade->net_pnl, TradingAccount::getForMode('paper')->balance, 1e-6);
     }
 
-    public function test_early_breakeven_locked_at_point_four_five_gain(): void
+    public function test_stop_loss_closes_for_about_minus_one_r(): void
     {
-        config([
-            'trading.management.be_gain_pct' => 0.45,
-            'trading.management.be_roe_threshold' => 4.5,
-        ]);
+        $trade = $this->trade();
 
-        $manager = app(DynamicTradeManager::class);
-
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-
-        $trade = Trade::create([
-            'symbol' => 'SUIUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 2.0,
-            'quantity' => 25.0,
-            'remaining_quantity' => 25.0,
-            'margin_used' => 5.0,
-            'leverage' => 10,
-            'initial_sl' => 1.98,
-            'current_sl' => 1.98,
-            'tp1_price' => 2.02,
-            'tp2_price' => 2.04,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
-            'opened_at' => Carbon::now(),
-        ]);
-
-        // Price moves up by +0.50% to 2.01 (exceeds 0.45% / 4.5% ROE threshold)
-        $manager->manageTrade($trade, 2.01);
+        app(DynamicTradeManager::class)->manageTrade($trade, 98.9);
         $trade->refresh();
 
-        $this->assertTrue($trade->be_locked);
-        $this->assertTrue($trade->isProtected());
-        $this->assertGreaterThan(2.0, $trade->current_sl);
+        $this->assertSame('CLOSED', $trade->status);
+        $this->assertSame('STOP_LOSS', $trade->exit_reason);
+        $this->assertEqualsWithDelta(-0.55, $trade->gross_pnl, 1e-6, 'Gap through the stop fills at the worse price');
+        $this->assertSame(1, TradingAccount::getForMode('paper')->consecutive_losses);
     }
 
-    public function test_stagnation_timeout_closes_trade_after_hard_timeout(): void
+    public function test_time_stop_closes_a_trade_without_progress(): void
     {
-        config(['trading.management.max_hold_minutes' => 90]);
+        $trade = $this->trade(overrides: ['opened_at' => Carbon::now()->subHours(13)]);
 
-        $manager = app(DynamicTradeManager::class);
+        app(DynamicTradeManager::class)->manageTrade($trade, 100.2);
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-
-        $trade = Trade::create([
-            'symbol' => 'DOGEUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 0.15,
-            'quantity' => 300.0,
-            'remaining_quantity' => 300.0,
-            'margin_used' => 4.5,
-            'leverage' => 10,
-            'initial_sl' => 0.147,
-            'current_sl' => 0.147,
-            'tp1_price' => 0.155,
-            'tp2_price' => 0.160,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
-            'opened_at' => Carbon::now()->subMinutes(95), // 95 minutes old
-        ]);
-
-        // Price is slightly flat at 0.1498 (below entry, but above SL)
-        $manager->manageTrade($trade, 0.1498);
-        $trade->refresh();
-
-        $this->assertEquals('CLOSED', $trade->status);
-        $this->assertEquals('STAGNATION_TIMEOUT_EXIT', $trade->exit_reason);
+        $this->assertSame('TIME_STOP', $trade->refresh()->exit_reason);
     }
 
-    public function test_peak_profit_reversal_clawback_protection_locks_green_profit(): void
+    public function test_live_stop_move_uses_new_then_cancel_replacement(): void
     {
-        config([
-            'trading.management.peak_profit_min_gain_pct' => 0.50,
-            'trading.management.peak_profit_giveback_pct' => 35.0,
-        ]);
+        $this->mock(ExchangeOrders::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('replaceStop')->once()->withArgs(fn (Trade $t, float $price): bool => abs($price - 100.1) < 1e-9)->andReturn(true);
+        });
 
-        $manager = app(DynamicTradeManager::class);
+        $trade = $this->trade('live');
+        app(DynamicTradeManager::class)->manageTrade($trade, 101.0);
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
-
-        $trade = Trade::create([
-            'symbol' => 'SOLUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 100.0,
-            'quantity' => 0.5,
-            'remaining_quantity' => 0.5,
-            'margin_used' => 5.0,
-            'leverage' => 10,
-            'initial_sl' => 98.5,
-            'current_sl' => 98.5,
-            'tp1_price' => 102.0,
-            'tp2_price' => 104.0,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
-            'opened_at' => Carbon::now(),
-        ]);
-
-        // 1. Price rallies to 100.70 (+0.70% peak gain)
-        $manager->manageTrade($trade, 100.70);
-        $trade->refresh();
-        $this->assertEquals(100.70, $trade->highest_price);
-
-        // 2. Price retraces to 100.40 (surrendering > 35% of the +0.70% peak gain)
-        // Anti-giveback circuit must close trade immediately with PEAK_PROFIT_PROTECTION
-        $manager->manageTrade($trade, 100.40);
-        $trade->refresh();
-
-        $this->assertEquals('CLOSED', $trade->status);
-        $this->assertEquals('PEAK_PROFIT_PROTECTION', $trade->exit_reason);
-        $this->assertGreaterThan(0.0, $trade->realized_pnl, 'Must close with positive green profit in the bank');
+        $this->assertEqualsWithDelta(100.1, $trade->refresh()->current_sl, 1e-9);
     }
 
-    public function test_stepped_ratchet_moves_stop_loss_at_point_nine_percent_gain(): void
+    public function test_live_stop_is_unchanged_when_the_exchange_rejects_the_move(): void
     {
-        config([
-            'trading.management.lock2_gain_pct' => 0.90,
-            'trading.management.lock2_sl_pct' => 0.45,
-        ]);
+        $this->mock(ExchangeOrders::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('replaceStop')->andReturn(false);
+        });
 
-        $manager = app(DynamicTradeManager::class);
+        $trade = $this->trade('live');
+        app(DynamicTradeManager::class)->manageTrade($trade, 101.0);
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 5.0,
-            'initial_balance' => 5.0,
-        ]);
+        $this->assertEqualsWithDelta(99.0, $trade->refresh()->current_sl, 1e-9, 'The DB must mirror the stop that is really on the exchange');
+    }
 
-        $trade = Trade::create([
-            'symbol' => 'SOLUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 100.0,
-            'quantity' => 0.5,
-            'remaining_quantity' => 0.5,
-            'margin_used' => 5.0,
-            'leverage' => 10,
-            'initial_sl' => 98.5,
-            'current_sl' => 98.5,
-            'tp1_price' => 102.0,
-            'tp2_price' => 104.0,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
-            'opened_at' => Carbon::now(),
-        ]);
+    public function test_live_trade_stays_open_when_close_is_not_confirmed_flat(): void
+    {
+        $this->mock(ExchangeOrders::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('closeAndConfirmFlat')->once()->andReturn(['flat' => false, 'order_id' => null, 'avg_price' => null, 'message' => 'Close order rejected: -2019 margin insufficient']);
+        });
 
-        // Price rises to 100.95 (+0.95% gain, which exceeds Tier 2 ratchet threshold of 0.90%)
-        $manager->manageTrade($trade, 100.95);
+        $trade = $this->trade('live');
+        $result = app(DynamicTradeManager::class)->closeTrade($trade, 100.0, 'MANUAL_CLOSE');
         $trade->refresh();
 
-        $this->assertGreaterThanOrEqual(100.45, $trade->current_sl, 'SL must be ratcheted to lock in +0.45% profit');
+        $this->assertSame('error', $result['status']);
+        $this->assertSame('OPEN', $trade->status);
+        $this->assertStringContainsString('-2019', $trade->meta['close_failed_reason']);
+    }
+
+    public function test_live_trade_closes_once_flat_even_if_fills_are_not_available_yet(): void
+    {
+        $this->mock(ExchangeOrders::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('closeAndConfirmFlat')->once()->andReturn(['flat' => true, 'order_id' => '123', 'avg_price' => 100.8, 'message' => 'Position confirmed flat.']);
+        });
+
+        $trade = $this->trade('live');
+        $result = app(DynamicTradeManager::class)->closeTrade($trade, 100.0, 'MANUAL_CLOSE');
+        $trade->refresh();
+
+        $this->assertSame('closed', $result['status']);
+        $this->assertSame('CLOSED', $trade->status);
+        $this->assertSame(100.8, $trade->exit_price);
+        $this->assertTrue($trade->meta['reconcile_pending']);
     }
 }

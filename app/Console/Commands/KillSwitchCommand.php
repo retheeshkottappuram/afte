@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Trading\DynamicTradeManager;
 use Illuminate\Console\Command;
 
@@ -28,7 +29,7 @@ class KillSwitchCommand extends Command
     /**
      * Execute the console command.
      */
-    public function handle(DynamicTradeManager $tradeManager): int
+    public function handle(DynamicTradeManager $tradeManager, BinanceFuturesClient $client): int
     {
         $mode = (string) $this->option('mode');
         $resume = (bool) $this->option('resume');
@@ -38,6 +39,10 @@ class KillSwitchCommand extends Command
         foreach ($modes as $m) {
             $account = TradingAccount::getForMode($m);
             $account->kill_switch = ! $resume;
+            if ($resume) {
+                $account->peak_equity = $account->balance;
+                $account->pause_reason = null;
+            }
             $account->save();
 
             if ($resume) {
@@ -52,7 +57,15 @@ class KillSwitchCommand extends Command
 
                 foreach ($openTrades as $trade) {
                     $this->warn("Closing position {$trade->symbol} ({$trade->side})...");
-                    $tradeManager->closeTrade($trade, $trade->entry_price, 'KILL_SWITCH');
+                    try {
+                        $price = (float) $client->getMarkPrice($trade->symbol) ?: (float) $trade->entry_price;
+                    } catch (\Throwable) {
+                        $price = (float) $trade->entry_price;
+                    }
+                    $result = $tradeManager->closeTrade($trade, $price, 'KILL_SWITCH');
+                    if ($result['status'] !== 'closed') {
+                        $this->error("  NOT confirmed closed: {$result['message']} Close it manually on Binance.");
+                    }
                 }
 
                 $this->line('All open positions terminated for ['.strtoupper($m).'].');

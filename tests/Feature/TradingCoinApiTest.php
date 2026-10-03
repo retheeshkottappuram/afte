@@ -39,9 +39,9 @@ class TradingCoinApiTest extends TestCase
             ]);
     }
 
-    public function test_authenticated_user_can_set_trading_coin(): void
+    public function test_admin_can_set_trading_coin(): void
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['role' => 'admin']);
 
         $response = $this->actingAs($user)->postJson(route('api.trading_coin.set'), [
             'coin' => 'sol',
@@ -59,7 +59,7 @@ class TradingCoinApiTest extends TestCase
 
     public function test_set_trading_coin_requires_valid_symbol(): void
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['role' => 'admin']);
 
         $response = $this->actingAs($user)->postJson(route('api.trading_coin.set'), [
             'coin' => '   ',
@@ -69,5 +69,12 @@ class TradingCoinApiTest extends TestCase
             ->assertJson([
                 'success' => false,
             ]);
+    }
+
+    public function test_viewer_cannot_set_trading_coin(): void
+    {
+        $viewer = User::factory()->create(['role' => 'viewer']);
+
+        $this->actingAs($viewer)->postJson(route('api.trading_coin.set'), ['coin' => 'sol'])->assertForbidden();
     }
 }

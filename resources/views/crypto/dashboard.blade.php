@@ -42,26 +42,26 @@
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <!-- Card 1: Timeframes -->
         <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Market &amp; Timeframe</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Strategy Timeframe</div>
             <div class="text-2xl font-bold text-white flex items-baseline space-x-2">
                 <span>{{ $cryptoConfig['interval'] }}</span>
-                <span class="text-sm font-normal text-slate-400">/ HTF {{ $cryptoConfig['htf_interval'] }}</span>
+                <span class="text-sm font-normal text-slate-400">/ trend filter {{ \App\Services\Strategy\SymbolAnalyzer::regimeInterval($cryptoConfig['interval']) }}</span>
             </div>
             <p class="text-xs text-cyan-400 mt-2 font-mono">{{ $cryptoConfig['market_label'] }}</p>
         </div>
 
-        <!-- Card 2: Confidence Threshold -->
+        <!-- Card 2: Measured Accuracy -->
         <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Min Confidence Score</div>
-            <div class="text-2xl font-bold text-emerald-400">{{ $cryptoConfig['min_score'] }} <span class="text-sm text-slate-400 font-normal">/ 100</span></div>
-            <p class="text-xs text-slate-500 mt-2">Requires multi-factor confluence</p>
+            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Measured Accuracy (90d)</div>
+            <div id="card-accuracy" class="text-2xl font-bold text-emerald-400">--</div>
+            <p id="card-accuracy-sub" class="text-xs text-slate-500 mt-2">Win rate of core setups, fees included</p>
         </div>
 
-        <!-- Card 3: Alert Cooldown -->
+        <!-- Card 3: Trading Mode -->
         <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Alert Cooldown</div>
-            <div class="text-2xl font-bold text-white">{{ $cryptoConfig['cooldown_minutes'] }} <span class="text-sm text-slate-400 font-normal">mins</span></div>
-            <p class="text-xs text-slate-500 mt-2">~5 candles on 15m timeframe</p>
+            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Engine Trading Mode</div>
+            <div class="text-2xl font-bold {{ $tradingMode === 'live' ? 'text-rose-400' : 'text-amber-300' }}">{{ strtoupper($tradingMode) }}</div>
+            <p class="text-xs text-slate-500 mt-2">Change it from the trading terminal. Viewing charts never places orders.</p>
         </div>
 
         <!-- Card 4: Telegram Channel -->
@@ -581,7 +581,7 @@
                     <span>ATR Volatility: <strong id="hud-atr" class="text-slate-200">--</strong></span>
                 </div>
                 <div class="text-slate-500 text-[10px]">
-                    Analysis Timeframe: <span id="hud-active-tf" class="text-emerald-400 font-bold uppercase">{{ $cryptoConfig['interval'] }}</span> | HTF Filter: <span id="hud-active-htf" class="text-slate-300 font-medium uppercase">{{ $cryptoConfig['htf_interval'] }}</span>
+                    Analysis Timeframe: <span id="hud-active-tf" class="text-emerald-400 font-bold uppercase">{{ $cryptoConfig['interval'] }}</span> | Trend Filter: <span id="hud-active-htf" class="text-slate-300 font-medium uppercase">{{ \App\Services\Strategy\SymbolAnalyzer::regimeInterval($cryptoConfig['interval']) }}</span>
                 </div>
             </div>
         </div>
@@ -610,17 +610,17 @@
                     </button>
                 </div>
 
-                <!-- Auto-Order Execution Mode Pill -->
-                <div class="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs shadow-inner" title="Instant Automated Order Execution (Live or Paper) on Signal">
+                <!-- Engine Mode Pill (charts are read-only; the background engine trades) -->
+                <div class="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs shadow-inner" title="The background engine trades in this mode. Viewing a chart never places orders.">
                     <span class="w-2 h-2 rounded-full {{ ($tradingMode ?? 'paper') === 'live' ? 'bg-rose-400' : 'bg-emerald-400' }} animate-pulse"></span>
-                    <span class="font-bold text-[11px] {{ ($tradingMode ?? 'paper') === 'live' ? 'text-rose-400' : 'text-emerald-400' }}">AUTO-ORDER:</span>
+                    <span class="font-bold text-[11px] {{ ($tradingMode ?? 'paper') === 'live' ? 'text-rose-400' : 'text-emerald-400' }}">ENGINE:</span>
                     <span class="font-mono uppercase text-[10px] font-black px-1.5 py-0.5 rounded {{ ($tradingMode ?? 'paper') === 'live' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' }}">{{ strtoupper($tradingMode ?? 'paper') }}</span>
                 </div>
 
                 <!-- Timeframe Selector -->
                 <div class="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs shadow-inner">
                     <span class="text-slate-500 text-[10px] px-2 font-bold uppercase tracking-wider">TF</span>
-                    @foreach (['1m' => '1m', '3m' => '3m', '5m' => '5m', '15m' => '15m', '30m' => '30m', '1h' => '1h', '4h' => '4h', '1d' => '1D'] as $tfKey => $tfLabel)
+                    @foreach (['15m' => '15m', '1h' => '1h (strategy)', '4h' => '4h'] as $tfKey => $tfLabel)
                         <button type="button" onclick="switchTimeframe('{{ $tfKey }}')" id="tf-{{ $tfKey }}"
                             class="tf-btn px-2.5 py-1 rounded-lg font-bold text-xs transition {{ ($cryptoConfig['interval'] === $tfKey) ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white hover:bg-slate-900' }}">
                             {{ $tfLabel }}
@@ -742,6 +742,39 @@
 
             <!-- 2. TradingView Iframe Widget (Alternative mode) -->
             <div id="tradingview_futures_chart" class="hidden w-full h-full relative"></div>
+        </div>
+    </div>
+
+    <!-- SignalAlgo Pro v4: stats strip + Signal Inspector -->
+    <div id="sap-stats-strip" class="mb-3 px-4 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 font-mono">Loading signal statistics...</div>
+    <div id="sap-inspector" class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8 text-xs">
+        <div class="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-3">
+            <div class="flex items-center justify-between">
+                <h3 class="font-bold text-white text-sm">Signal Inspector</h3>
+                <span id="sap-status" class="text-sm">--</span>
+            </div>
+            <p id="sap-reason" class="text-slate-300 leading-relaxed">Loading...</p>
+            <ul id="sap-checklist" class="space-y-1"></ul>
+            <p class="text-[10px] text-slate-500">Signals print only on closed candles and never repaint.</p>
+        </div>
+        <div class="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-3">
+            <h3 class="font-bold text-white text-sm">Trend &amp; Track Record</h3>
+            <div id="sap-mtf" class="grid grid-cols-2 gap-x-4 gap-y-1"></div>
+            <div class="pt-2 border-t border-slate-800 space-y-1">
+                <div class="text-slate-400 font-semibold">Setup track record</div>
+                <div id="sap-record" class="space-y-0.5"></div>
+            </div>
+            <div id="sap-model" class="pt-2 border-t border-slate-800 text-slate-400"></div>
+        </div>
+        <div class="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-3">
+            <h3 class="font-bold text-white text-sm">Position Calculator</h3>
+            <div id="sap-sizing" class="text-slate-300">--</div>
+            <button type="button" id="sap-place-trade" onclick="SignalAlgoPro.placeTrade()" disabled class="w-full py-2 rounded-lg font-bold text-xs bg-slate-800 text-slate-500">No signal</button>
+            <button type="button" id="sap-alert-toggle" onclick="SignalAlgoPro.toggleAlert()" class="w-full py-1.5 rounded-lg text-xs font-semibold border border-slate-700 text-slate-300">Alert me on this coin</button>
+            <div class="pt-2 border-t border-slate-800">
+                <div class="text-slate-400 font-semibold mb-1">Recent signals (click to inspect)</div>
+                <div id="sap-history" class="space-y-0.5 max-h-56 overflow-y-auto"></div>
+            </div>
         </div>
     </div>
 
@@ -1111,6 +1144,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
 
 <!-- TradingView & Lightweight Charts Scripts with Fail-Safe Fallback -->
 <script type="text/javascript" src="{{ asset('js/lightweight-charts.standalone.production.js') }}"></script>
+<script type="text/javascript" src="{{ asset('js/signalalgo-chart.js') }}?v=4"></script>
 <script type="text/javascript">
     if (typeof LightweightCharts === 'undefined') {
         const s = document.createElement('script');
@@ -1138,8 +1172,9 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
     let activeInstitutionalSignal = null;
     let currentWidget = null;
     let currentAbortController = null;
-    let activeSymbol = '{{ $cryptoConfig['symbols'][0] ?? 'BTCUSDT' }}';
-    let activeInterval = '{{ $cryptoConfig['interval'] ?? '15m' }}';
+    let activeSymbol = '{{ $cryptoConfig['initial_symbol'] ?: ($cryptoConfig['symbols'][0] ?? 'BTCUSDT') }}';
+    let activeInterval = '{{ $cryptoConfig['interval'] ?? '1h' }}';
+    let requestedSignalTime = {{ (int) request()->query('signal_time', 0) }};
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
     function showToast(message, isSuccess = true) {
@@ -1543,7 +1578,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
 
         const fetchOptions = abortSignal ? { signal: abortSignal } : {};
 
-        fetch(`/dashboard/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(activeInterval)}`, fetchOptions)
+        fetch(`/dashboard/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(activeInterval)}&signal_time=${requestedSignalTime || 0}`, fetchOptions)
             .then(res => res.json())
             .then(data => {
                 if (symbol !== activeSymbol) {
@@ -1588,13 +1623,16 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                     if (data.ema200) lineEma200.setData(data.ema200);
 
                     // Plot SignalAlgo PRO v3 Historical Markers directly on the candles!
-                    historicalMarkers = data.markers || [];
-                    candleSeries.setMarkers(historicalMarkers);
+                    historicalMarkers = (data.signal_history || []).map(h => Object.assign({}, h, {
+                        side: h.order_side,
+                        score: h.ai_probability !== null ? Math.round(h.ai_probability * 100) : '--',
+                    }));
+                    candleSeries.setMarkers(data.markers || []);
 
                     // Update Markers Count Badge
                     const markersBadge = document.getElementById('markersCountBadge');
                     if (markersBadge) {
-                        markersBadge.textContent = historicalMarkers.length + ' Signals';
+                        markersBadge.textContent = historicalMarkers.length;
                     }
 
                     chart.timeScale().fitContent();
@@ -1809,9 +1847,18 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                     if (hudHtf) hudHtf.textContent = data.htf_interval.toUpperCase();
                 }
 
-                // Automated Order Execution Toast & Alert Feedback
-                if (data.auto_order && (data.auto_order.status === 'opened' || data.auto_order.status === 'executed' || data.auto_order.status === 'reversed_and_opened' || data.auto_order.status === 'same_direction')) {
-                    showAutoOrderNotification(data.auto_order);
+                // SignalAlgo Pro v4 overlays, inspector and grade/AI badge (charts are read-only: no auto orders)
+                if (window.SignalAlgoPro) {
+                    SignalAlgoPro.render(data, chart, candleSeries);
+                }
+                if (!activeTrade && sig && badge) {
+                    const stars = '★'.repeat(sig.stars || 1);
+                    const ai = sig.ai_probability !== null && sig.ai_probability !== undefined ? ` · AI ${Math.round(sig.ai_probability * 100)}%` : '';
+                    const tradable = sig.tradable ? '' : ' · NOT TRADABLE';
+                    badge.innerHTML = `<span class="w-2 h-2 rounded-full ${sig.direction === 'LONG' ? 'bg-emerald-400' : 'bg-rose-400'} animate-ping"></span><span>${sig.direction === 'LONG' ? '🟢 BUY' : '🔴 SELL'} · ${sig.setup_label} · ${sig.grade} ${stars}${ai}${tradable}</span>`;
+                }
+                if (scoreLabel) {
+                    scoreLabel.textContent = sig ? `Grade ${sig.grade}${sig.ai_probability !== null && sig.ai_probability !== undefined ? ' · AI ' + Math.round(sig.ai_probability * 100) + '%' : ''}` : 'No active signal';
                 }
             })
             .catch(err => {
@@ -1877,10 +1924,18 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         }, 8000);
     }
 
+    window.loadSignalAt = function (time) {
+        requestedSignalTime = time;
+        loadFuturesChart(activeSymbol, false);
+    };
+
     function loadFuturesChart(rawSymbol, autoScroll = true) {
         let clean = rawSymbol.toUpperCase().replace('.P', '').trim();
         if (!clean.endsWith('USDT') && !clean.includes(':')) {
             clean += 'USDT';
+        }
+        if (clean !== activeSymbol) {
+            requestedSignalTime = 0;
         }
         activeSymbol = clean;
 

@@ -2,523 +2,304 @@
 
 namespace App\Http\Controllers;
 
-use App\Console\Commands\CheckCryptoSignals;
 use App\Models\CryptoSignal;
 use App\Models\Trade;
+use App\Models\TradingAccount;
 use App\Models\User;
 use App\Services\Crypto\BinanceClient;
-use App\Services\Crypto\SignalEngine;
-use App\Services\Crypto\SignalRecorder;
-use App\Services\Crypto\TelegramNotifier;
+use App\Services\Crypto\Indicators;
+use App\Services\Notifications\SignalAlerts;
+use App\Services\Strategy\ChartOverlayBuilder;
+use App\Services\Strategy\SetupStats;
+use App\Services\Strategy\Signal;
+use App\Services\Strategy\SignalLedger;
+use App\Services\Strategy\SignalModel;
+use App\Services\Strategy\SymbolAnalyzer;
+use App\Services\Strategy\Watchlist;
 use App\Services\Trading\RiskManager;
-use App\Services\Trading\SignalAlgoTrader;
-use App\Services\Trading\TradingTargetManager;
+use App\Services\Trading\TradingModeManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\View\View;
+use Throwable;
 
+/**
+ * "SignalAlgo Pro v4" chart: StrategyEngine signals with AI confidence, measured outcomes,
+ * trade plan overlays and the Signal Inspector. Read-only: viewing a chart never places orders.
+ */
 class CryptoSignalController extends Controller
 {
-    /**
-     * Show the CryptoLens signals and sentinel dashboard.
-     */
+    public const CHART_INTERVALS = ['15m', '1h', '4h'];
+
+    public function __construct(
+        protected SymbolAnalyzer $analyzer,
+        protected ChartOverlayBuilder $overlays,
+        protected SetupStats $setupStats,
+        protected SignalModel $model,
+        protected RiskManager $riskManager,
+        protected TradingModeManager $modeManager
+    ) {}
+
     public function index(Request $request): View
     {
         /** @var User $user */
         $user = Auth::user();
-
         $market = (string) config('crypto.market', 'futures');
 
         $cryptoConfig = [
             'symbols' => config('crypto.symbols', []),
             'market' => $market,
             'market_label' => $market === 'spot' ? 'Binance Spot' : 'Binance USDⓈ-M Futures',
-            'interval' => config('crypto.interval', '15m'),
-            'htf_interval' => config('crypto.htf_interval', '1h'),
-            'cooldown_minutes' => config('crypto.cooldown_minutes', 75),
-            'min_score' => config('crypto.indicators.minimum_score', 70),
-            'telegram_ready' => ! empty(config('crypto.telegram.bot_token')) && ! empty(config('crypto.telegram.chat_id')),
+            'interval' => (string) $request->query('interval', config('trading.strategy.base_interval', '1h')),
+            'intervals' => self::CHART_INTERVALS,
+            'initial_symbol' => strtoupper((string) $request->query('symbol', '')),
+            'telegram_ready' => filled(config('trading.telegram.bot_token')) && filled(config('trading.telegram.chat_id')),
         ];
-
-        $allUsers = $user->isAdmin() ? User::orderBy('created_at', 'desc')->get() : collect([$user]);
-        $recentAlerts = CryptoSignal::recent()->take(6)->get();
 
         return view('crypto.dashboard', [
             'user' => $user,
             'cryptoConfig' => $cryptoConfig,
-            'allUsers' => $allUsers,
-            'recentAlerts' => $recentAlerts,
-            'monitoredCoins' => app(TradingTargetManager::class)->getMonitoredCoins(),
-            'tradingMode' => app(SignalAlgoTrader::class)->resolveTradingMode(),
+            'allUsers' => $user->isAdmin() ? User::orderBy('created_at', 'desc')->get() : collect([$user]),
+            'recentAlerts' => CryptoSignal::recent()->take(6)->get(),
+            'monitoredCoins' => Watchlist::symbols(),
+            'tradingMode' => $this->modeManager->activeMode(),
         ]);
     }
 
     /**
-     * Analyze a symbol in real-time with SignalAlgo PRO on Binance Futures.
+     * Chart data + Signal Inspector for one symbol.
      */
-    public function analyze(
-        Request $request,
-        BinanceClient $binanceClient,
-        SignalEngine $signalEngine
-    ): JsonResponse {
-        $rawSymbol = (string) $request->query('symbol', config('crypto.symbols.0', 'BTCUSDT'));
-        $symbol = strtoupper(str_replace('.P', '', trim($rawSymbol)));
-        if (! str_ends_with($symbol, 'USDT') && ! str_contains($symbol, ':')) {
-            $symbol .= 'USDT';
+    public function analyze(Request $request, BinanceClient $market): JsonResponse
+    {
+        $symbol = $this->normalizeSymbol((string) $request->query('symbol', 'BTCUSDT'));
+        $interval = strtolower((string) $request->query('interval', config('trading.strategy.base_interval', '1h')));
+        if (! in_array($interval, self::CHART_INTERVALS, true)) {
+            $interval = '1h';
         }
 
-        $interval = strtolower((string) $request->query('interval', config('crypto.interval', '15m')));
-        $htf1Interval = $this->resolveHtfInterval($interval);
-        $htf2Interval = $this->resolveHtf2Interval($interval);
-        $useHtf = (bool) config('crypto.indicators.use_htf_filter', true);
-
         try {
-            $multiKlines = $binanceClient->fetchMultiTimeframeKlines(
-                $symbol,
-                $interval,
-                $useHtf ? $htf1Interval : null,
-                $useHtf ? $htf2Interval : null,
-                320,
-                260
-            );
-            $baseCandles = $multiKlines['base'];
-            $htf1Candles = $multiKlines['htf1'];
-            $htf2Candles = $multiKlines['htf2'];
+            $analysis = $this->analyzer->analyze($symbol, $interval, lookback: 300);
+            $chart = $this->overlays->build($analysis['candles'], $analysis['signals'], $interval);
+            $activeSignal = $this->activeSignal($chart['signal_history'], (int) $request->query('signal_time', 0));
+            $mode = $this->modeManager->activeMode();
+            $state = $analysis['state'];
+            $closes = $analysis['candles']['closes'];
 
-            // Fetch BTC base candles for Relative Strength evaluation
-            $btcCandles = ($symbol === 'BTCUSDT') ? $baseCandles : $binanceClient->klines('BTCUSDT', $interval, 320);
-
-            $evaluation = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandles);
-            $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140, $btcCandles);
-            $closes = $baseCandles['closes'] ?? [];
-            $lastClose = count($closes) >= 2 ? $closes[count($closes) - 2] : ($closes[count($closes) - 1] ?? 0.0);
-
-            // Synchronize all chart markers into the database and dispatch Telegram alert immediately if a new signal is printed
-            $syncResult = SignalRecorder::syncMarkers(
-                $symbol,
-                $interval,
-                $history['markers'],
-                $binanceClient->getMarketLabel(),
-                dispatchTelegram: false
-            );
-
-            // Condition 1: Check Bitcoin Macro Trend
-            $btcTrend = $binanceClient->getBtcMarketTrend();
-
-            $signal = $evaluation['signal'];
-            $diagnostics = $evaluation['diagnostics'];
-
-            // Gate newly generated signal by Bitcoin Macro Trend & Minimum Institutional Score (82)
-            if ($signal) {
-                $side = strtoupper((string) ($signal['side'] ?? 'BUY'));
-                if ($side === 'BUY' && ! $btcTrend['allow_long']) {
-                    $diagnostics['rejection'] = "Blocked: BUY setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend";
-                    $signal = null;
-                } elseif ($side === 'SELL' && ! $btcTrend['allow_short']) {
-                    $diagnostics['rejection'] = "Blocked: SELL setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend";
-                    $signal = null;
-                } elseif (($signal['score'] ?? 0) < 82) {
-                    $diagnostics['rejection'] = "Setup score ({$signal['score']}) is below institutional minimum conviction (82)";
-                    $signal = null;
-                }
-            }
-
-            // Retain active trade setup from the latest marker ONLY if aligned with BTC macro, score >= 82, and SL not breached
-            $lastMarker = ! empty($history['markers']) ? end($history['markers']) : null;
-            if (! $signal && $lastMarker) {
-                $markerScore = (int) ($lastMarker['score'] ?? 0);
-                $side = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
-                $isBtcAligned = ($side === 'BUY' && $btcTrend['allow_long']) || ($side === 'SELL' && $btcTrend['allow_short']);
-
-                if ($markerScore >= 82 && $isBtcAligned) {
-                    $markerTime = (int) ($lastMarker['time'] ?? 0);
-                    $candleAgeSeconds = now()->timestamp - $markerTime;
-                    $maxActiveSeconds = match ($interval) {
-                        '1m' => 900,
-                        '3m' => 1800,
-                        '5m' => 3600,
-                        '15m' => 14400, // 4 hours
-                        '30m' => 28800, // 8 hours
-                        '1h' => 43200,  // 12 hours
-                        '4h' => 172800, // 48 hours
-                        default => 14400,
-                    };
-
-                    if ($candleAgeSeconds <= $maxActiveSeconds) {
-                        $sl = (float) ($lastMarker['sl'] ?? 0);
-                        $entry = (float) ($lastMarker['entry'] ?? 0);
-                        $invalidated = ($side === 'BUY' && $lastClose < $sl) || ($side === 'SELL' && $lastClose > $sl);
-
-                        if (! $invalidated && $entry > 0) {
-                            $atrPct = (float) ($lastMarker['atr_pct'] ?? 1.5);
-                            $recLeverage = '5x - 10x';
-                            $levMult = 10;
-                            $slPct = round(abs($entry - $sl) / $entry * 100, 2);
-                            $tp1Pct = round(abs(($lastMarker['tp1'] ?? $entry) - $entry) / $entry * 100, 2);
-                            $tp2Pct = round(abs(($lastMarker['tp2'] ?? $entry) - $entry) / $entry * 100, 2);
-                            $tp3Pct = round(abs(($lastMarker['tp3'] ?? $entry) - $entry) / $entry * 100, 2);
-                            $rrRatio = $lastMarker['risk_reward'] ?? ($slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8');
-
-                            $activePerpOptions = [
-                                'recommended_leverage' => $recLeverage,
-                                'margin_mode' => 'Isolated Margin',
-                                'order_type' => 'Limit / Market Entry',
-                                'risk_per_trade' => '1.0% - 2.0% Account Balance',
-                                'risk_reward' => $rrRatio,
-                                'sl_pct' => $slPct,
-                                'tp1_pct' => $tp1Pct,
-                                'tp2_pct' => $tp2Pct,
-                                'tp3_pct' => $tp3Pct,
-                                'sl_leveraged_pct' => round($slPct * $levMult, 1),
-                                'tp1_leveraged_pct' => round($tp1Pct * $levMult, 1),
-                                'tp2_leveraged_pct' => round($tp2Pct * $levMult, 1),
-                                'tp3_leveraged_pct' => round($tp3Pct * $levMult, 1),
-                                'leverage_multiplier' => $levMult,
-                                'liquidation_buffer' => '> 15% safety cushion',
-                            ];
-
-                            $signal = [
-                                'side' => $side,
-                                'is_active_trade' => true,
-                                'setup_type' => $lastMarker['setup_type'] ?? 'PRE_BREAKOUT_COIL',
-                                'setup_label' => $lastMarker['setup_label'] ?? ($lastMarker['setup_type'] ?? 'PRE-BREAKOUT COIL'),
-                                'score' => $markerScore,
-                                'grade' => (string) ($lastMarker['grade'] ?? 'A'),
-                                'entry' => $entry,
-                                'sl' => $sl,
-                                'tp1' => (float) ($lastMarker['tp1'] ?? 0),
-                                'tp2' => (float) ($lastMarker['tp2'] ?? 0),
-                                'tp3' => (float) ($lastMarker['tp3'] ?? 0),
-                                'risk_reward' => $rrRatio,
-                                'rsi' => $lastMarker['rsi'] ?? null,
-                                'adx' => $lastMarker['adx'] ?? null,
-                                'atr_pct' => $atrPct,
-                                'volume_ratio' => $lastMarker['volume_ratio'] ?? null,
-                                'candle_close_time' => $markerTime * 1000,
-                                'rs_ratio' => $lastMarker['rs_ratio'] ?? null,
-                                'perpetual_options' => $activePerpOptions,
-                            ];
-                        }
-                    }
-                }
-            }
-
-            // Only provide perpetual options if a verified institutional signal is genuinely active.
-            // Do NOT synthesize fake entry/SL/TP levels when the system is waiting on standby.
-            $perpetualOptions = $signal['perpetual_options'] ?? null;
-
-            // Automatic Order Execution Gate:
-            // Whenever an opportunity arises on the chart, immediately place that order!
-            // Live if live trading is opened/active, otherwise Paper trade.
-            $autoOrderResult = null;
-            if ($lastMarker && ((int) ($lastMarker['score'] ?? 0)) >= 80) {
-                $markerTime = (int) ($lastMarker['time'] ?? 0);
-                $candleAgeSeconds = now()->timestamp - $markerTime;
-                $maxFreshnessSeconds = match ($interval) {
-                    '1m' => 180,
-                    '3m' => 450,
-                    '5m' => 750,
-                    '15m' => 2200,
-                    '30m' => 4500,
-                    '1h' => 9000,
-                    default => 3600,
-                };
-
-                if ($candleAgeSeconds >= -60 && $candleAgeSeconds <= $maxFreshnessSeconds) {
-                    $entryPrice = (float) ($lastMarker['entry'] ?? $lastClose);
-                    $direction = strtoupper((string) ($lastMarker['side'] ?? 'BUY')) === 'BUY' ? 'LONG' : 'SHORT';
-                    $rawSl = (float) ($lastMarker['sl'] ?? 0.0);
-                    $exactSl = $rawSl > 0
-                        ? $rawSl
-                        : app(RiskManager::class)->calculateAssetProtectionStopLoss($direction, $entryPrice, null);
-
-                    $chartSignal = [
-                        'symbol' => $symbol,
-                        'interval' => $interval,
-                        'side' => strtoupper((string) ($lastMarker['side'] ?? 'BUY')),
-                        'direction' => $direction,
-                        'score' => (int) ($lastMarker['score'] ?? 80),
-                        'grade' => (string) ($lastMarker['grade'] ?? 'A'),
-                        'price' => $entryPrice,
-                        'initial_sl' => $exactSl,
-                        'tp1' => (float) ($lastMarker['tp1'] ?? 0.0),
-                        'tp2' => (float) ($lastMarker['tp2'] ?? 0.0),
-                        'tp3' => (float) ($lastMarker['tp3'] ?? 0.0),
-                        'risk_reward' => (string) ($lastMarker['risk_reward'] ?? '1 : 2.8'),
-                        'marker_time' => $markerTime,
-                        'setup_type' => (string) ($lastMarker['setup_type'] ?? 'BREAKOUT_CONFIRMED'),
-                        'setup_label' => (string) ($lastMarker['setup_label'] ?? 'SIGNALALGO PRO SIGNAL'),
-                        'indicators' => [
-                            'rsi' => $lastMarker['rsi'] ?? 50,
-                            'adx' => $lastMarker['adx'] ?? 20,
-                            'atr_pct' => $lastMarker['atr_pct'] ?? 1.5,
-                            'volume_ratio' => $lastMarker['volume_ratio'] ?? 1.0,
-                            'rs_ratio' => $lastMarker['rs_ratio'] ?? 1.0,
-                        ],
-                        'raw_marker' => $lastMarker,
-                    ];
-
-                    try {
-                        $autoOrderResult = app(SignalAlgoTrader::class)->processSignalForExecution($symbol, $chartSignal);
-                    } catch (\Throwable $ex) {
-                        Log::warning("Auto-order error on {$symbol}: {$ex->getMessage()}");
-                    }
-                }
-            }
-
-            $mode = (string) (session('trading_mode') ?? request()->cookie('afte_trading_mode') ?? config('trading.mode', 'live'));
-            if (! in_array($mode, ['paper', 'live'], true)) {
-                $mode = 'live';
-            }
-
-            $activeTrade = Trade::where('mode', $mode)
-                ->where('symbol', $symbol)
-                ->where('status', 'OPEN')
-                ->first();
-
-            return response()->json([
+            return response()->json(array_merge($chart, [
                 'success' => true,
                 'symbol' => $symbol,
                 'tv_symbol' => 'BINANCE:'.$symbol.'.P',
-                'active_trade' => $activeTrade ? [
-                    'id' => $activeTrade->id,
-                    'symbol' => $activeTrade->symbol,
-                    'side' => $activeTrade->side,
-                    'entry_price' => (float) $activeTrade->entry_price,
-                    'current_sl' => (float) $activeTrade->current_sl,
-                    'tp1_price' => (float) $activeTrade->tp1_price,
-                    'tp2_price' => (float) $activeTrade->tp2_price,
-                    'margin_used' => (float) $activeTrade->margin_used,
-                    'leverage' => $activeTrade->leverage,
-                    'setup_tag' => $activeTrade->setup_tag,
-                    'pnl_percent' => (float) $activeTrade->pnl_percent,
-                    'mode' => $activeTrade->mode,
-                    'opened_at' => $activeTrade->opened_at?->toIso8601String(),
-                    'meta' => $activeTrade->meta,
-                ] : null,
-                'market' => $binanceClient->getMarketLabel(),
-                'price' => $lastClose,
                 'interval' => $interval,
-                'htf_interval' => $htf1Interval,
-                'htf2_interval' => $htf2Interval,
-                'signal' => $signal,
-                'diagnostics' => $diagnostics,
-                'perpetual_options' => $perpetualOptions,
-                'auto_order' => $autoOrderResult,
-                'monitored_coins' => TradingTargetManager::getMonitoredCoins(),
-                'btc_macro' => $btcTrend,
-                'candles' => $history['candles'],
-                'markers' => $history['markers'],
-                'ema9' => $history['ema9'],
-                'ema21' => $history['ema21'],
-                'ema200' => $history['ema200'],
-                'sync_result' => $syncResult,
+                'regime_interval' => SymbolAnalyzer::regimeInterval($interval),
+                'market' => $market->getMarketLabel(),
+                'price' => (float) end($closes),
+                'mode' => $mode,
+                'state' => $state,
+                'signal' => $activeSignal,
+                'sizing' => $activeSignal !== null ? $this->sizing($activeSignal, $mode) : null,
+                'setup_stats' => $activeSignal !== null ? [
+                    'd30' => $this->setupStats->forSetup($activeSignal['setup'], null, 30),
+                    'd90' => $this->setupStats->forSetup($activeSignal['setup'], null, 90),
+                ] : null,
+                'all_setup_stats' => $this->setupStats->all(),
+                'model' => $this->model->metrics(),
+                'mtf' => $this->multiTimeframe($symbol, $market),
+                'active_trade' => $this->activeTrade($symbol),
+                'btc_macro' => [
+                    'state' => $state['btc'] ?? 'n/a',
+                    'trend' => match ($state['btc'] ?? '') {
+                        'BTC uptrend', 'BTC firm' => 'BULLISH',
+                        'BTC downtrend', 'BTC soft' => 'BEARISH',
+                        default => 'NEUTRAL',
+                    },
+                ],
+                'diagnostics' => [
+                    'rejection' => $activeSignal === null ? ($state['reason'] ?? null) : null,
+                    'rsi' => $state['rsi'] ?? null,
+                    'adx' => $state['adx'] ?? null,
+                    'atr_pct' => $state['atr_pct'] ?? null,
+                    'volume_ratio' => $activeSignal['indicators']['volume_ratio'] ?? null,
+                ],
+                'monitored_coins' => Watchlist::symbols(),
                 'binance_url' => "https://www.binance.com/en/futures/{$symbol}",
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => "Failed to analyze {$symbol}: ".$e->getMessage(),
-            ], 422);
+            ]));
+        } catch (Throwable $e) {
+            return response()->json(['success' => false, 'message' => "Failed to analyze {$symbol}: ".$e->getMessage()], 422);
         }
     }
 
     /**
-     * Send an on-demand SignalAlgo PRO alert to Telegram for the given symbol.
+     * Send the current signal for a symbol to Telegram on demand.
      */
-    public function sendAlert(
-        Request $request,
-        BinanceClient $binanceClient,
-        SignalEngine $signalEngine,
-        TelegramNotifier $telegramNotifier
-    ): JsonResponse {
-        $rawSymbol = (string) $request->input('symbol', config('crypto.symbols.0', 'BTCUSDT'));
-        $symbol = strtoupper(str_replace('.P', '', trim($rawSymbol)));
-        if (! str_ends_with($symbol, 'USDT') && ! str_contains($symbol, ':')) {
-            $symbol .= 'USDT';
-        }
-
-        $interval = strtolower((string) $request->input('interval', config('crypto.interval', '15m')));
-        $htf1Interval = $this->resolveHtfInterval($interval);
-        $htf2Interval = $this->resolveHtf2Interval($interval);
-        $useHtf = (bool) config('crypto.indicators.use_htf_filter', true);
+    public function sendAlert(Request $request, SignalLedger $ledger, SignalAlerts $alerts): JsonResponse
+    {
+        $symbol = $this->normalizeSymbol((string) $request->input('symbol', 'BTCUSDT'));
+        $interval = (string) $request->input('interval', config('trading.strategy.base_interval', '1h'));
 
         try {
-            $baseCandles = $binanceClient->klines($symbol, $interval, 320);
-            $htf1Candles = ($useHtf && $interval !== $htf1Interval) ? $binanceClient->klines($symbol, $htf1Interval, 260) : null;
-            $htf2Candles = ($useHtf && $htf2Interval !== null && $interval !== $htf2Interval) ? $binanceClient->klines($symbol, $htf2Interval, 260) : null;
+            $analysis = $this->analyzer->analyze($symbol, $interval, lookback: 3);
+        } catch (Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Error: '.$e->getMessage()], 422);
+        }
 
-            // Fetch BTC base candles for Relative Strength evaluation
-            $btcCandles = ($symbol === 'BTCUSDT') ? $baseCandles : $binanceClient->klines('BTCUSDT', $interval, 320);
+        /** @var Signal|null $signal */
+        $signal = collect($analysis['signals'])->reverse()->first(fn (Signal $s): bool => time() - $s->time <= 2 * 3600 + 300);
 
-            $btcTrend = $binanceClient->getBtcMarketTrend();
+        if ($signal === null) {
+            return response()->json(['success' => false, 'message' => "No current signal on {$symbol} ({$interval}). ".($analysis['state']['reason'] ?? '')], 422);
+        }
 
-            $evaluation = $signalEngine->evaluateDetailed($baseCandles, $htf1Candles, $htf2Candles, $btcCandles);
-            $signal = $evaluation['signal'];
+        if (! $signal->isTradable()) {
+            return response()->json(['success' => false, 'message' => 'Signal did not pass: '.implode('; ', $signal->failedFilters())], 422);
+        }
 
-            // If no fresh signal on current closed candle, check if latest historical marker is an active valid setup
-            if (! $signal) {
-                $history = $signalEngine->evaluateHistory($baseCandles, $htf1Candles, $htf2Candles, 140, $btcCandles);
-                $lastMarker = ! empty($history['markers']) ? end($history['markers']) : null;
-                if ($lastMarker && ((int) ($lastMarker['score'] ?? 0)) >= 82) {
-                    $side = strtoupper((string) ($lastMarker['side'] ?? 'BUY'));
-                    $isBtcAligned = ($side === 'BUY' && $btcTrend['allow_long']) || ($side === 'SELL' && $btcTrend['allow_short']);
-                    $closes = $baseCandles['closes'] ?? [];
-                    $lastClose = count($closes) >= 2 ? $closes[count($closes) - 2] : ($closes[count($closes) - 1] ?? 0.0);
-                    $sl = (float) ($lastMarker['sl'] ?? 0);
-                    $entry = (float) ($lastMarker['entry'] ?? 0);
-                    $invalidated = ($side === 'BUY' && $lastClose < $sl) || ($side === 'SELL' && $lastClose > $sl);
-                    $candleAgeSeconds = now()->timestamp - ((int) ($lastMarker['time'] ?? 0));
+        $record = $ledger->record($signal, 'manual_alert');
+        $sent = $alerts->announceSignal($signal, $record, null);
 
-                    if ($isBtcAligned && ! $invalidated && $entry > 0 && $candleAgeSeconds <= 14400) {
-                        $atrPct = (float) ($lastMarker['atr_pct'] ?? 1.5);
-                        $recLeverage = '5x - 10x';
-                        $levMult = 10;
-                        $slPct = round(abs($entry - $sl) / $entry * 100, 2);
-                        $tp1Pct = round(abs(($lastMarker['tp1'] ?? $entry) - $entry) / $entry * 100, 2);
-                        $tp2Pct = round(abs(($lastMarker['tp2'] ?? $entry) - $entry) / $entry * 100, 2);
-                        $tp3Pct = round(abs(($lastMarker['tp3'] ?? $entry) - $entry) / $entry * 100, 2);
-                        $rrRatio = $lastMarker['risk_reward'] ?? ($slPct > 0 ? '1 : '.round($tp2Pct / $slPct, 1) : '1 : 2.8');
+        return response()->json([
+            'success' => $sent,
+            'message' => $sent ? "{$signal->side} {$symbol} alert sent to Telegram." : 'Alert not sent: Telegram is not configured, the grade is below the alert threshold, or it was already sent.',
+        ], $sent ? 200 : 422);
+    }
 
-                        $signal = [
-                            'side' => $side,
-                            'is_active_trade' => true,
-                            'setup_type' => $lastMarker['setup_type'] ?? 'PRE_BREAKOUT_COIL',
-                            'setup_label' => $lastMarker['setup_label'] ?? ($lastMarker['setup_type'] ?? 'PRE-BREAKOUT COIL'),
-                            'score' => (int) ($lastMarker['score'] ?? 82),
-                            'grade' => (string) ($lastMarker['grade'] ?? 'A'),
-                            'entry' => $entry,
-                            'sl' => $sl,
-                            'tp1' => (float) ($lastMarker['tp1'] ?? 0),
-                            'tp2' => (float) ($lastMarker['tp2'] ?? 0),
-                            'tp3' => (float) ($lastMarker['tp3'] ?? 0),
-                            'risk_reward' => $rrRatio,
-                            'rsi' => $lastMarker['rsi'] ?? null,
-                            'adx' => $lastMarker['adx'] ?? null,
-                            'volume_ratio' => $lastMarker['volume_ratio'] ?? null,
-                            'atr_pct' => $atrPct,
-                            'candle_close_time' => ((int) ($lastMarker['time'] ?? 0)) * 1000,
-                            'rs_ratio' => $lastMarker['rs_ratio'] ?? null,
-                            'perpetual_options' => [
-                                'recommended_leverage' => $recLeverage,
-                                'margin_mode' => 'Isolated Margin',
-                                'order_type' => 'Limit / Market Entry',
-                                'risk_per_trade' => '1.0% - 2.0% Account Balance',
-                                'risk_reward' => $rrRatio,
-                                'sl_pct' => $slPct,
-                                'tp1_pct' => $tp1Pct,
-                                'tp2_pct' => $tp2Pct,
-                                'tp3_pct' => $tp3Pct,
-                                'sl_leveraged_pct' => round($slPct * $levMult, 1),
-                                'tp1_leveraged_pct' => round($tp1Pct * $levMult, 1),
-                                'tp2_leveraged_pct' => round($tp2Pct * $levMult, 1),
-                                'tp3_leveraged_pct' => round($tp3Pct * $levMult, 1),
-                                'leverage_multiplier' => $levMult,
-                                'liquidation_buffer' => '> 15% safety cushion',
-                            ],
-                        ];
-                    }
+    /**
+     * The signal to draw as the current trade plan: the requested one, or the newest still-open signal.
+     *
+     * @param  array<int, array<string, mixed>>  $history
+     * @return array<string, mixed>|null
+     */
+    protected function activeSignal(array $history, int $requestedTime): ?array
+    {
+        $candidates = array_reverse($history);
+
+        if ($requestedTime > 0) {
+            foreach ($candidates as $signal) {
+                if ($signal['time'] === $requestedTime) {
+                    return $this->withLegacyFields($signal);
                 }
             }
+        }
 
-            if (! $signal) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "No verified institutional setup detected for {$symbol} ({$interval}). Standby for high-conviction breakout/pullback setup.",
-                ], 422);
+        // The trade plan shows real strategy signals only; shadow setups are tracked, not traded.
+        foreach ($candidates as $signal) {
+            if (! $signal['is_shadow'] && $signal['outcome'] === 'OPEN' && time() - $signal['time'] <= 48 * 3600) {
+                return $this->withLegacyFields($signal);
             }
+        }
 
-            // Enforce Bitcoin Macro Trend Filter
-            if ($signal['side'] === 'BUY' && ! $btcTrend['allow_long']) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Alert blocked: BUY setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend.",
-                ], 422);
-            }
-            if ($signal['side'] === 'SELL' && ! $btcTrend['allow_short']) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Alert blocked: SELL setup on {$symbol} contradicts Bitcoin 1h {$btcTrend['trend']} macro trend.",
-                ], 422);
-            }
+        return null;
+    }
 
-            // Enforce Score >= 82
-            if (($signal['score'] ?? 0) < 82) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Alert blocked: Setup conviction score ({$signal['score']}) is below institutional threshold (82).",
-                ], 422);
-            }
+    /**
+     * @param  array<string, mixed>  $signal
+     * @return array<string, mixed>
+     */
+    protected function withLegacyFields(array $signal): array
+    {
+        $entry = (float) $signal['entry'];
+        $pct = fn (float $price): float => $entry > 0 ? round(abs($price - $entry) / $entry * 100, 2) : 0.0;
 
-            $message = CheckCryptoSignals::formatTelegramMessage(
-                $symbol,
-                $interval,
-                $signal,
-                $binanceClient->getMarketLabel()
-            );
+        return array_merge($signal, [
+            'side' => $signal['order_side'],
+            'direction' => $signal['side'],
+            'score' => $signal['ai_probability'] !== null ? (int) round($signal['ai_probability'] * 100) : null,
+            'candle_close_time' => $signal['time'] * 1000,
+            'perpetual_options' => [
+                'margin_mode' => 'Isolated Margin',
+                'risk_per_trade' => config('trading.sizing.risk_per_trade_pct', 2.0).'% of equity at the stop',
+                'risk_reward' => '1 : '.$signal['risk_reward'],
+                'sl_pct' => $signal['sl_pct'],
+                'tp1_pct' => $pct((float) $signal['tp1']),
+                'tp2_pct' => $pct((float) $signal['tp2']),
+                'tp3_pct' => $pct((float) $signal['tp3']),
+            ],
+        ]);
+    }
 
-            $sent = $telegramNotifier->send($message);
+    /**
+     * Position calculator for the active signal under the account's risk rules.
+     *
+     * @param  array<string, mixed>  $signal
+     * @return array<string, mixed>
+     */
+    protected function sizing(array $signal, string $mode): array
+    {
+        try {
+            $account = TradingAccount::getForMode($mode);
 
-            if ($sent) {
-                CheckCryptoSignals::recordSignal($symbol, $interval, $signal, $binanceClient->getMarketLabel(), 'manual_alert');
-
-                return response()->json([
-                    'success' => true,
-                    'message' => "SignalAlgo PRO alert for {$symbol} ({$signal['side']}) sent to Telegram successfully!",
-                ]);
-            }
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to deliver Telegram alert. Verify TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.',
-            ], 500);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error: '.$e->getMessage(),
-            ], 422);
+            return array_merge($this->riskManager->calculatePositionSize($account, $signal['symbol'], (float) $signal['entry'], (float) $signal['sl']), [
+                'mode' => $mode,
+                'balance' => $account->balance,
+            ]);
+        } catch (Throwable $e) {
+            return ['allowed' => false, 'reason' => $e->getMessage(), 'mode' => $mode];
         }
     }
 
     /**
-     * Map a base timeframe to its corresponding higher timeframe (HTF).
+     * Trend direction on 15m / 1h / 4h / 1d (close vs EMA50, EMA21 vs EMA50).
+     *
+     * @return array<int, array{interval: string, trend: string}>
      */
-    protected function resolveHtfInterval(string $interval): string
+    protected function multiTimeframe(string $symbol, BinanceClient $market): array
     {
-        $htfMapping = [
-            '1m' => '5m',
-            '3m' => '15m',
-            '5m' => '15m',
-            '15m' => '1h',
-            '30m' => '2h',
-            '1h' => '4h',
-            '2h' => '6h',
-            '4h' => '1d',
-            '1d' => '1d',
-        ];
+        return Cache::remember("chart:mtf:{$symbol}", 60, function () use ($symbol, $market): array {
+            $out = [];
+            foreach (['15m', '1h', '4h', '1d'] as $interval) {
+                try {
+                    $closes = array_slice($market->klines($symbol, $interval, 120)['closes'], 0, -1);
+                    $ema21 = Indicators::ema($closes, 21);
+                    $ema50 = Indicators::ema($closes, 50);
+                    $last = count($closes) - 1;
+                    $trend = match (true) {
+                        $ema50[$last] === null => 'n/a',
+                        $closes[$last] > $ema50[$last] && $ema21[$last] > $ema50[$last] => 'UP',
+                        $closes[$last] < $ema50[$last] && $ema21[$last] < $ema50[$last] => 'DOWN',
+                        default => 'FLAT',
+                    };
+                } catch (Throwable) {
+                    $trend = 'n/a';
+                }
+                $out[] = ['interval' => $interval, 'trend' => $trend];
+            }
 
-        return $htfMapping[strtolower($interval)] ?? (string) config('crypto.htf_interval', '1h');
+            return $out;
+        });
     }
 
     /**
-     * Map a base timeframe to its secondary higher timeframe (HTF2).
+     * @return array<string, mixed>|null
      */
-    protected function resolveHtf2Interval(string $interval): ?string
+    protected function activeTrade(string $symbol): ?array
     {
-        $htfMapping = [
-            '1m' => '15m',
-            '3m' => '1h',
-            '5m' => '1h',
-            '15m' => '4h',
-            '30m' => '4h',
-            '1h' => '1d',
-            '2h' => '1d',
-            '4h' => '1w',
-            '1d' => null,
-        ];
+        $trade = Trade::where('symbol', $symbol)->where('status', 'OPEN')->orderByDesc('opened_at')->first();
 
-        return $htfMapping[strtolower($interval)] ?? null;
+        return $trade === null ? null : [
+            'id' => $trade->id,
+            'symbol' => $trade->symbol,
+            'side' => $trade->side,
+            'mode' => $trade->mode,
+            'stage' => $trade->stage,
+            'entry_price' => (float) $trade->entry_price,
+            'initial_sl' => (float) $trade->initial_sl,
+            'current_sl' => (float) $trade->current_sl,
+            'tp1_price' => (float) $trade->tp1_price,
+            'tp2_price' => (float) $trade->tp2_price,
+            'tp1_hit' => (bool) $trade->tp1_hit,
+            'be_locked' => (bool) $trade->be_locked,
+            'margin_used' => (float) $trade->margin_used,
+            'leverage' => $trade->leverage,
+            'setup_tag' => $trade->setup_tag,
+            'opened_at' => $trade->opened_at?->toIso8601String(),
+        ];
+    }
+
+    protected function normalizeSymbol(string $raw): string
+    {
+        $symbol = strtoupper(str_replace('.P', '', trim($raw)));
+
+        return str_ends_with($symbol, 'USDT') ? $symbol : $symbol.'USDT';
     }
 }

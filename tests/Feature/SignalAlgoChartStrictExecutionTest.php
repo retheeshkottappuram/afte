@@ -5,11 +5,12 @@ namespace Tests\Feature;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
-use App\Services\Notifications\TelegramNotifier;
-use App\Services\Trading\SignalAlgoTrader;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
+use Tests\Unit\StrategyEngineTest;
 
 class SignalAlgoChartStrictExecutionTest extends TestCase
 {
@@ -19,140 +20,92 @@ class SignalAlgoChartStrictExecutionTest extends TestCase
     {
         parent::setUp();
         Cache::flush();
-        $this->mock(TelegramNotifier::class, function ($mock): void {
-            $mock->shouldIgnoreMissing();
-        });
-        $this->mock(\App\Services\Crypto\TelegramNotifier::class, function ($mock): void {
-            $mock->shouldIgnoreMissing();
-        });
-        config([
-            'trading.mode' => 'paper',
-            'trading.telegram.enabled' => false,
-            'crypto.telegram.bot_token' => '',
-            'crypto.telegram.chat_id' => '',
-        ]);
+        config(['trading.mode' => 'paper', 'trading.telegram.enabled' => false]);
+        TradingAccount::getForMode('paper')->update(['balance' => 100.0, 'equity' => 100.0, 'peak_equity' => 100.0, 'is_running' => true]);
     }
 
-    public function test_trade_is_placed_when_signalalgo_pro_chart_marker_is_detected(): void
+    /**
+     * Fake Binance: klines are a synthetic walk ending at the current time (flat when $flat is true).
+     */
+    protected function fakeBinance(bool $flat = false): void
     {
-        $account = TradingAccount::getForMode('paper');
-        $account->update(['balance' => 100.0, 'equity' => 100.0, 'is_running' => true, 'kill_switch' => false]);
+        Http::fake(function (Request $request) use ($flat) {
+            if (! str_contains($request->url(), '/klines')) {
+                return Http::response([]);
+            }
 
-        $freshMarker = [
-            'symbol' => 'BTCUSDT',
-            'interval' => '15m',
-            'side' => 'BUY',
-            'direction' => 'LONG',
-            'score' => 92,
-            'grade' => 'A',
-            'price' => 64500.00,
-            'initial_sl' => 63855.00,
-            'tp1' => 65370.75,
-            'tp2' => 66306.00,
-            'tp3' => 67402.50,
-            'risk_reward' => '1 : 2.8',
-            'marker_time' => now()->timestamp - 120, // 2 minutes ago (fresh)
-            'setup_type' => 'BREAKOUT_START',
-            'setup_label' => 'BREAKOUT DIRECTION START',
-            'indicators' => [
-                'rsi' => 62.5,
-                'adx' => 28.4,
-                'atr_pct' => 1.2,
-                'volume_ratio' => 1.8,
-                'rs_ratio' => 1.15,
-            ],
-        ];
+            parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+            $limit = (int) ($query['limit'] ?? 300);
+            $seconds = ['15m' => 900, '1h' => 3600, '4h' => 14400, '1d' => 86400][$query['interval'] ?? '1h'] ?? 3600;
+            $walk = StrategyEngineTest::randomWalk($limit, 5);
+            $lastClose = intdiv(time(), $seconds) * $seconds; // the newest candle closes now-ish (still forming)
 
-        /** @var SignalAlgoTrader $trader */
-        $trader = app(SignalAlgoTrader::class);
-        $result = $trader->processSignalForExecution('BTCUSDT', $freshMarker, 'paper');
+            $rows = [];
+            for ($i = 0; $i < $limit; $i++) {
+                $closeTime = ($lastClose - ($limit - 1 - $i) * $seconds + $seconds) * 1000 - 1;
+                $price = $flat ? 100.0 : $walk['closes'][$i];
+                $rows[] = [
+                    $closeTime - $seconds * 1000 + 1,
+                    (string) ($flat ? 100.0 : $walk['opens'][$i]),
+                    (string) ($flat ? 100.05 : $walk['highs'][$i]),
+                    (string) ($flat ? 99.95 : $walk['lows'][$i]),
+                    (string) $price,
+                    (string) $walk['volumes'][$i],
+                    $closeTime,
+                ];
+            }
 
-        $this->assertEquals('opened', $result['status']);
-        $this->assertEquals('OPEN_LONG', $result['action']);
-
-        // Verify the created trade directly mirrors the SignalAlgo Pro chart marker
-        $trade = Trade::where('symbol', 'BTCUSDT')->where('status', 'OPEN')->first();
-        $this->assertNotNull($trade);
-        $this->assertEquals('LONG', $trade->side);
-        $this->assertEquals(64500.00, (float) $trade->entry_price);
-        $this->assertEquals(63855.00, (float) $trade->initial_sl);
-        $this->assertEquals(63855.00, (float) $trade->current_sl);
-        $this->assertEquals(65370.75, (float) $trade->tp1_price);
-        $this->assertEquals(66306.00, (float) $trade->tp2_price);
+            return Http::response($rows);
+        });
     }
 
-    public function test_no_trade_is_placed_when_signalalgo_pro_conditions_are_not_met_in_radar(): void
+    public function test_chart_api_returns_overlays_and_inspector_and_never_trades(): void
     {
-        $user = User::factory()->create();
-        $account = TradingAccount::getForMode('paper');
-        $account->update(['balance' => 100.0, 'is_running' => true, 'kill_switch' => false]);
+        $this->fakeBinance();
+        $user = User::factory()->create(['role' => 'admin']);
 
-        // Attempt to execute a trade via radar without a valid SignalAlgo Pro chart signal
-        $response = $this->actingAs($user)->postJson(route('api.execute_radar_trade'), [
-            'symbol' => 'BTCUSDT',
-            'direction' => 'LONG',
-            'mode' => 'paper',
+        $response = $this->actingAs($user)->getJson(route('dashboard.analyze', ['symbol' => 'SOLUSDT', 'interval' => '1h']));
+
+        $response->assertOk()->assertJsonStructure([
+            'success', 'symbol', 'interval', 'mode', 'price',
+            'candles', 'ema9', 'ema21', 'ema50', 'ema200', 'trend_ribbon', 'levels', 'markers', 'signal_history', 'stats_strip',
+            'state' => ['bias', 'status', 'reason', 'checklist'],
+            'mtf', 'all_setup_stats', 'monitored_coins',
         ]);
+        $this->assertCount(4, $response->json('mtf'));
+        $this->assertNotEmpty($response->json('trend_ribbon'));
+        $this->assertSame(0, Trade::count(), 'Viewing a chart must never place orders');
+    }
 
-        // Must reject trade because SignalAlgo Pro chart signal was not found or verified
-        $this->assertTrue(in_array($response->status(), [422, 500], true));
+    public function test_manual_trade_is_refused_without_a_current_strategy_signal(): void
+    {
+        $this->fakeBinance(flat: true);
+        $admin = User::factory()->create(['role' => 'admin']);
+
+        $response = $this->actingAs($admin)->postJson(route('api.execute_radar_trade'), ['symbol' => 'BTCUSDT', 'direction' => 'LONG']);
+
+        $response->assertStatus(422);
         $this->assertFalse($response->json('success'));
-        $this->assertStringContainsString('SignalAlgo Pro', $response->json('message'));
-
-        // No trade should exist in the database
-        $this->assertDatabaseMissing('trades', [
-            'symbol' => 'BTCUSDT',
-            'status' => 'OPEN',
-        ]);
+        $this->assertStringContainsString('No current LONG signal', $response->json('message'));
+        $this->assertDatabaseMissing('trades', ['symbol' => 'BTCUSDT', 'status' => 'OPEN']);
     }
 
     public function test_active_trade_is_returned_to_chart_api_with_exact_levels(): void
     {
+        $this->fakeBinance();
         $user = User::factory()->create(['role' => 'admin']);
-        $account = TradingAccount::getForMode('paper');
-        $account->update(['balance' => 100.0, 'is_running' => true, 'kill_switch' => false]);
 
         $trade = Trade::create([
-            'symbol' => 'BTCUSDT',
-            'setup_tag' => 'SIGNALALGO_PRO',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-            'stage' => 'ENTRY',
-            'entry_price' => 65000.00,
-            'quantity' => 0.01,
-            'remaining_quantity' => 0.01,
-            'margin_used' => 65.00,
-            'leverage' => 10,
-            'initial_sl' => 64200.00,
-            'current_sl' => 64200.00,
-            'stop_distance' => 800.00,
-            'tp1_price' => 66080.00,
-            'tp2_price' => 67240.00,
-            'be_locked' => false,
-            'tp1_hit' => false,
-            'tp2_hit' => false,
-            'meta' => [
-                'score' => 95,
-                'grade' => 'A',
-                'ai_reason' => 'Verified SignalAlgo PRO™ 15m Chart Signal: BREAKOUT DIRECTION START (Score: 95/100)',
-            ],
-            'opened_at' => now(),
+            'symbol' => 'BTCUSDT', 'setup_tag' => 'TREND_PULLBACK', 'side' => 'LONG', 'mode' => 'paper', 'status' => 'OPEN', 'stage' => 'ENTRY',
+            'entry_price' => 65000.00, 'quantity' => 0.01, 'remaining_quantity' => 0.01, 'margin_used' => 65.00, 'leverage' => 10,
+            'initial_sl' => 64200.00, 'current_sl' => 64200.00, 'tp1_price' => 66200.00, 'tp2_price' => 67400.00, 'opened_at' => now(),
         ]);
 
-        $response = $this->actingAs($user)->getJson(route('signals.analyze', [
-            'symbol' => 'BTCUSDT',
-            'interval' => '15m',
-        ]));
+        $response = $this->actingAs($user)->getJson(route('dashboard.analyze', ['symbol' => 'BTCUSDT', 'interval' => '1h']));
 
         $response->assertOk();
-        $activeTrade = $response->json('active_trade');
-        $this->assertNotNull($activeTrade);
-        $this->assertEquals($trade->id, $activeTrade['id']);
-        $this->assertEquals(65000.00, $activeTrade['entry_price']);
-        $this->assertEquals(64200.00, $activeTrade['current_sl']);
-        $this->assertEquals(66080.00, $activeTrade['tp1_price']);
-        $this->assertEquals(67240.00, $activeTrade['tp2_price']);
-        $this->assertEquals('LONG', $activeTrade['side']);
+        $this->assertSame($trade->id, $response->json('active_trade.id'));
+        $this->assertEquals(64200.00, $response->json('active_trade.current_sl'));
+        $this->assertEquals(66200.00, $response->json('active_trade.tp1_price'));
     }
 }

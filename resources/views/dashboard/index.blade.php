@@ -199,7 +199,7 @@
                         </div>
                         <div>
                             <div class="flex items-center space-x-2">
-                                <span class="font-bold text-sm text-white font-mono tracking-wide" id="daemon-title">24/7 AUTONOMOUS TRADING DAEMON</span>
+                                <span class="font-bold text-sm text-white font-mono tracking-wide" id="daemon-title">BACKGROUND TRADING ENGINE (CRON)</span>
                                 <span id="daemon-status-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                                     ACTIVE (BACKGROUND)
                                 </span>
@@ -209,7 +209,7 @@
                                 <span>•</span>
                                 <span>Heartbeat: <span id="daemon-heartbeat-text" class="text-cyan-300 font-bold">Live</span></span>
                                 <span>•</span>
-                                <span>Cycles: <span id="daemon-cycles-text" class="text-slate-200">0</span></span>
+                                <span>Scanner: <span id="daemon-cycles-text" class="text-slate-200">--</span></span>
                                 <span>•</span>
                                 <span class="text-emerald-400/90 font-medium">Runs 24/7 Without User Activity</span>
                             </p>
@@ -444,7 +444,7 @@
                     <div class="px-5 py-4 border-b border-cyber-border flex items-center justify-between">
                         <div class="flex items-center space-x-2">
                             <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                            <h2 class="font-bold text-sm tracking-wide text-white font-mono uppercase">Breakout Scanner Radar</h2>
+                            <h2 class="font-bold text-sm tracking-wide text-white font-mono uppercase">Whole-Market Scanner</h2>
                         </div>
                         <span class="text-xs text-slate-400 font-mono" id="scanner-last-update">Auto-scanned</span>
                     </div>
@@ -454,11 +454,11 @@
                             <thead class="bg-cyber-800/80 text-slate-400 font-mono uppercase border-b border-cyber-border">
                                 <tr>
                                     <th class="px-4 py-3">Pair / Setup</th>
-                                    <th class="px-3 py-3">Conviction</th>
-                                    <th class="px-3 py-3">Entry Price</th>
-                                    <th class="px-3 py-3">Support / Resistance</th>
+                                    <th class="px-3 py-3">Grade / AI</th>
+                                    <th class="px-3 py-3">Entry</th>
+                                    <th class="px-3 py-3">Track Record (90d)</th>
                                     <th class="px-3 py-3">SL / TP1 / TP2</th>
-                                    <th class="px-3 py-3">Type & Leverage</th>
+                                    <th class="px-3 py-3">Filters / Auto-trader</th>
                                     <th class="px-3 py-3 text-right">Action</th>
                                 </tr>
                             </thead>
@@ -500,16 +500,16 @@
                                 <div>
                                     <label class="text-slate-400 block mb-1">Timeframe</label>
                                     <select id="bt-interval" class="w-full bg-cyber-900 border border-cyber-border rounded px-3 py-1.5 text-slate-200">
-                                        <option value="15m" selected>15m (Recommended)</option>
-                                        <option value="1h">1h (Swing Trend)</option>
+                                        <option value="1h" selected>1h (live strategy)</option>
+                                        <option value="15m">15m</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label class="text-slate-400 block mb-1">Candles</label>
                                     <select id="bt-limit" class="w-full bg-cyber-900 border border-cyber-border rounded px-3 py-1.5 text-slate-200">
-                                        <option value="300">300 Bars (~3 Days)</option>
-                                        <option value="600" selected>600 Bars (~6 Days)</option>
-                                        <option value="1000">1000 Bars (~10 Days)</option>
+                                        <option value="720">30 days</option>
+                                        <option value="2160" selected>90 days</option>
+                                        <option value="4320">180 days</option>
                                     </select>
                                 </div>
                             </div>
@@ -730,14 +730,10 @@
         const urlMode = urlParams.get('mode');
         const savedMode = localStorage.getItem('afte_trading_mode');
         
-        let currentMode = '{{ $mode }}';
-        if (urlMode && ['paper', 'live'].includes(urlMode)) {
-            currentMode = urlMode;
-        } else if (savedMode && ['paper', 'live'].includes(savedMode)) {
-            currentMode = savedMode;
-        } else {
-            currentMode = 'paper';
-        }
+        // The engine's active mode is the default view; the URL can still show the other ledger.
+        let engineMode = '{{ $activeMode }}';
+        const canManageTrading = @json((bool) (Auth::user()?->isAdmin() || Auth::user()?->hasPermission('manage_trading')));
+        let currentMode = (urlMode && ['paper', 'live'].includes(urlMode)) ? urlMode : engineMode;
 
         // Keep LocalStorage, Cookie, and URL strictly synchronized
         localStorage.setItem('afte_trading_mode', currentMode);
@@ -773,7 +769,33 @@
             }
         }
 
+        /**
+         * PAPER / LIVE switches the background engine for users allowed to trade (LIVE needs confirmation),
+         * then shows that mode's data. Other users only switch which ledger they are viewing.
+         */
         async function switchMode(mode) {
+            if (canManageTrading && mode !== engineMode) {
+                if (mode === 'live' && !confirm('Switch the trading ENGINE to LIVE?\n\nNew trades will be REAL Binance orders with REAL money. Open paper trades keep being managed until they close.')) {
+                    return;
+                }
+                try {
+                    const res = await fetch('{{ route('api.trading_mode') }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                        body: JSON.stringify({ mode, confirm: true }),
+                    });
+                    const json = await res.json();
+                    if (!res.ok || !json.success) {
+                        alert('Mode not changed: ' + (json.message || 'request failed'));
+                        return;
+                    }
+                    engineMode = mode;
+                } catch (err) {
+                    alert('Mode not changed: ' + err.message);
+                    return;
+                }
+            }
+
             if (currentMode === mode) return;
             currentMode = mode;
             localStorage.setItem('afte_trading_mode', mode);
@@ -1019,6 +1041,9 @@
             updateCircuitBreakerUI(stats);
         }
 
+        /**
+         * Cron engine status: running / paused / stalled / never ran, from the engine heartbeat.
+         */
         function updateDaemonUI(daemon, stats) {
             const badge = document.getElementById('daemon-status-badge');
             const dot = document.getElementById('daemon-dot');
@@ -1029,48 +1054,69 @@
 
             if (!daemon) return;
 
-            if (daemon.is_active) {
-                if (badge) {
-                    badge.textContent = 'ACTIVE (24/7 BACKGROUND)';
-                    badge.className = 'px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/10';
-                }
-                if (dot) dot.className = 'w-3.5 h-3.5 rounded-full bg-emerald-400 shadow-[0_0_10px_#10b981]';
-                if (ring) ring.className = 'absolute w-8 h-8 rounded-full bg-emerald-400/25 animate-ping';
-                if (desc) desc.textContent = daemon.pid ? `PID #${daemon.pid} (${daemon.uptime_human || 'Live'})` : `Watchdog Cron Engine (${daemon.uptime_human || 'Active'})`;
-            } else if (stats && stats.is_running) {
-                if (badge) {
-                    badge.textContent = 'SYNCING / REVIVING';
-                    badge.className = 'px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40';
-                }
-                if (dot) dot.className = 'w-3.5 h-3.5 rounded-full bg-amber-400';
-                if (ring) ring.className = 'absolute w-8 h-8 rounded-full bg-amber-400/20 animate-pulse';
-                if (desc) desc.textContent = 'Auto-Scheduler Watchdog Active';
-            } else {
-                if (badge) {
-                    badge.textContent = 'STANDBY (PAUSED)';
-                    badge.className = 'px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-700/60 text-slate-400 border border-slate-600';
-                }
-                if (dot) dot.className = 'w-3.5 h-3.5 rounded-full bg-slate-500';
-                if (ring) ring.className = 'hidden';
-                if (desc) desc.textContent = 'Waiting for Auto Trading activation';
+            const styles = {
+                ok: ['bg-emerald-500/20 text-emerald-300 border-emerald-500/40', 'bg-emerald-400 shadow-[0_0_10px_#10b981]', 'absolute w-8 h-8 rounded-full bg-emerald-400/25 animate-ping'],
+                warn: ['bg-amber-500/20 text-amber-300 border-amber-500/40', 'bg-amber-400', 'absolute w-8 h-8 rounded-full bg-amber-400/20 animate-pulse'],
+                bad: ['bg-rose-500/20 text-rose-300 border-rose-500/40', 'bg-rose-500', 'absolute w-8 h-8 rounded-full bg-rose-500/20 animate-ping'],
+                idle: ['bg-slate-700/60 text-slate-400 border-slate-600', 'bg-slate-500', 'hidden'],
+            };
+
+            let label; let style; let detail;
+            switch (daemon.status) {
+                case 'RUNNING':
+                    label = `RUNNING · ${String(daemon.active_mode || '').toUpperCase()}`;
+                    style = 'ok';
+                    detail = daemon.engine_paused_reason || 'Cron engine: manages trades every 5s, scans after each candle close';
+                    break;
+                case 'PAUSED':
+                    label = 'AUTO-TRADING STOPPED';
+                    style = 'idle';
+                    detail = 'Open trades are still managed and protected. Start auto-trading to take new signals.';
+                    break;
+                case 'KILL_SWITCH':
+                    label = 'KILL SWITCH';
+                    style = 'bad';
+                    detail = daemon.pause_reason || 'Kill switch active';
+                    break;
+                case 'STALLED':
+                    label = 'ENGINE STALLED';
+                    style = 'bad';
+                    detail = `No engine cycle recently. Check the hosting cron: ${daemon.cron_hint || 'php artisan schedule:run'}`;
+                    break;
+                default:
+                    label = 'ENGINE NOT STARTED';
+                    style = 'warn';
+                    detail = `Add the hosting cron job: ${daemon.cron_hint || '* * * * * php artisan schedule:run'}`;
             }
 
-            if (hb) {
-                const hbAge = (daemon.heartbeat_ago_sec !== null && daemon.heartbeat_ago_sec !== undefined)
-                    ? daemon.heartbeat_ago_sec
-                    : (daemon.heartbeat_age_seconds !== undefined && daemon.last_heartbeat ? daemon.heartbeat_age_seconds : null);
+            if (daemon.pause_reason && daemon.status === 'RUNNING' && stats && stats.is_cooldown_active) {
+                label = 'PAUSED: CIRCUIT BREAKER';
+                style = 'warn';
+                detail = daemon.pause_reason;
+            }
 
-                if (hbAge !== null && hbAge < 9999) {
+            if (badge) {
+                badge.textContent = label;
+                badge.className = `px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${styles[style][0]}`;
+            }
+            if (dot) dot.className = `w-3.5 h-3.5 rounded-full ${styles[style][1]}`;
+            if (ring) ring.className = styles[style][2];
+            if (desc) desc.textContent = detail;
+
+            if (hb) {
+                const hbAge = daemon.heartbeat_ago_sec;
+                if (hbAge !== null && hbAge !== undefined) {
                     hb.textContent = `${hbAge}s ago`;
-                    hb.className = hbAge <= 30 ? 'text-cyan-300 font-bold' : 'text-amber-400 font-bold';
+                    hb.className = hbAge <= 90 ? 'text-cyan-300 font-bold' : 'text-rose-400 font-bold';
                 } else {
-                    hb.textContent = 'Never (Worker Inactive)';
+                    hb.textContent = 'Never';
                     hb.className = 'text-slate-400';
                 }
             }
 
             if (cycles) {
-                cycles.textContent = daemon.cycles_count !== undefined ? daemon.cycles_count : '0';
+                const st = daemon.stats || {};
+                cycles.textContent = st.last_scan_at ? `last scan ${new Date(st.last_scan_at).toLocaleTimeString()}` : 'no scan yet';
             }
         }
 
@@ -1212,83 +1258,72 @@
             }).join('');
         }
 
+        /**
+         * Scanner rows come from the last background scan (StrategyEngine signals on the last closed candle).
+         */
         function renderScannerTable(opportunities, totalScanned = null, cachedAt = null) {
             const tbody = document.getElementById('scanner-tbody');
             if (!tbody) return;
 
-            if (totalScanned !== null) {
-                const cacheNotice = cachedAt ? ' (Instant Cached)' : '';
-                const updateEl = document.getElementById('scanner-last-update');
-                if (updateEl) updateEl.textContent = `Scanned ${totalScanned} pairs${cacheNotice} at ${new Date().toLocaleTimeString()}`;
+            const updateEl = document.getElementById('scanner-last-update');
+            if (updateEl && totalScanned !== null) {
+                updateEl.textContent = cachedAt
+                    ? `${totalScanned} liquid pairs · scanned ${new Date(cachedAt).toLocaleTimeString()}`
+                    : 'No scan yet: the engine scans after each 1h candle close';
             }
 
+            const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+            const fmtP = (p) => { const n = Number(p); return n >= 1 ? n.toFixed(4) : n.toPrecision(5); };
+
             if (!opportunities || opportunities.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400 font-mono text-xs">No high-conviction breakout setup detected right now. Markets are in range; capital protected.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400 font-mono text-xs">No signal on the last closed candle. Most of the time the right trade is no trade; the scanner checks again after the next candle.</td></tr>`;
                 return;
             }
 
             tbody.innerHTML = opportunities.map(op => {
                 const isLong = op.direction === 'LONG';
                 const dirBadge = isLong ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-rose-400 bg-rose-500/10 border-rose-500/30';
-                const plan = op.one_day_plan || {
-                    sl_price: op.sl,
-                    sl_loss_usd: '9.50',
-                    sl_roe_pct: '9.5',
-                    tp1_price: op.tp1,
-                    tp1_profit_usd: '25.00',
-                    tp1_roe_pct: '25.0',
-                    tp2_price: op.tp2,
-                    tp2_profit_usd: '47.50',
-                    tp2_roe_pct: '47.5',
-                    tp3_price: op.tp3 || (isLong ? (op.price * 1.18).toFixed(4) : (op.price * 0.82).toFixed(4)),
-                    tp3_profit_usd: '90.00',
-                    tp3_roe_pct: '90.0'
-                };
-
-                const setupLabel = op.setup_label || (isLong ? 'BULLISH BREAKOUT INCEPTION' : 'BEARISH BREAKDOWN INCEPTION');
-                const reasonText = (op.detailed_reasoning && typeof op.detailed_reasoning === 'object')
-                    ? (op.detailed_reasoning.execution_strategy || op.detailed_reasoning.market_structure || op.ai_reason || '')
-                    : (op.ai_reason || 'Massive breakout inception setup with volume ignition.');
+                const stars = '★'.repeat(op.stars || 1) + '☆'.repeat(5 - (op.stars || 1));
+                const ai = op.ai_probability !== null && op.ai_probability !== undefined ? `${Math.round(op.ai_probability * 100)}%` : '—';
+                const st = op.stats || {};
+                const record = st.n
+                    ? `<div class="font-bold text-white">${st.win_rate}% win</div><div class="${st.expectancy >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${st.expectancy >= 0 ? '+' : ''}${Number(st.expectancy).toFixed(2)}R avg</div><div class="text-[10px] text-slate-500">n=${st.n} · ${esc(st.source)}</div>`
+                    : '<div class="text-slate-500">No track record yet</div>';
+                const failed = Object.entries(op.failed_filters || {}).map(([k, v]) => `✗ ${esc(k.replace('_', ' '))}: ${esc(v)}`).join('<br>');
+                const filterHtml = op.tradable
+                    ? `<span class="text-emerald-400">✓ All filters passed</span>`
+                    : `<span class="text-rose-300">${failed || (op.is_shadow ? 'Shadow setup (tracked only)' : 'Not tradable')}</span>`;
+                const auto = op.auto_trade ? `<div class="text-[10px] text-cyan-300 mt-1">🤖 ${esc(op.auto_trade)}</div>` : '';
+                const canTrade = op.tradable && !op.is_shadow;
 
                 return `
-                    <tr class="hover:bg-cyber-800/40 transition">
+                    <tr class="hover:bg-cyber-800/40 transition ${op.tradable ? '' : 'opacity-70'}">
                         <td class="px-4 py-3">
                             <div class="flex items-center space-x-2">
-                                <span class="font-bold text-white text-sm">${op.symbol}</span>
+                                <span class="font-bold text-white text-sm">${esc(op.symbol)}</span>
                                 <span class="px-1.5 py-0.5 rounded text-[10px] border ${dirBadge}">${op.direction}</span>
                             </div>
-                            <span class="text-[10px] text-cyan-400 font-mono font-medium block mt-0.5">${setupLabel}</span>
+                            <span class="text-[10px] text-cyan-400 font-mono font-medium block mt-0.5">${esc(op.setup_label)}${op.is_shadow ? ' (shadow)' : ''}</span>
+                            ${op.confluences && op.confluences.length ? `<span class="text-[10px] text-slate-500 block">${esc(op.confluences.join(' · '))}</span>` : ''}
                         </td>
                         <td class="px-3 py-3">
-                            <div class="font-bold text-cyan-300 font-mono text-sm">${op.score}/100</div>
-                            <span class="text-[10px] px-1.5 py-0.2 rounded bg-amber-400/10 text-amber-300 border border-amber-400/30 font-bold">GRADE ${op.grade || 'A'}</span>
+                            <div class="font-bold text-amber-300 text-sm">Grade ${esc(op.grade)}</div>
+                            <div class="text-[10px] text-amber-400">${stars}</div>
+                            <div class="text-[10px] text-indigo-300">AI ${ai}</div>
                         </td>
-                        <td class="px-3 py-3 font-mono">
-                            <div class="space-y-0.5 text-[10px] text-slate-400">
-                                <div class="font-bold text-emerald-400 text-xs">${op.support ? '$' + op.support : '—'}</div>
-                                <div class="text-[9px] text-slate-500 uppercase">Support</div>
-                                <div class="font-bold text-rose-400 text-xs mt-1">${op.resistance ? '$' + op.resistance : '—'}</div>
-                                <div class="text-[9px] text-slate-500 uppercase">Resistance</div>
-                            </div>
-                        </td>
-                        <td class="px-3 py-3 font-mono">
+                        <td class="px-3 py-3 text-slate-200">${fmtP(op.price)}<div class="text-[10px] text-slate-500">${op.interval} close</div></td>
+                        <td class="px-3 py-3 text-[11px]">${record}</td>
+                        <td class="px-3 py-3">
                             <div class="space-y-0.5 text-[11px]">
-                                <div class="text-rose-400 font-medium">SL: <span class="text-white font-bold">$${op.sl}</span> <span class="text-rose-400/70">(-${op.sl_pct !== undefined ? op.sl_pct : '~'}%)</span></div>
-                                <div class="text-emerald-400 font-medium">TP1: <span class="text-white font-bold">$${op.tp1}</span> <span class="text-emerald-400/70">(+${op.tp1_pct !== undefined ? op.tp1_pct : '~'}%)</span></div>
-                                <div class="text-emerald-300 font-bold">TP2: <span class="text-white font-bold">$${op.tp2}</span> <span class="text-emerald-300/70">(+${op.tp2_pct !== undefined ? op.tp2_pct : '~'}%)</span></div>
+                                <div class="text-rose-400">SL: <span class="text-white font-bold">${fmtP(op.sl)}</span> <span class="text-rose-400/70">(-${op.sl_pct}%)</span></div>
+                                <div class="text-emerald-400">TP1: <span class="text-white font-bold">${fmtP(op.tp1)}</span> <span class="text-emerald-400/70">(+${op.tp1_pct}%)</span></div>
+                                <div class="text-emerald-300">TP2: <span class="text-white font-bold">${fmtP(op.tp2)}</span> <span class="text-emerald-300/70">(+${op.tp2_pct}%)</span></div>
                             </div>
                         </td>
-                        <td class="px-3 py-3">
-                            <div class="text-[10px] font-bold ${(op.trade_type || '').includes('SWING') ? 'text-blue-300' : 'text-amber-300'}">${(op.trade_type || '').includes('SWING') ? '🌊 SWING' : '⚡ DAY TRADE'}</div>
-                            <div class="text-[10px] text-purple-300 font-mono mt-0.5">💡 ${op.recommended_leverage || '5x – 10x'}</div>
-                            <div class="text-[9px] text-slate-500 mt-0.5">R:R ${op.risk_reward || '—'}</div>
-                            <div class="font-bold text-slate-200 text-[10px] mt-1">${op.indicators?.volume_ratio || '—'}x Vol</div>
-                            <div class="text-[10px] text-slate-400">RSI: ${op.indicators?.rsi || '—'}</div>
-                        </td>
-                        <td class="px-3 py-3 text-right whitespace-nowrap">
-                            <button onclick="executeRadarTrade('${op.symbol}', '${op.direction}', this)" class="px-2.5 py-1.5 text-xs font-mono font-bold rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition inline-flex items-center space-x-1 shadow-sm shadow-emerald-500/10">
-                                <span>⚡</span><span>Trade Now</span>
-                            </button>
+                        <td class="px-3 py-3 text-[10px] max-w-[220px]">${filterHtml}${auto}</td>
+                        <td class="px-3 py-3 text-right whitespace-nowrap space-y-1">
+                            <a href="${op.chart_url}" class="block px-2.5 py-1 text-xs font-mono rounded bg-cyber-700 hover:bg-cyber-600 text-cyan-300 border border-cyber-border">📈 Chart</a>
+                            ${canTrade ? `<button onclick="executeRadarTrade('${op.symbol}', '${op.direction}', this)" class="w-full px-2.5 py-1 text-xs font-mono font-bold rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40">⚡ Trade</button>` : ''}
                         </td>
                     </tr>
                 `;
@@ -1359,6 +1394,10 @@
         }
 
         async function executeRadarTrade(symbol, direction, btnEl = null) {
+            const warning = engineMode === 'live' ? '\n\nLIVE MODE: this places a REAL order with REAL money.' : '';
+            if (!confirm(`Place ${direction} ${symbol} in ${engineMode.toUpperCase()} mode?\nRisk is capped at the strategy's per-trade limit and the stop-loss is placed with the order.${warning}`)) {
+                return;
+            }
             const originalHtml = btnEl ? btnEl.innerHTML : null;
             if (btnEl) {
                 btnEl.innerHTML = `<span class="inline-block animate-spin mr-1">⌛</span> Placing...`;
@@ -1370,6 +1409,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'Accept': 'application/json',
                         'X-CSRF-TOKEN': '{{ csrf_token() }}'
                     },
                     body: JSON.stringify({

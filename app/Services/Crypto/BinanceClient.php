@@ -6,6 +6,7 @@ use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 class BinanceClient
@@ -150,6 +151,51 @@ class BinanceClient
             }
 
             return $this->parseRawKlines($rawKlines);
+        });
+    }
+
+    /**
+     * Historical klines between two timestamps, paginated (used by the backtester).
+     *
+     * @return array{opens: array<int, float>, highs: array<int, float>, lows: array<int, float>, closes: array<int, float>, volumes: array<int, float>, closeTimes: array<int, int>}
+     */
+    public function klinesRange(string $symbol, string $interval, int $startMs, int $endMs): array
+    {
+        $symbol = strtoupper($symbol);
+        $cacheKey = "binance:klines-range:{$this->market}:{$symbol}:{$interval}:{$startMs}:{$endMs}";
+
+        return Cache::remember($cacheKey, 3600, function () use ($symbol, $interval, $startMs, $endMs): array {
+            $raw = [];
+            $cursor = $startMs;
+            $pageLimit = $this->market === 'spot' ? 1000 : 1500;
+
+            while ($cursor < $endMs) {
+                $response = Http::timeout(15)->acceptJson()->get("{$this->baseUrl}{$this->endpoint}", [
+                    'symbol' => $symbol,
+                    'interval' => $interval,
+                    'startTime' => $cursor,
+                    'endTime' => $endMs,
+                    'limit' => $pageLimit,
+                ]);
+
+                if (! $response->successful()) {
+                    throw new RuntimeException("Failed to fetch historical klines for {$symbol} ({$interval}): HTTP {$response->status()}");
+                }
+
+                $page = (array) $response->json();
+                if ($page === []) {
+                    break;
+                }
+
+                $raw = array_merge($raw, $page);
+                $lastOpen = (int) end($page)[0];
+                if (count($page) < $pageLimit || $lastOpen <= $cursor) {
+                    break;
+                }
+                $cursor = $lastOpen + 1;
+            }
+
+            return $this->parseRawKlines($raw);
         });
     }
 
@@ -322,6 +368,35 @@ class BinanceClient
     }
 
     /**
+     * Latest funding rate per symbol (futures only), e.g. 0.0001 = 0.01%.
+     *
+     * @return array<string, float>
+     */
+    public function getFundingRates(): array
+    {
+        if ($this->market === 'spot') {
+            return [];
+        }
+
+        return Cache::remember("binance:funding_rates:{$this->market}", 300, function (): array {
+            $response = Http::timeout(12)->acceptJson()->get("{$this->baseUrl}/fapi/v1/premiumIndex");
+            if (! $response->successful() || ! is_array($response->json())) {
+                return [];
+            }
+
+            $rates = [];
+            foreach ($response->json() as $row) {
+                $symbol = strtoupper((string) ($row['symbol'] ?? ''));
+                if ($symbol !== '') {
+                    $rates[$symbol] = (float) ($row['lastFundingRate'] ?? 0.0);
+                }
+            }
+
+            return $rates;
+        });
+    }
+
+    /**
      * Fetch best bid and ask prices (bookTicker) for spread calculations.
      *
      * @return array<string, array{bidPrice: float, askPrice: float, bidQty: float, askQty: float}>
@@ -384,7 +459,7 @@ class BinanceClient
                 }
             }
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::debug("BinanceClient tickerPrice error for {$symbol}: {$e->getMessage()}");
+            Log::debug("BinanceClient tickerPrice error for {$symbol}: {$e->getMessage()}");
         }
 
         return 0.0;
@@ -393,11 +468,11 @@ class BinanceClient
     /**
      * Fetch exchange metadata (listing dates, symbols status, filters).
      *
-     * @return array<string, array{status: string, onboardDate: int}>
+     * @return array<string, array{status: string, onboardDate: int, contractType: string, underlyingType: string}>
      */
     public function getExchangeInfo(): array
     {
-        return Cache::remember("binance:exchange_info:{$this->market}", 3600, function (): array {
+        return Cache::remember("binance:exchange_info:v2:{$this->market}", 3600, function (): array {
             $url = $this->market === 'spot'
                 ? "{$this->baseUrl}/api/v3/exchangeInfo"
                 : "{$this->baseUrl}/fapi/v1/exchangeInfo";
@@ -422,6 +497,8 @@ class BinanceClient
                     $mapped[$sym] = [
                         'status' => (string) ($s['status'] ?? 'TRADING'),
                         'onboardDate' => (int) ($s['onboardDate'] ?? 0),
+                        'contractType' => (string) ($s['contractType'] ?? 'PERPETUAL'),
+                        'underlyingType' => (string) ($s['underlyingType'] ?? 'COIN'),
                     ];
                 }
             }

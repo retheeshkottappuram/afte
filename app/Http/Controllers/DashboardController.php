@@ -3,74 +3,76 @@
 namespace App\Http\Controllers;
 
 use App\Models\EquitySnapshot;
+use App\Models\Setting;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\TradingSignal;
-use App\Services\AI\SignalValidator;
 use App\Services\Binance\BinanceFuturesClient;
-use App\Services\Crypto\BinanceClient;
-use App\Services\Crypto\BreakoutDetector;
-use App\Services\Crypto\SignalRecorder;
+use App\Services\Notifications\TelegramNotifier;
+use App\Services\Strategy\MarketScanService;
+use App\Services\Strategy\SetupStats;
 use App\Services\Trading\BacktestingEngine;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
-use App\Services\Trading\MarketEngine;
-use App\Services\Trading\OrderExecutor;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SignalAlgoTrader;
-use App\Services\Trading\SignalEngine;
 use App\Services\Trading\TradingDaemonManager;
+use App\Services\Trading\TradingModeManager;
 use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\View\View;
 
 class DashboardController extends Controller
 {
     public function __construct(
         protected BinanceFuturesClient $client,
-        protected MarketEngine $marketEngine,
-        protected SignalEngine $signalEngine,
-        protected SignalValidator $validator,
         protected DynamicTradeManager $tradeManager,
-        protected OrderExecutor $executor,
         protected RiskManager $riskManager,
         protected BacktestingEngine $backtestingEngine,
         protected TradingDaemonManager $daemonManager,
-        protected ExchangePositionSync $exchangeSync
+        protected ExchangePositionSync $exchangeSync,
+        protected TradingModeManager $modeManager,
+        protected MarketScanService $scanner,
+        protected SignalAlgoTrader $trader,
+        protected SetupStats $setupStats
     ) {}
 
     /**
-     * Display main cyber trading terminal.
+     * Mode whose data the dashboard shows. Defaults to the engine's active mode.
+     */
+    protected function viewMode(Request $request): string
+    {
+        $mode = $request->input('mode')
+            ?? $request->query('mode')
+            ?? session('trading_mode')
+            ?? $request->cookie('afte_trading_mode')
+            ?? $this->modeManager->activeMode();
+
+        return in_array($mode, ['paper', 'live'], true) ? $mode : $this->modeManager->activeMode();
+    }
+
+    /**
+     * Display main trading terminal.
      */
     public function index(Request $request): View
     {
-        $defaultMode = config('trading.mode', 'live');
-        $mode = $request->query('mode')
-            ?? $request->cookie('afte_trading_mode')
-            ?? session('trading_mode')
-            ?? $defaultMode;
-
-        if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = $defaultMode;
-        }
-
+        $mode = $this->viewMode($request);
         session(['trading_mode' => $mode]);
         cookie()->queue('afte_trading_mode', $mode, 60 * 24 * 30);
 
         $account = TradingAccount::getForMode($mode);
-        $this->syncLiveAccountAndPositions($account, $mode);
 
         return view('dashboard.index', [
             'mode' => $mode,
+            'activeMode' => $this->modeManager->activeMode(),
             'account' => $account->fresh(),
             'activeCoin' => TradingTargetManager::getActiveCoin(),
             'activeBase' => TradingTargetManager::getBaseCoin(),
             'availableCoins' => TradingTargetManager::getAvailableCoins(),
             'monitoredCoins' => TradingTargetManager::getMonitoredCoins(),
-            'timeframes' => TradingTargetManager::getMonitoredTimeframes(),
+            'timeframes' => [(string) config('trading.strategy.base_interval', '1h')],
         ]);
     }
 
@@ -79,18 +81,8 @@ class DashboardController extends Controller
      */
     public function stats(Request $request): JsonResponse
     {
-        $defaultMode = config('trading.mode', 'live');
-        $mode = $request->query('mode')
-            ?? session('trading_mode')
-            ?? $request->cookie('afte_trading_mode')
-            ?? $defaultMode;
-
-        if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = $defaultMode;
-        }
-
+        $mode = $this->viewMode($request);
         session(['trading_mode' => $mode]);
-        cookie()->queue('afte_trading_mode', $mode, 60 * 24 * 30);
 
         $account = TradingAccount::getForMode($mode);
         $client = $this->client->forMode($mode);
@@ -136,26 +128,16 @@ class DashboardController extends Controller
 
         $pausedReason = null;
         if ($account->kill_switch) {
-            $pausedReason = 'EMERGENCY HALT: Kill Switch is active. All automated trading is suspended.';
+            $pausedReason = 'EMERGENCY HALT: kill switch is active'.($account->pause_reason ? " ({$account->pause_reason})" : '').'. No new trades until it is reset.';
         } elseif ($isCooldownActive) {
-            $maxConsecutive = (int) config('trading.circuit_breakers.max_consecutive_losses', 2);
-            $pausedReason = "CIRCUIT BREAKER: Auto-trading paused after {$account->consecutive_losses}/{$maxConsecutive} consecutive losses to eliminate revenge trading and protect capital. Cooldown active for next {$pausedRemainingMinutes}m (until {$pausedUntilFormatted}).";
+            $pausedReason = 'CIRCUIT BREAKER: '.($account->pause_reason ?: 'risk limit reached').". New entries resume {$pausedRemainingHuman} ({$pausedUntilFormatted} UTC). Open trades stay protected.";
         } elseif (! $account->is_running) {
-            $pausedReason = 'STANDBY: Auto-trading is paused. Start Auto Trading to resume automated execution.';
+            $pausedReason = 'STANDBY: auto-trading is stopped. Start it to let the engine take new signals.';
         }
 
-        $isSingleCoin = (bool) config('trading.single_coin_strict', false);
-        $singleCoinFundPct = (float) config('trading.fund_management.single_coin_fund_percent', 50.0);
-        $configuredAmount = config('trading.fund_management.amount_per_trade');
-
-        if ($configuredAmount !== null && (float) $configuredAmount > 0) {
-            $amountPerTrade = (float) $configuredAmount;
-        } elseif ($isSingleCoin) {
-            $minNotionalMargin = 5.20 / ($stageInfo['default_leverage'] ?? 10);
-            $amountPerTrade = round(min($availMargin * 0.75, max($availMargin * ($singleCoinFundPct / 100.0), $minNotionalMargin)), 2);
-        } else {
-            $amountPerTrade = round(5.20 / ($stageInfo['default_leverage'] ?? 10), 2);
-        }
+        $riskPct = (float) config('trading.sizing.risk_per_trade_pct', 2.0);
+        $amountPerTrade = round($balance * $riskPct / 100, 2);
+        $activeMode = $this->modeManager->activeMode();
 
         return response()->json([
             'mode' => $mode,
@@ -172,7 +154,7 @@ class DashboardController extends Controller
             'winning_trades' => $account->winning_trades,
             'losing_trades' => $account->losing_trades,
             'consecutive_losses' => $account->consecutive_losses,
-            'max_consecutive_losses' => (int) config('trading.circuit_breakers.max_consecutive_losses', 2),
+            'max_consecutive_losses' => (int) config('trading.circuit_breakers.max_consecutive_losses', 3),
             'is_cooldown_active' => $isCooldownActive,
             'cooldown_remaining_minutes' => $pausedRemainingMinutes,
             'cooldown_remaining_human' => $pausedRemainingHuman,
@@ -190,8 +172,11 @@ class DashboardController extends Controller
             'max_positions' => $stageInfo['max_positions'],
             'default_leverage' => $stageInfo['default_leverage'],
             'amount_per_trade' => $amountPerTrade,
-            'single_coin_fund_percent' => $singleCoinFundPct,
-            'is_single_coin' => $isSingleCoin,
+            'risk_per_trade_pct' => $riskPct,
+            'pause_reason' => $account->pause_reason,
+            'active_mode' => $activeMode,
+            'live_readiness' => $this->modeManager->liveReadiness(),
+            'external_positions' => $mode === 'live' ? (array) Setting::getValue(ExchangePositionSync::EXTERNAL_POSITIONS_KEY, []) : [],
             'live_synced' => $liveSynced,
             'daemon' => $daemonStatus,
         ]);
@@ -202,10 +187,7 @@ class DashboardController extends Controller
      */
     public function positions(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'live'));
-        if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = 'paper';
-        }
+        $mode = $this->viewMode($request);
         $client = $this->client->forMode($mode);
         $account = TradingAccount::getForMode($mode);
 
@@ -228,26 +210,6 @@ class DashboardController extends Controller
             }
         }
 
-        // Auto-prune any open trades in the database only if strict single-coin mode is explicitly enabled
-        if (config('trading.single_coin_strict', false)) {
-            $targetCoin = TradingTargetManager::getActiveCoin();
-            $strayPositions = Trade::where('mode', $mode)
-                ->where('status', 'OPEN')
-                ->where('symbol', '!=', $targetCoin)
-                ->get();
-
-            foreach ($strayPositions as $stray) {
-                try {
-                    $this->tradeManager->closeTrade($stray, (float) $stray->entry_price, 'CLEARED_NON_TARGET_ASSET');
-                } catch (\Throwable) {
-                    $stray->status = 'CLOSED';
-                    $stray->exit_reason = 'CLEARED_NON_TARGET_ASSET';
-                    $stray->closed_at = now();
-                    $stray->save();
-                }
-            }
-        }
-
         $openPositions = Trade::where('mode', $mode)
             ->where('status', 'OPEN')
             ->orderByDesc('opened_at')
@@ -266,8 +228,10 @@ class DashboardController extends Controller
             $roe = $pos->calculateRoe($markPrice);
 
             $symAlgos = $openAlgoMap[$pos->symbol] ?? [];
-            $slAlgo = collect($symAlgos)->firstWhere('orderType', 'STOP_MARKET');
-            $tpAlgo = collect($symAlgos)->firstWhere('orderType', 'TAKE_PROFIT_MARKET');
+            $slRefId = (string) ($pos->meta['sl_order']['id'] ?? '');
+            $tpRefId = (string) ($pos->meta['tp_order']['id'] ?? '');
+            $slAlgo = collect($symAlgos)->first(fn (array $o): bool => (string) ($o['algoId'] ?? '') === $slRefId) ?? collect($symAlgos)->firstWhere('orderType', 'STOP_MARKET');
+            $tpAlgo = collect($symAlgos)->first(fn (array $o): bool => (string) ($o['algoId'] ?? '') === $tpRefId) ?? collect($symAlgos)->firstWhere('orderType', 'TAKE_PROFIT_MARKET');
 
             $formatted[] = [
                 'id' => $pos->id,
@@ -297,7 +261,11 @@ class DashboardController extends Controller
                 'has_exchange_tp' => $tpAlgo !== null,
                 'exchange_tp_price' => $tpAlgo ? (float) ($tpAlgo['triggerPrice'] ?? 0) : null,
                 'opened_at' => $pos->opened_at?->diffForHumans(),
-                'ai_monitor' => $pos->meta['ai_monitor'] ?? null,
+                'setup' => $pos->meta['setup_label'] ?? $pos->setup_tag,
+                'source' => $pos->meta['source'] ?? 'auto',
+                'risk_usd' => $pos->meta['risk_usd'] ?? null,
+                'close_failed_reason' => $pos->meta['close_failed_reason'] ?? null,
+                'initial_sl' => $pos->initial_sl,
             ];
         }
 
@@ -321,7 +289,7 @@ class DashboardController extends Controller
      */
     public function history(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'live'));
+        $mode = $this->viewMode($request);
 
         $closedTrades = Trade::where('mode', $mode)
             ->where('status', 'CLOSED')
@@ -337,7 +305,7 @@ class DashboardController extends Controller
      */
     public function equityCurve(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'live'));
+        $mode = $this->viewMode($request);
 
         $snapshots = EquitySnapshot::where('mode', $mode)
             ->orderBy('created_at')
@@ -348,404 +316,154 @@ class DashboardController extends Controller
     }
 
     /**
-     * On-demand market scan across Binance Futures.
+     * Whole-market scanner results, read from the last background scan (page loads never scan).
+     * `fresh=1` forces a scan now, for users allowed to trigger scans.
      */
     public function scanMarket(Request $request): JsonResponse
     {
-        $limit = min(20, (int) $request->query('limit', 12));
-        $fresh = $request->boolean('fresh');
-        $cacheKey = "market:scan:results:{$limit}";
-
-        if ($fresh) {
-            Cache::forget($cacheKey);
+        if ($request->boolean('fresh') && ($request->user()?->isAdmin() || $request->user()?->hasPermission('trigger_scans'))) {
+            $this->scanner->runScan((string) config('trading.strategy.base_interval', '1h'), force: true);
         }
 
-        $data = Cache::remember($cacheKey, 60, function () use ($limit): array {
-            $btcTrend = $this->marketEngine->getBtcMarketTrend();
-            $btcBase = $this->marketEngine->getBtcBaseKlines();
-            $symbols = $this->marketEngine->getScannableSymbols();
-            $scanSymbols = array_slice($symbols, 0, $limit);
-            $breakoutDetector = new BreakoutDetector;
+        $results = $this->scanner->latestResults();
+        $rows = (array) ($results['rows'] ?? []);
 
-            $results = [];
+        $opportunities = [];
+        $watchlist = [];
 
-            foreach ($scanSymbols as $sym) {
-                try {
-                    $klines = $this->marketEngine->getMultiTimeframeKlines($sym);
-
-                    // 1. Primary: Evaluate with BreakoutDetector for massive 1-day breakout & breakdown inception
-                    $breakoutResult = $breakoutDetector->evaluate(
-                        $klines['base'],
-                        $klines['htf1'],
-                        $klines['htf2'],
-                        null,
-                        $btcBase
-                    );
-
-                    if ($breakoutResult !== null) {
-                        $bSide = $breakoutResult['side'];
-                        $isBtcNeutral = ($btcTrend['trend'] ?? '') === 'NEUTRAL' || (! $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
-                        if ($bSide === 'BUY' && ! $btcTrend['allow_long'] && (! $isBtcNeutral || $breakoutResult['score'] < 90)) {
-                            continue;
-                        }
-                        if ($bSide === 'SELL' && ! $btcTrend['allow_short'] && (! $isBtcNeutral || $breakoutResult['score'] < 90)) {
-                            continue;
-                        }
-
-                        $results[] = [
-                            'symbol' => $sym,
-                            'direction' => $bSide === 'BUY' ? 'LONG' : 'SHORT',
-                            'price' => $breakoutResult['entry'],
-                            'score' => $breakoutResult['score'],
-                            'grade' => $breakoutResult['grade'],
-                            'setup_type' => $breakoutResult['type'],
-                            'setup_label' => $breakoutResult['setup_label'],
-                            'sl' => $breakoutResult['sl'],
-                            'sl_pct' => $breakoutResult['sl_pct'],
-                            'tp1' => $breakoutResult['tp1'],
-                            'tp1_pct' => $breakoutResult['tp1_pct'],
-                            'tp2' => $breakoutResult['tp2'],
-                            'tp2_pct' => $breakoutResult['tp2_pct'],
-                            'tp3' => $breakoutResult['tp3'],
-                            'tp3_pct' => $breakoutResult['tp3_pct'],
-                            'risk_reward' => $breakoutResult['risk_reward'],
-                            'support' => $breakoutResult['support'],
-                            'resistance' => $breakoutResult['resistance'],
-                            'trade_type' => $breakoutResult['trade_type'],
-                            'trade_horizon' => $breakoutResult['trade_horizon'],
-                            'recommended_leverage' => $breakoutResult['recommended_leverage'],
-                            'detailed_reasoning' => $breakoutResult['detailed_reasoning'],
-                            'indicators' => [
-                                'volume_ratio' => $breakoutResult['volume_ratio'],
-                                'rsi' => $breakoutResult['rsi'],
-                                'adx' => $breakoutResult['adx'],
-                                'atr_pct' => $breakoutResult['atr_pct'],
-                                'rs_ratio' => $breakoutResult['rs_ratio'],
-                            ],
-                            'ai_approved' => true,
-                            'ai_confidence' => $breakoutResult['score'],
-                            'ai_regime' => $breakoutResult['setup_label'],
-                            'ai_reason' => $breakoutResult['detailed_reasoning']['execution_strategy'] ?? $breakoutResult['setup_label'],
-                        ];
-
-                        continue;
-                    }
-
-                    // 2. Secondary: Evaluate with SignalEngine for high-conviction momentum trends
-                    $eval = $this->signalEngine->evaluate($sym, $klines['base'], $klines['htf1'], $klines['htf2'], $btcBase);
-
-                    if ($eval !== null) {
-                        // Condition 1: Bitcoin Macro Trend Filter
-                        $isBtcNeutral = ($btcTrend['trend'] ?? '') === 'NEUTRAL' || (! $btcTrend['allow_long'] && ! $btcTrend['allow_short']);
-                        if ($eval['direction'] === 'LONG' && ! $btcTrend['allow_long'] && (! $isBtcNeutral || ($eval['score'] ?? 0) < 90)) {
-                            continue;
-                        }
-                        if ($eval['direction'] === 'SHORT' && ! $btcTrend['allow_short'] && (! $isBtcNeutral || ($eval['score'] ?? 0) < 90)) {
-                            continue;
-                        }
-
-                        // Condition 7: Institutional Conviction Score Gate (>= 80)
-                        if (($eval['score'] ?? 0) < 80) {
-                            continue;
-                        }
-
-                        $ai = $this->validator->validate($eval, $klines['base']);
-
-                        // Require AI approval for peak entry accuracy
-                        if (! ($ai['approved'] ?? false)) {
-                            continue;
-                        }
-
-                        $entry = (float) $eval['price'];
-                        $isLong = $eval['direction'] === 'LONG';
-
-                        // Structural S/R based levels (no fixed-dollar amounts)
-                        $structuralSl = $isLong ? round($entry * 0.981, 6) : round($entry * 1.019, 6);
-                        $structuralTp1 = $isLong ? round($entry * 1.050, 6) : round($entry * 0.950, 6);
-                        $structuralTp2 = $isLong ? round($entry * 1.095, 6) : round($entry * 0.905, 6);
-                        $structuralTp3 = $isLong ? round($entry * 1.180, 6) : round($entry * 0.820, 6);
-                        $slPct = 1.90;
-                        $tp1Pct = 5.0;
-                        $tp2Pct = 9.5;
-                        $tp3Pct = 18.0;
-
-                        $results[] = [
-                            'symbol' => $sym,
-                            'direction' => $eval['direction'],
-                            'price' => $eval['price'],
-                            'score' => $eval['score'],
-                            'grade' => $eval['grade'],
-                            'setup_type' => 'MOMENTUM_TREND',
-                            'setup_label' => 'MOMENTUM TREND EXPANSION',
-                            'sl' => $structuralSl,
-                            'sl_pct' => $slPct,
-                            'tp1' => $structuralTp1,
-                            'tp1_pct' => $tp1Pct,
-                            'tp2' => $structuralTp2,
-                            'tp2_pct' => $tp2Pct,
-                            'tp3' => $structuralTp3,
-                            'tp3_pct' => $tp3Pct,
-                            'risk_reward' => '1 : '.round($tp2Pct / $slPct, 1),
-                            'support' => round($entry * ($isLong ? 0.975 : 0.985), 6),
-                            'resistance' => round($entry * ($isLong ? 1.025 : 1.015), 6),
-                            'trade_type' => 'DAY TRADE',
-                            'trade_horizon' => 'Intraday (4h – 12h)',
-                            'recommended_leverage' => '5x – 10x',
-                            'detailed_reasoning' => [
-                                'market_structure' => "Institutional trend confluence detected with conviction score {$eval['score']}/100.",
-                                'volume_ignition' => 'Volume ratio is '.($eval['indicators']['volume_ratio'] ?? '1.2').'x, confirming active interest.',
-                                'trend_momentum' => 'RSI at '.($eval['indicators']['rsi'] ?? '55').' supports continuation into intraday expansion targets.',
-                                'relative_strength' => 'Strong momentum aligned with BTC macro direction.',
-                                'execution_strategy' => "Intraday (4h – 12h) trend trade. Suggested leverage: 5x – 10x. SL at \${$structuralSl} (-{$slPct}%), TP1 at \${$structuralTp1} (+{$tp1Pct}%), TP2 at \${$structuralTp2} (+{$tp2Pct}%).",
-                            ],
-                            'indicators' => $eval['indicators'],
-                            'ai_approved' => $ai['approved'],
-                            'ai_confidence' => $ai['confidence'],
-                            'ai_regime' => $ai['regime'],
-                            'ai_reason' => $ai['reason'],
-                        ];
-                    }
-                } catch (\Exception) {
-                    // Ignore symbol glitch
-                }
+        foreach ($rows as $row) {
+            if (! empty($row['signal'])) {
+                $opportunities[] = $this->opportunityPayload($row);
+            } elseif (! empty($row['near'])) {
+                $watchlist[] = [
+                    'symbol' => $row['symbol'],
+                    'bias' => $row['bias'],
+                    'price' => $row['price'],
+                    'near' => $row['near'],
+                    'reason' => $row['reason'],
+                ];
             }
+        }
 
-            // Sort descending by score
-            usort($results, fn ($a, $b) => $b['score'] <=> $a['score']);
-
-            // Save radar opportunities to cache so TradingTargetManager and SignalAlgoTrader pick them up
-            Cache::put('trading:radar_opportunities', $results, now()->addMinutes(30));
-
-            return [
-                'total_scanned' => count($scanSymbols),
-                'btc_macro' => [
-                    'trend' => $btcTrend['trend'],
-                    'btc_price' => $btcTrend['btc_price'],
-                    'allow_long' => $btcTrend['allow_long'],
-                    'allow_short' => $btcTrend['allow_short'],
-                ],
-                'opportunities' => $results,
-                'cached_at' => now()->toIso8601String(),
-            ];
-        });
-
-        return response()->json($data);
+        return response()->json([
+            'total_scanned' => (int) ($results['universe_size'] ?? count($rows)),
+            'interval' => $results['interval'] ?? config('trading.strategy.base_interval', '1h'),
+            'scanned_at' => $results['scanned_at'] ?? null,
+            'cached_at' => $results['scanned_at'] ?? null,
+            'duration_s' => $results['duration_s'] ?? null,
+            'opportunities' => $opportunities,
+            'watchlist' => array_slice($watchlist, 0, 25),
+            'setup_stats' => $this->setupStats->all(),
+            'trends' => [
+                'long' => count(array_filter($rows, fn (array $r): bool => ($r['bias'] ?? '') === 'LONG')),
+                'short' => count(array_filter($rows, fn (array $r): bool => ($r['bias'] ?? '') === 'SHORT')),
+                'none' => count(array_filter($rows, fn (array $r): bool => ($r['bias'] ?? '') === 'NONE')),
+            ],
+        ]);
     }
 
     /**
-     * Instantly execute an approved trade directly from the Breakout Scanner Radar.
+     * Shape a scanner row for the dashboard table.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    protected function opportunityPayload(array $row): array
+    {
+        $signal = $row['signal'];
+        $entry = (float) $signal['entry'];
+        $pct = fn (float $price): float => $entry > 0 ? round(abs($price - $entry) / $entry * 100, 2) : 0.0;
+
+        return [
+            'id' => $signal['id'] ?? null,
+            'symbol' => $row['symbol'],
+            'direction' => $signal['side'],
+            'price' => $entry,
+            'interval' => $signal['interval'],
+            'time' => $signal['time'],
+            'setup_type' => $signal['setup'],
+            'setup_label' => $signal['setup_label'],
+            'grade' => $signal['grade'],
+            'stars' => $signal['stars'],
+            'ai_probability' => $signal['ai_probability'],
+            'ai_reasons' => $signal['ai_reasons'],
+            'ai_lift' => $signal['ai_lift'] ?? null,
+            'score' => $signal['ai_probability'] !== null ? (int) round($signal['ai_probability'] * 100) : null,
+            'sl' => $signal['sl'],
+            'sl_pct' => $signal['sl_pct'],
+            'tp1' => $signal['tp1'],
+            'tp1_pct' => $pct((float) $signal['tp1']),
+            'tp2' => $signal['tp2'],
+            'tp2_pct' => $pct((float) $signal['tp2']),
+            'tp3' => $signal['tp3'],
+            'risk_reward' => '1 : '.$signal['risk_reward'],
+            'tradable' => $signal['tradable'],
+            'is_shadow' => $signal['is_shadow'],
+            'filters' => $signal['filters'],
+            'failed_filters' => $signal['failed_filters'],
+            'confluences' => $signal['confluences'],
+            'indicators' => $signal['indicators'],
+            'stats' => $signal['stats'] ?? null,
+            'stats_30d' => $signal['stats_30d'] ?? null,
+            'auto_trade' => $signal['auto_trade'] ?? null,
+            'quote_volume' => $row['quote_volume'],
+            'funding_rate' => $row['funding_rate'],
+            'chart_url' => route('signals.dashboard', ['symbol' => $row['symbol'], 'interval' => $signal['interval'], 'signal_time' => $signal['time']]),
+        ];
+    }
+
+    /**
+     * Manual trade from the scanner or chart. Requires a current strategy signal in that direction;
+     * goes through the same risk manager and order executor as the auto-trader, in the active mode.
      */
     public function executeRadarTrade(Request $request): JsonResponse
     {
         $symbol = strtoupper(trim((string) $request->input('symbol')));
         $direction = strtoupper(trim((string) $request->input('direction')));
-        $mode = $request->input('mode', config('trading.mode', 'live'));
 
-        if (! in_array($direction, ['LONG', 'SHORT'], true)) {
-            return response()->json(['success' => false, 'message' => 'Invalid trade direction.'], 422);
-        }
-
-        if (empty($symbol)) {
-            return response()->json(['success' => false, 'message' => 'Trading pair symbol is required.'], 422);
-        }
-
-        $activeCoin = TradingTargetManager::getActiveCoin();
-        if (config('trading.single_coin_strict', false) && ! TradingTargetManager::isCoinAllowed($symbol)) {
-            return response()->json([
-                'success' => false,
-                'message' => "Trading is strictly restricted to selected coin ({$activeCoin}). Please select {$symbol} as the active trading coin first.",
-            ], 422);
-        }
-
-        $account = TradingAccount::getForMode($mode);
-        if ($account->kill_switch) {
-            return response()->json(['success' => false, 'message' => 'Kill switch is active. Trade cannot be placed.'], 422);
+        if (! in_array($direction, ['LONG', 'SHORT'], true) || $symbol === '') {
+            return response()->json(['success' => false, 'message' => 'A symbol and a LONG/SHORT direction are required.'], 422);
         }
 
         try {
-            // Strictly enforce that trades are placed ONLY on verified SignalAlgo PRO chart signals
-            /** @var SignalAlgoTrader $algoTrader */
-            $algoTrader = app(SignalAlgoTrader::class);
-            $freshSignal = $algoTrader->detectSignalOnChart($symbol);
-
-            // If not found in immediate 1.5 candle markers, check Breakout Scanner Radar opportunities or evaluate breakout
-            if ($freshSignal === null) {
-                $radarOpportunities = Cache::get('trading:radar_opportunities', []);
-                $matchedOp = null;
-                foreach ($radarOpportunities as $op) {
-                    if (strtoupper($op['symbol'] ?? '') === $symbol) {
-                        $matchedOp = $op;
-                        break;
-                    }
-                }
-
-                if ($matchedOp === null) {
-                    try {
-                        $marketEngine = app(\App\Services\Crypto\MarketEngine::class);
-                        $klines = $marketEngine->getMultiTimeframeKlines($symbol);
-                        $btcBase = $marketEngine->getBtcBaseKlines();
-                        $breakoutDetector = new BreakoutDetector;
-                        $bRes = $breakoutDetector->evaluate($klines['base'], $klines['htf1'], $klines['htf2'], null, $btcBase);
-                        if ($bRes !== null) {
-                            $matchedOp = [
-                                'symbol' => $symbol,
-                                'direction' => $bRes['side'] === 'BUY' ? 'LONG' : 'SHORT',
-                                'price' => $bRes['entry'],
-                                'score' => $bRes['score'],
-                                'grade' => $bRes['grade'],
-                                'setup_type' => $bRes['type'],
-                                'setup_label' => $bRes['setup_label'],
-                                'sl' => $bRes['sl'],
-                                'tp1' => $bRes['tp1'],
-                                'tp2' => $bRes['tp2'],
-                                'tp3' => $bRes['tp3'],
-                                'risk_reward' => $bRes['risk_reward'],
-                                'indicators' => [
-                                    'volume_ratio' => $bRes['volume_ratio'],
-                                    'rsi' => $bRes['rsi'],
-                                    'adx' => $bRes['adx'],
-                                    'atr_pct' => $bRes['atr_pct'],
-                                    'rs_ratio' => $bRes['rs_ratio'],
-                                ],
-                            ];
-                        }
-                    } catch (\Throwable) {
-                        // ignore evaluation error
-                    }
-                }
-
-                if ($matchedOp !== null && ($matchedOp['direction'] ?? '') === $direction) {
-                    $markerTime = now()->timestamp;
-                    $markerSide = $direction === 'LONG' ? 'BUY' : 'SELL';
-                    $entryPrice = (float) $matchedOp['price'];
-                    $exactSl = (float) $matchedOp['sl'];
-                    $tp1 = (float) $matchedOp['tp1'];
-                    $tp2 = (float) $matchedOp['tp2'];
-                    $tp3 = (float) ($matchedOp['tp3'] ?? 0);
-                    $markerScore = (int) ($matchedOp['score'] ?? 85);
-
-                    $radarMarker = [
-                        'time' => $markerTime,
-                        'side' => $markerSide,
-                        'entry' => $entryPrice,
-                        'sl' => $exactSl,
-                        'tp1' => $tp1,
-                        'tp2' => $tp2,
-                        'tp3' => $tp3,
-                        'score' => $markerScore,
-                        'grade' => (string) ($matchedOp['grade'] ?? 'A'),
-                        'setup_type' => (string) ($matchedOp['setup_type'] ?? 'RADAR_BREAKOUT'),
-                        'setup_label' => (string) ($matchedOp['setup_label'] ?? 'BREAKOUT SCANNER RADAR'),
-                        'risk_reward' => (string) ($matchedOp['risk_reward'] ?? '1 : 2.5'),
-                        'rsi' => $matchedOp['indicators']['rsi'] ?? 55,
-                        'adx' => $matchedOp['indicators']['adx'] ?? 25,
-                        'atr_pct' => $matchedOp['indicators']['atr_pct'] ?? 1.5,
-                        'volume_ratio' => $matchedOp['indicators']['volume_ratio'] ?? 1.5,
-                        'rs_ratio' => $matchedOp['indicators']['rs_ratio'] ?? 1.2,
-                    ];
-
-                    // Sync marker directly into database so it is placed on the chart
-                    SignalRecorder::syncMarkers(
-                        $symbol,
-                        '15m',
-                        [$radarMarker],
-                        app(BinanceClient::class)->getMarketLabel(),
-                        dispatchTelegram: false
-                    );
-
-                    $freshSignal = [
-                        'symbol' => $symbol,
-                        'interval' => '15m',
-                        'side' => $markerSide,
-                        'direction' => $direction,
-                        'score' => $markerScore,
-                        'grade' => (string) ($matchedOp['grade'] ?? 'A'),
-                        'price' => $entryPrice,
-                        'initial_sl' => $exactSl,
-                        'tp1' => $tp1,
-                        'tp2' => $tp2,
-                        'tp3' => $tp3,
-                        'risk_reward' => (string) ($matchedOp['risk_reward'] ?? '1 : 2.5'),
-                        'marker_time' => $markerTime,
-                        'setup_type' => (string) ($matchedOp['setup_type'] ?? 'RADAR_BREAKOUT'),
-                        'setup_label' => (string) ($matchedOp['setup_label'] ?? 'BREAKOUT SCANNER RADAR'),
-                        'indicators' => $matchedOp['indicators'] ?? [],
-                        'raw_marker' => $radarMarker,
-                    ];
-                }
-            }
-
-            if ($freshSignal === null) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Trade rejected: No active SignalAlgo Pro signal or verified Breakout Radar setup found on {$symbol}.",
-                ], 422);
-            }
-
-            if ($freshSignal['direction'] !== $direction) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Direction mismatch: SignalAlgo Pro chart signal on {$symbol} is {$freshSignal['direction']} (Score: {$freshSignal['score']}), but {$direction} was requested.",
-                ], 422);
-            }
-
-            $execResult = $algoTrader->processSignalForExecution($symbol, $freshSignal, $mode);
-
-            if (($execResult['status'] ?? '') === 'opened' || ($execResult['status'] ?? '') === 'reversed') {
-                TradingTargetManager::addMonitoredCoin($symbol);
-
-                return response()->json([
-                    'success' => true,
-                    'message' => $execResult['message'],
-                    'trade' => $execResult['trade'],
-                ]);
-            }
-
-            return response()->json([
-                'success' => false,
-                'message' => $execResult['message'] ?? 'Could not execute trade.',
-            ], 422);
+            $result = $this->trader->executeManual($symbol, $direction, $this->modeManager->activeMode());
         } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Execution error: '.$e->getMessage(),
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Execution error: '.$e->getMessage()], 500);
         }
+
+        return response()->json([
+            'success' => $result['success'],
+            'message' => $result['message'],
+            'trade' => $result['trade'],
+            'mode' => $this->modeManager->activeMode(),
+        ], $result['success'] ? 200 : 422);
     }
 
     /**
-     * Lock Breakeven action on a position.
+     * Move a position's stop to breakeven (exchange stop is replaced first for live trades).
      */
     public function lockBreakeven(Request $request): JsonResponse
     {
-        $tradeId = $request->input('trade_id');
-        $trade = Trade::findOrFail($tradeId);
+        $trade = Trade::findOrFail($request->input('trade_id'));
 
         if (! $trade->isOpen()) {
             return response()->json(['success' => false, 'message' => 'Trade is not open.'], 400);
         }
 
-        $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.12);
-        $trade->current_sl = $trade->isLong()
-            ? round($trade->entry_price * (1.0 + ($bufferPct / 100.0)), 6)
-            : round($trade->entry_price * (1.0 - ($bufferPct / 100.0)), 6);
+        $moved = $this->tradeManager->lockBreakeven($trade);
 
-        $trade->be_locked = true;
-        if ($trade->stage === 'ENTRY') {
-            $trade->stage = 'BE_LOCKED';
-        }
-        $trade->save();
-
-        return response()->json(['success' => true, 'message' => "Stop Loss moved to Breakeven for {$trade->symbol}."]);
+        return response()->json([
+            'success' => $moved,
+            'message' => $moved ? "Stop moved to breakeven for {$trade->symbol}." : 'Stop is already at or beyond breakeven, or the exchange rejected the move.',
+        ], $moved ? 200 : 422);
     }
 
     /**
-     * Manual market close of an open position.
+     * Manual market close. A live trade stays OPEN unless Binance confirms the position is flat.
      */
     public function closePosition(Request $request): JsonResponse
     {
-        $tradeId = $request->input('trade_id');
-        $trade = Trade::find($tradeId);
+        $trade = Trade::find($request->input('trade_id'));
 
         if (! $trade) {
             return response()->json(['success' => false, 'message' => 'Trade not found.'], 404);
@@ -755,87 +473,72 @@ class DashboardController extends Controller
             return response()->json(['success' => true, 'message' => 'Trade is already closed.']);
         }
 
-        try {
-            $client = $this->client->forMode($trade->mode);
-            $markPrice = (float) ($client->getMarkPrice($trade->symbol) ?: $trade->entry_price);
-        } catch (\Throwable) {
-            $markPrice = (float) $trade->entry_price;
-        }
+        $result = $this->tradeManager->closeTrade($trade, $this->markPrice($trade), 'MANUAL_CLOSE');
+        $success = $result['status'] === 'closed';
 
-        try {
-            $res = $this->tradeManager->closeTrade($trade, $markPrice, 'MANUAL_CLOSE');
-
-            return response()->json(['success' => true, 'message' => $res['message']]);
-        } catch (\Throwable) {
-            $trade->status = 'CLOSED';
-            $trade->exit_reason = 'MANUAL_CLOSE';
-            $trade->exit_price = $markPrice;
-            $trade->closed_at = now();
-            $trade->save();
-
-            return response()->json(['success' => true, 'message' => "Position on {$trade->symbol} closed manually."]);
-        }
+        return response()->json(['success' => $success, 'message' => $result['message']], $success ? 200 : 502);
     }
 
     /**
-     * Close all active positions immediately across the current mode.
+     * Close all open positions in a mode. Reports any position that could not be confirmed closed.
      */
     public function closeAllPositions(Request $request): JsonResponse
     {
-        $mode = $request->input('mode', config('trading.mode', 'live'));
-        $openTrades = Trade::where('mode', $mode)->where('status', 'OPEN')->get();
+        $mode = $this->viewMode($request);
+        $closed = 0;
+        $failed = [];
 
-        $closedCount = 0;
-        foreach ($openTrades as $trade) {
-            try {
-                $markPrice = (float) ($this->client->forMode($trade->mode)->getMarkPrice($trade->symbol) ?: $trade->entry_price);
-            } catch (\Throwable) {
-                $markPrice = (float) $trade->entry_price;
+        foreach (Trade::where('mode', $mode)->where('status', 'OPEN')->get() as $trade) {
+            $result = $this->tradeManager->closeTrade($trade, $this->markPrice($trade), 'MANUAL_CLOSE');
+            if ($result['status'] === 'closed') {
+                $closed++;
+            } else {
+                $failed[] = "{$trade->symbol}: {$result['message']}";
             }
-
-            try {
-                $this->tradeManager->closeTrade($trade, $markPrice, 'MANUAL_CLOSE');
-            } catch (\Throwable) {
-                $trade->status = 'CLOSED';
-                $trade->exit_reason = 'MANUAL_CLOSE';
-                $trade->exit_price = $markPrice;
-                $trade->closed_at = now();
-                $trade->save();
-            }
-            $closedCount++;
         }
 
         return response()->json([
-            'success' => true,
-            'message' => "Successfully closed {$closedCount} position(s).",
-            'closed_count' => $closedCount,
-        ]);
+            'success' => $failed === [],
+            'message' => "Closed {$closed} position(s).".($failed !== [] ? ' NOT closed: '.implode('; ', $failed) : ''),
+            'closed_count' => $closed,
+            'failed' => $failed,
+        ], $failed === [] ? 200 : 502);
     }
 
     /**
-     * Toggle emergency kill switch.
+     * Current mark price for a trade, falling back to its entry price.
+     */
+    protected function markPrice(Trade $trade): float
+    {
+        try {
+            return (float) ($this->client->getMarkPrice($trade->symbol) ?: $trade->entry_price);
+        } catch (\Throwable) {
+            return (float) $trade->entry_price;
+        }
+    }
+
+    /**
+     * Toggle the emergency kill switch. Activating it closes all positions in that mode;
+     * deactivating it resets the drawdown reference to the current balance.
      */
     public function toggleKillSwitch(Request $request): JsonResponse
     {
-        $mode = $request->input('mode', config('trading.mode', 'live'));
+        $mode = $this->viewMode($request);
         $account = TradingAccount::getForMode($mode);
-
         $account->kill_switch = ! $account->kill_switch;
+
+        if (! $account->kill_switch) {
+            $account->peak_equity = $account->balance;
+            $account->pause_reason = null;
+        }
         $account->save();
 
+        $failed = [];
         if ($account->kill_switch) {
-            // Liquidate all open positions
-            $openTrades = Trade::where('mode', $mode)->where('status', 'OPEN')->get();
-            foreach ($openTrades as $trade) {
-                try {
-                    $markPrice = (float) ($this->client->forMode($trade->mode)->getMarkPrice($trade->symbol) ?: $trade->entry_price);
-                    $this->tradeManager->closeTrade($trade, $markPrice, 'KILL_SWITCH');
-                } catch (\Throwable) {
-                    $trade->status = 'CLOSED';
-                    $trade->exit_reason = 'KILL_SWITCH';
-                    $trade->exit_price = (float) $trade->entry_price;
-                    $trade->closed_at = now();
-                    $trade->save();
+            foreach (Trade::where('mode', $mode)->where('status', 'OPEN')->get() as $trade) {
+                $result = $this->tradeManager->closeTrade($trade, $this->markPrice($trade), 'KILL_SWITCH');
+                if ($result['status'] !== 'closed') {
+                    $failed[] = "{$trade->symbol}: {$result['message']}";
                 }
             }
         }
@@ -843,7 +546,10 @@ class DashboardController extends Controller
         return response()->json([
             'success' => true,
             'kill_switch' => $account->kill_switch,
-            'message' => $account->kill_switch ? 'Emergency Kill Switch ACTIVATED! All trades closed.' : 'Kill Switch deactivated. Trading resumed.',
+            'failed' => $failed,
+            'message' => $account->kill_switch
+                ? 'Kill switch ACTIVATED. Positions closed.'.($failed !== [] ? ' NOT confirmed closed: '.implode('; ', $failed) : '')
+                : 'Kill switch deactivated. Drawdown reference reset to the current balance.',
         ]);
     }
 
@@ -852,9 +558,10 @@ class DashboardController extends Controller
      */
     public function runBacktest(Request $request): JsonResponse
     {
+        @set_time_limit(180);
         $symbol = strtoupper($request->input('symbol', 'SOLUSDT'));
-        $interval = $request->input('interval', '15m');
-        $limit = min(1000, (int) $request->input('limit', 500));
+        $interval = (string) $request->input('interval', '1h');
+        $limit = max(200, min(4320, (int) $request->input('limit', 2160)));
         $balance = (float) $request->input('balance', 5.0);
 
         try {
@@ -867,93 +574,87 @@ class DashboardController extends Controller
     }
 
     /**
-     * Toggle automated trading state (Admin only).
+     * Start / stop auto-trading in the active mode (admin only). The cron engine reads this flag every cycle.
      */
     public function toggleAutoTrading(Request $request): JsonResponse
     {
         if (! $request->user()?->isAdmin()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized. Only administrators can start or stop automated trading.',
-            ], 403);
+            return response()->json(['success' => false, 'message' => 'Unauthorized. Only administrators can start or stop automated trading.'], 403);
         }
 
-        $mode = $request->input('mode', config('trading.mode', 'live'));
-
-        if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Live auto-trading is disabled in local development to prevent dual-instance collisions with the live server. Please switch to Paper mode.',
-            ], 422);
-        }
-
+        $mode = $this->modeManager->activeMode();
         $account = TradingAccount::getForMode($mode);
-
-        if ($account->is_running) {
-            $daemonResult = $this->daemonManager->stop($mode);
-            $stateMsg = 'Auto-Trading PAUSED. Autonomous orders stopped.';
-        } else {
-            $daemonResult = $this->daemonManager->start($mode);
-            $stateMsg = 'Auto-Trading STARTED. 24/7 Autonomous background daemon active.';
-        }
-
+        $result = $account->is_running ? $this->daemonManager->stop($mode) : $this->daemonManager->start($mode);
         $account->refresh();
 
         return response()->json([
-            'success' => true,
+            'success' => $result['success'],
             'is_running' => (bool) $account->is_running,
             'can_trade' => $account->canTrade(),
-            'message' => $stateMsg,
-            'daemon' => $daemonResult,
-        ]);
+            'mode' => $mode,
+            'message' => $result['message'],
+            'daemon' => $this->daemonManager->status($mode),
+        ], $result['success'] ? 200 : 422);
     }
 
     /**
-     * Reset circuit breaker cooldown and immediately resume auto-trading.
+     * Switch the engine between paper and live (admin / manage_trading). Live requires working
+     * API keys and ALLOW_LIVE_TRADING=true; the request must carry confirm=true.
+     */
+    public function setTradingMode(Request $request): JsonResponse
+    {
+        if (! $request->user()?->isAdmin() && ! $request->user()?->hasPermission('manage_trading')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to change the trading mode.'], 403);
+        }
+
+        $mode = strtolower((string) $request->input('mode'));
+        if ($mode === 'live' && ! $request->boolean('confirm')) {
+            return response()->json(['success' => false, 'requires_confirmation' => true, 'message' => 'Switching to LIVE places real orders with real money. Confirm to continue.'], 422);
+        }
+
+        $result = $this->modeManager->setMode($mode, $request->user()?->email);
+
+        if ($result['success']) {
+            session(['trading_mode' => $result['mode']]);
+            cookie()->queue('afte_trading_mode', $result['mode'], 60 * 24 * 30);
+            app(TelegramNotifier::class)->notifyRiskEvent($result['mode'], 'Trading mode changed', 'Engine now opens new trades in '.strtoupper($result['mode']).' mode (changed by '.($request->user()?->email ?? 'unknown').').');
+        }
+
+        return response()->json($result + ['live_readiness' => $this->modeManager->liveReadiness()], $result['success'] ? 200 : 422);
+    }
+
+    /**
+     * Clear a circuit-breaker pause (admin only).
      */
     public function resumeCooldown(Request $request): JsonResponse
     {
         if (! $request->user()?->isAdmin()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized. Only administrators can reset the cooldown.',
-            ], 403);
+            return response()->json(['success' => false, 'message' => 'Unauthorized. Only administrators can reset the cooldown.'], 403);
         }
 
-        $mode = $request->input('mode', session('trading_mode', 'paper'));
-        if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = 'paper';
-        }
-
+        $mode = $this->viewMode($request);
         $account = TradingAccount::getForMode($mode);
         $account->paused_until = null;
+        $account->pause_reason = null;
         $account->consecutive_losses = 0;
         $account->is_running = true;
+        $account->day_start_equity = $account->balance;
         $account->save();
-
-        $daemonResult = null;
-        if (! ($mode === 'live' && ! config('trading.allow_live_trading', false))) {
-            $daemonResult = $this->daemonManager->start($mode);
-        }
 
         return response()->json([
             'success' => true,
-            'message' => 'Circuit breaker cooldown reset successfully. Auto-trading resumed!',
+            'message' => 'Circuit breaker cleared. Auto-trading resumes on the next engine cycle.',
             'mode' => $mode,
             'can_trade' => $account->canTrade(),
-            'daemon' => $daemonResult,
         ]);
     }
 
     /**
-     * Automated terminal tick (position management + scanning cycle).
+     * Dashboard poller. Web requests never trade: this only reports engine status.
      */
     public function autoTick(Request $request): JsonResponse
     {
-        $mode = $request->input('mode', config('trading.mode', 'live'));
-        $tickResult = $this->daemonManager->tickOnce($mode);
-
-        return response()->json(array_merge(['success' => true], $tickResult));
+        return response()->json(array_merge(['success' => true], $this->daemonManager->tickOnce($this->viewMode($request))));
     }
 
     /**
@@ -961,7 +662,7 @@ class DashboardController extends Controller
      */
     public function daemonStatus(Request $request): JsonResponse
     {
-        $mode = $request->query('mode', config('trading.mode', 'live'));
+        $mode = $this->viewMode($request);
 
         return response()->json($this->daemonManager->status($mode));
     }
@@ -975,7 +676,7 @@ class DashboardController extends Controller
             return response()->json(['success' => false, 'message' => 'Administrator access required.'], 403);
         }
 
-        $mode = $request->input('mode', config('trading.mode', 'live'));
+        $mode = $this->viewMode($request);
 
         if ($mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return response()->json([
@@ -996,7 +697,7 @@ class DashboardController extends Controller
             return response()->json(['success' => false, 'message' => 'Administrator access required.'], 403);
         }
 
-        $mode = $request->input('mode', config('trading.mode', 'live'));
+        $mode = $this->viewMode($request);
 
         return response()->json($this->daemonManager->stop($mode));
     }
@@ -1019,14 +720,7 @@ class DashboardController extends Controller
      */
     public function liveSync(Request $request): JsonResponse
     {
-        $mode = $request->query('mode')
-            ?? session('trading_mode')
-            ?? $request->cookie('afte_trading_mode')
-            ?? config('trading.mode', 'live');
-
-        if (! in_array($mode, ['paper', 'live'], true)) {
-            $mode = 'paper';
-        }
+        $mode = $this->viewMode($request);
 
         $request->merge(['mode' => $mode]);
         session(['trading_mode' => $mode]);

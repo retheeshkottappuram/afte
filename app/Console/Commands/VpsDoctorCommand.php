@@ -133,18 +133,16 @@ class VpsDoctorCommand extends Command
         $daemonStatus = $daemonManager->status($mode);
         $isRunning = $daemonStatus['is_running'] ?? false;
         $heartbeatAge = $daemonStatus['heartbeat_ago_sec'] ?? 'None';
-        $pid = $daemonStatus['pid'] ?? 'None';
-
         $this->line('----------------------------------------------------------------');
-        $this->line('• Daemon State:       <comment>'.($isRunning ? '🟢 RUNNING' : '🔴 STOPPED').'</comment>');
-        $this->line("• Heartbeat Age:      <comment>{$heartbeatAge}s</comment>");
-        $this->line("• Daemon PID:         <comment>{$pid}</comment>");
+        $this->line('• Engine State:       <comment>'.($isRunning ? '🟢 RUNNING' : '🔴 '.($daemonStatus['status'] ?? 'STOPPED')).'</comment>');
+        $this->line("• Last Cycle:         <comment>{$heartbeatAge}s ago</comment>");
+        $this->line('• Active Mode:        <comment>'.strtoupper((string) ($daemonStatus['active_mode'] ?? 'paper')).'</comment>');
 
         if (! $isRunning) {
-            $this->warn('  ⚠️  NOTICE: Daemon is currently stopped.');
-            $this->line("  To launch: Run './start-trading-daemon.sh {$mode}' or start your systemd service.");
+            $this->warn('  ⚠️  NOTICE: The cron engine has not run recently.');
+            $this->line('  Add this cron job in your hosting panel: '.($daemonStatus['cron_hint'] ?? '* * * * * php artisan schedule:run'));
         } else {
-            $this->info('  ✅ PASS: 24/7 Autonomous Daemon is active and sending heartbeats.');
+            $this->info('  ✅ PASS: Cron trading engine is running and sending heartbeats.');
         }
 
         $this->info('================================================================');

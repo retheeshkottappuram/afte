@@ -2,240 +2,123 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\Trading\PhpCliResolver;
+use App\Models\Setting;
+use App\Services\Strategy\MarketScanService;
+use App\Services\Strategy\StrategyEngine;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Throwable;
 
+/**
+ * Whole-market scan for the chart page. The background engine scans after every candle close;
+ * "Run scan" here forces an immediate scan in the request (nothing is spawned).
+ */
 class MarketScanController extends Controller
 {
-    /**
-     * Start the on-demand market scan in the background.
-     * Command: php artisan crypto:check-signals --all --dry-run
-     */
-    public function start(Request $request): JsonResponse
+    public function __construct(protected MarketScanService $scanner) {}
+
+    public function start(): JsonResponse
     {
-        // 1. Check if already running (with heartbeat check)
-        $currentStatus = (string) Cache::get('crypto:manual_scan:status', 'IDLE');
-        $heartbeat = (int) Cache::get('crypto:manual_scan:heartbeat', 0);
-        $diffSeconds = $heartbeat > 0 ? (now()->timestamp - $heartbeat) : 9999;
-        if ($currentStatus === 'RUNNING' && $diffSeconds <= 60) {
-            return response()->json([
-                'success' => true,
-                'message' => 'Market scan is already running!',
-                'is_running' => true,
-                'status' => 'RUNNING',
-            ]);
-        }
-
-        // 2. Clear previous scan state & stop signals
-        Cache::forget('crypto:manual_scan:stop');
-        $stopFile = storage_path('framework/stop-manual-scan');
-        if (file_exists($stopFile)) {
-            @unlink($stopFile);
-        }
-
-        Cache::put('crypto:manual_scan:status', 'RUNNING', 1800);
-        Cache::put('crypto:manual_scan:running', true, 1800);
-        Cache::put('crypto:manual_scan:heartbeat', now()->timestamp, 1800);
-        Cache::put('crypto:manual_scan:started_at', now()->toIso8601String(), 86400);
-        Cache::put('crypto:manual_scan:signals', [], 86400);
-        Cache::put('crypto:manual_scan:progress', [
-            'current_symbol' => 'Initializing...',
-            'index' => 0,
-            'total' => 0,
-            'percent' => 0,
-            'signals_found' => 0,
-        ], 1800);
-
-        // 3. Prepare log file
-        // 3. Prepare log file & resolve PHP CLI
-        $logPath = storage_path('logs/manual_scan.log');
-        if (! is_dir(storage_path('logs'))) {
-            @mkdir(storage_path('logs'), 0755, true);
-        }
-        $phpCli = $this->resolvePhpCliBinary();
-        $artisanPath = base_path('artisan');
-        $basePath = base_path();
-        $isWindows = (PHP_OS_FAMILY === 'Windows');
-        $capturedPid = null;
-
-        $initTime = Carbon::now('Asia/Kolkata')->format('d-M-Y H:i:s \I\S\T');
-        file_put_contents(
-            $logPath,
-            "================================================================================\n"
-            ."⚡ SignalAlgo PRO™ On-Demand Whole-Market Scan Initiated\n"
-            ."• Time: {$initTime}\n"
-            ."• PHP CLI: {$phpCli}\n"
-            ."• Executing: {$phpCli} artisan crypto:check-signals --all --dry-run\n"
-            ."================================================================================\n\n"
-        );
+        @set_time_limit(180);
 
         try {
-            if ($isWindows) {
-                $batPath = storage_path('framework/run-manual-scan.bat');
-                $normBasePath = str_replace('/', '\\', $basePath);
-                $normLogPath = str_replace('/', '\\', $logPath);
-                $batContent = "@echo off\r\n"
-                    ."cd /d \"{$normBasePath}\"\r\n"
-                    ."\"{$phpCli}\" artisan crypto:check-signals --all --dry-run >> \"{$normLogPath}\" 2>&1\r\n";
-                file_put_contents($batPath, $batContent);
-                pclose(popen("start \"\" /B \"{$batPath}\" > NUL 2>&1", 'r'));
-            } else {
-                $cmd = sprintf(
-                    '(cd %s && nohup %s %s crypto:check-signals --all --dry-run </dev/null >> %s 2>&1 & echo $!)',
-                    escapeshellarg($basePath),
-                    escapeshellarg($phpCli),
-                    escapeshellarg($artisanPath),
-                    escapeshellarg($logPath)
-                );
-                $capturedPid = trim((string) exec($cmd));
-                if (is_numeric($capturedPid)) {
-                    Cache::put('crypto:manual_scan:pid', (int) $capturedPid, 1800);
-                }
-            }
-
-            Log::info("MarketScanController: Launched on-demand scan with command 'php artisan crypto:check-signals --all --dry-run'");
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Whole-market scan launched successfully! Monitoring live execution...',
-                'is_running' => true,
-                'status' => 'RUNNING',
-            ]);
+            $result = $this->scanner->runScan((string) config('trading.strategy.base_interval', '1h'), force: true);
         } catch (Throwable $e) {
-            Log::error("MarketScanController: Failed to spawn scan process: {$e->getMessage()}");
-            Cache::put('crypto:manual_scan:status', 'STOPPED', 86400);
-            Cache::put('crypto:manual_scan:running', false, 86400);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to launch scan process: '.$e->getMessage(),
-                'is_running' => false,
-                'status' => 'ERROR',
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Scan failed: '.$e->getMessage()], 500);
         }
+
+        return response()->json(['success' => true, 'message' => $result['message'], 'status' => 'COMPLETED']);
     }
 
-    /**
-     * Stop the ongoing manual market scan.
-     */
     public function stop(): JsonResponse
     {
-        Cache::put('crypto:manual_scan:stop', true, 120);
-        Cache::put('crypto:manual_scan:status', 'STOPPED', 86400);
-        Cache::put('crypto:manual_scan:running', false, 86400);
-
-        // Write disk stop file for immediate detection by CLI loop
-        $stopFile = storage_path('framework/stop-manual-scan');
-        @file_put_contents($stopFile, (string) now()->timestamp);
-
-        // Append to log
-        $logPath = storage_path('logs/manual_scan.log');
-        if (file_exists($logPath)) {
-            @file_put_contents($logPath, "\n\n⚠️ [STOPPED] Market scan was stopped by user from frontend at ".Carbon::now('Asia/Kolkata')->format('H:i:s \I\S\T').".\n", FILE_APPEND);
-        }
-
-        // Kill process on Linux if PID known
-        $pid = Cache::get('crypto:manual_scan:pid');
-        if ($pid && function_exists('posix_kill')) {
-            @posix_kill((int) $pid, 15);
-        }
-
-        Log::info('MarketScanController: Scan stopped by user from frontend.');
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Scan stopped successfully.',
-            'is_running' => false,
-            'status' => 'STOPPED',
-        ]);
+        return response()->json(['success' => true, 'message' => 'Scans run to completion in a few seconds; nothing to stop.', 'status' => 'COMPLETED']);
     }
 
-    /**
-     * Get live status, progress, detected signals, and terminal log tail.
-     */
     public function status(): JsonResponse
     {
-        $status = (string) Cache::get('crypto:manual_scan:status', 'IDLE');
-        $heartbeat = (int) Cache::get('crypto:manual_scan:heartbeat', 0);
-        $diffSeconds = $heartbeat > 0 ? (now()->timestamp - $heartbeat) : 9999;
-        $progress = (array) Cache::get('crypto:manual_scan:progress', [
-            'current_symbol' => 'Ready',
-            'index' => 0,
-            'total' => 0,
-            'percent' => 0,
-            'signals_found' => 0,
+        $results = $this->scanner->latestResults();
+        $rows = (array) ($results['rows'] ?? []);
+        $signals = array_values(array_map(fn (array $row): array => $this->card($row), array_filter($rows, fn (array $r): bool => ! empty($r['signal']))));
+        $total = (int) ($results['universe_size'] ?? count($rows));
+
+        $log = $results === [] ? 'No scan yet. The engine scans after each candle close, or press Run Scan.' : implode("\n", [
+            'Scanned '.count($rows)." symbols ({$total} liquid USDT perpetuals + watchlist/open trades) on ".($results['interval'] ?? '1h').'.',
+            'Signals on the last closed candle: '.count($signals).'.',
+            'Uptrend: '.count(array_filter($rows, fn (array $r): bool => $r['bias'] === 'LONG')).
+            ' · Downtrend: '.count(array_filter($rows, fn (array $r): bool => $r['bias'] === 'SHORT')).
+            ' · No trend: '.count(array_filter($rows, fn (array $r): bool => $r['bias'] === 'NONE')),
+            'Duration: '.($results['duration_s'] ?? '?').'s. [COMPLETED]',
         ]);
-        $signals = (array) Cache::get('crypto:manual_scan:signals', []);
-        $startedAt = Cache::get('crypto:manual_scan:started_at');
-
-        // Read log tail
-        $logPath = storage_path('logs/manual_scan.log');
-        $logTail = '';
-        if (file_exists($logPath)) {
-            $lines = file($logPath, FILE_IGNORE_NEW_LINES);
-            $recentLines = array_slice($lines, -80);
-            $logTail = implode("\n", $recentLines);
-
-            if ($status === 'RUNNING') {
-                if (str_contains($logTail, '[COMPLETED]') || str_contains($logTail, 'Market scan finished successfully')) {
-                    $status = 'COMPLETED';
-                    Cache::put('crypto:manual_scan:status', 'COMPLETED', 86400);
-                    Cache::put('crypto:manual_scan:running', false, 86400);
-                } elseif ($diffSeconds > 180) {
-                    $status = 'STOPPED';
-                    Cache::put('crypto:manual_scan:status', 'STOPPED', 86400);
-                    Cache::put('crypto:manual_scan:running', false, 86400);
-                }
-            }
-        }
-
-        $isRunning = ($status === 'RUNNING');
 
         return response()->json([
             'success' => true,
-            'status' => $status,
-            'is_running' => $isRunning,
-            'progress' => $progress,
+            'status' => $results === [] ? 'IDLE' : 'COMPLETED',
+            'is_running' => false,
+            'progress' => ['current_symbol' => 'Done', 'index' => count($rows), 'total' => count($rows), 'percent' => 100, 'signals_found' => count($signals)],
             'signals' => $signals,
             'total_signals' => count($signals),
-            'log_tail' => $logTail,
-            'started_at' => $startedAt ? Carbon::parse($startedAt)->setTimezone('Asia/Kolkata')->format('H:i:s \I\S\T') : null,
+            'log_tail' => $log,
+            'started_at' => isset($results['scanned_at']) ? Carbon::parse($results['scanned_at'])->setTimezone('Asia/Kolkata')->format('H:i:s \I\S\T') : null,
         ]);
     }
 
-    /**
-     * Clear the log and scan results.
-     */
     public function clear(): JsonResponse
     {
-        Cache::put('crypto:manual_scan:status', 'IDLE', 86400);
-        Cache::put('crypto:manual_scan:running', false, 86400);
-        Cache::forget('crypto:manual_scan:signals');
-        Cache::forget('crypto:manual_scan:progress');
-        Cache::forget('crypto:manual_scan:started_at');
+        Setting::putValue(MarketScanService::RESULTS_KEY, []);
 
-        $logPath = storage_path('logs/manual_scan.log');
-        if (file_exists($logPath)) {
-            @unlink($logPath);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Scan results cleared.',
-            'status' => 'IDLE',
-        ]);
+        return response()->json(['success' => true, 'message' => 'Scan results cleared.', 'status' => 'IDLE']);
     }
 
     /**
-     * Resolve the PHP CLI binary path safely.
+     * Shape a scanner row for the existing signal cards.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
      */
-    protected function resolvePhpCliBinary(): string
+    protected function card(array $row): array
     {
-        return PhpCliResolver::resolve();
+        $s = $row['signal'];
+        $entry = (float) $s['entry'];
+        $pct = fn (float $price): float => $entry > 0 ? round(abs($price - $entry) / $entry * 100, 2) : 0.0;
+        $stats = $s['stats'] ?? [];
+        $filters = collect($s['filters'])->map(fn (array $f, string $name): string => ($f['pass'] ? '✓ ' : '✗ ').str_replace('_', ' ', $name).': '.$f['detail'])->implode(' · ');
+        $record = ($stats['n'] ?? 0) > 0
+            ? sprintf('%s%% win, %+.2fR avg over %d signals (90d, %s).', $stats['win_rate'], $stats['expectancy'], $stats['n'], $stats['source'])
+            : 'No track record yet.';
+
+        return [
+            'symbol' => $row['symbol'],
+            'side' => $s['order_side'],
+            'grade' => $s['grade'],
+            'score' => $s['ai_probability'] !== null ? (int) round($s['ai_probability'] * 100) : null,
+            'setup_type' => $s['setup'],
+            'setup_label' => StrategyEngine::SETUP_LABELS[$s['setup']] ?? $s['setup_label'],
+            'entry' => $entry,
+            'sl' => $s['sl'],
+            'sl_pct' => $s['sl_pct'],
+            'tp1' => $s['tp1'],
+            'tp1_pct' => $pct((float) $s['tp1']),
+            'tp2' => $s['tp2'],
+            'tp2_pct' => $pct((float) $s['tp2']),
+            'tp3' => $s['tp3'],
+            'tp3_pct' => $pct((float) $s['tp3']),
+            'risk_reward' => '1 : '.$s['risk_reward'],
+            'tradable' => $s['tradable'],
+            'trade_type' => 'SWING TRADE',
+            'trade_horizon' => 'Up to 48h (time stop 12h)',
+            'recommended_leverage' => 'Risk-sized ('.config('trading.sizing.risk_per_trade_pct', 2.0).'%)',
+            'support' => $s['side'] === 'LONG' ? $s['sl'] : null,
+            'resistance' => $s['side'] === 'SHORT' ? $s['sl'] : null,
+            'volume_ratio' => $s['indicators']['volume_ratio'] ?? null,
+            'rsi' => $s['indicators']['rsi'] ?? null,
+            'age_minutes' => max(0, (int) round((time() - (int) $s['time']) / 60)),
+            'detailed_reasoning' => [
+                'market_structure' => $filters,
+                'volume_ignition' => 'Volume '.($s['indicators']['volume_ratio'] ?? '?').'x average. '.($s['confluences'] !== [] ? 'Confluence: '.implode(', ', $s['confluences']).'.' : 'No extra confluence.'),
+                'trend_momentum' => 'RSI '.($s['indicators']['rsi'] ?? '?').', ADX '.($s['indicators']['adx'] ?? '?').'. Track record: '.$record,
+                'execution_strategy' => 'Stop at '.$s['sl'].'. Book half at TP1 (1.5R) and move the stop to +0.5R; trail the rest at 1.5x ATR. Breakeven at +1R. Exit if not +0.5R after 12h.'.($s['auto_trade'] ? ' Auto-trader: '.$s['auto_trade'] : ''),
+            ],
+        ];
     }
 }

@@ -2,9 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Crypto\BreakoutDetector;
 use App\Services\Crypto\CandleSanitizer;
-use App\Services\Crypto\SignalEngine;
 use PHPUnit\Framework\TestCase;
 
 class CandleSanitizerTest extends TestCase
@@ -79,53 +77,6 @@ class CandleSanitizerTest extends TestCase
         $this->assertSame($baseCandles['closes'], $sanitized['closes']);
         $this->assertSame($baseCandles['closeTimes'], $sanitized['closeTimes']);
         $this->assertSame($tClose, end($sanitized['closeTimes']));
-    }
-
-    public function test_signal_computed_at_candle_close_is_identical_when_recomputed_later(): void
-    {
-        // 1. Generate 80 closed bars
-        $candlesAtClose = $this->generateSyntheticCandles(80);
-        $tCandleClose = end($candlesAtClose['closeTimes']);
-
-        // Evaluate signal immediately at candle close T
-        $detector = new BreakoutDetector;
-        $engine = new SignalEngine;
-
-        $sanitizedInitial = CandleSanitizer::onlyClosedCandles($candlesAtClose, $tCandleClose);
-        $breakoutAtClose = $detector->evaluate($sanitizedInitial, referenceTimeMs: $tCandleClose);
-        $trendAtClose = $engine->evaluateDetailed($sanitizedInitial, referenceTimeMs: $tCandleClose);
-
-        // 2. Simulate subsequent time passage:
-        // Intra-bar ticks arrive for the NEW forming candle (high volatility, wild price swings)
-        $rawCandlesLaterWithWildForming = $candlesAtClose;
-        $rawCandlesLaterWithWildForming['opens'][] = end($candlesAtClose['closes']);
-        $rawCandlesLaterWithWildForming['highs'][] = end($candlesAtClose['closes']) * 1.25; // +25% intraday wick!
-        $rawCandlesLaterWithWildForming['lows'][] = end($candlesAtClose['closes']) * 0.75;  // -25% intraday dump!
-        $rawCandlesLaterWithWildForming['closes'][] = end($candlesAtClose['closes']) * 1.10;
-        $rawCandlesLaterWithWildForming['volumes'][] = 999999.0; // massive volume tick!
-        $rawCandlesLaterWithWildForming['closeTimes'][] = $tCandleClose + 900000;
-
-        // Recompute signal targeting the closed candle at T
-        $sanitizedLater = CandleSanitizer::onlyClosedCandles($rawCandlesLaterWithWildForming, $tCandleClose);
-        $breakoutRecomputed = $detector->evaluate($sanitizedLater, referenceTimeMs: $tCandleClose);
-        $trendRecomputed = $engine->evaluateDetailed($sanitizedLater, referenceTimeMs: $tCandleClose);
-
-        // 3. Assert zero repainting: Breakout detector output is identical
-        $this->assertEquals($breakoutAtClose, $breakoutRecomputed, 'Breakout signal must not repaint when intra-bar forming ticks occur');
-
-        // Assert zero repainting: SignalEngine output is identical
-        $this->assertEquals($trendAtClose['signal'], $trendRecomputed['signal'], 'SignalEngine signal must not repaint when intra-bar forming ticks occur');
-        $this->assertEquals($trendAtClose['diagnostics'], $trendRecomputed['diagnostics'], 'Diagnostics must be 100% identical');
-
-        // 4. Simulate even later: 3 more candles have closed in the future
-        $futureCandles = $this->generateSyntheticCandles(84);
-        $sanitizedHistoricalSlice = CandleSanitizer::onlyClosedCandles($futureCandles, $tCandleClose);
-
-        $breakoutFromFutureSlice = $detector->evaluate($sanitizedHistoricalSlice, referenceTimeMs: $tCandleClose);
-        $trendFromFutureSlice = $engine->evaluateDetailed($sanitizedHistoricalSlice, referenceTimeMs: $tCandleClose);
-
-        $this->assertEquals($breakoutAtClose, $breakoutFromFutureSlice, 'Signal evaluated on historical slice must equal original real-time signal');
-        $this->assertEquals($trendAtClose['signal'], $trendFromFutureSlice['signal'], 'Engine signal on historical slice must equal original real-time signal');
     }
 
     public function test_is_candle_closed_boundary_checks(): void

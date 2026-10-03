@@ -5,10 +5,11 @@ namespace Tests\Feature;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
+use App\Services\Trading\SignalAlgoTrader;
 use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Cache;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 class DashboardTest extends TestCase
@@ -67,7 +68,7 @@ class DashboardTest extends TestCase
 
     public function test_api_kill_switch_toggle(): void
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['role' => 'admin']);
 
         TradingAccount::create([
             'mode' => 'paper',
@@ -133,9 +134,6 @@ class DashboardTest extends TestCase
 
         $response = $this->actingAs($trader)->postJson('/api/toggle-auto-trading', ['mode' => 'paper']);
         $response->assertStatus(403);
-        $response->assertJson([
-            'success' => false,
-        ]);
     }
 
     public function test_auto_tick_endpoint_runs_safely(): void
@@ -151,13 +149,8 @@ class DashboardTest extends TestCase
 
         $response = $this->actingAs($user)->postJson('/api/auto-tick', ['mode' => 'paper']);
         $response->assertStatus(200);
-        $response->assertJsonStructure([
-            'success',
-            'is_running',
-            'managed_positions',
-            'closed_positions',
-            'scanned_symbols',
-        ]);
+        $response->assertJsonStructure(['success', 'status', 'engine_state', 'message']);
+        $this->assertSame(0, Trade::count(), 'Web requests never trade');
     }
 
     public function test_dashboard_renders_auto_trading_button_for_admin(): void
@@ -279,8 +272,9 @@ class DashboardTest extends TestCase
         $statusResponse->assertJsonStructure([
             'is_active',
             'status',
-            'pid',
-            'heartbeat',
+            'engine_state',
+            'heartbeat_age_seconds',
+            'cron_hint',
         ]);
 
         $logsResponse = $this->actingAs($user)->getJson('/api/trading-daemon/logs?lines=20');
@@ -312,82 +306,28 @@ class DashboardTest extends TestCase
         $stopResponse->assertJsonFragment(['success' => true, 'is_running' => false]);
     }
 
-    public function test_user_can_execute_radar_trade_directly_from_scanner(): void
+    public function test_manual_trade_goes_through_the_auto_trader_in_the_active_mode(): void
     {
-        $user = User::factory()->create();
-        TradingTargetManager::setActiveCoin('SOLUSDT');
+        $admin = User::factory()->create(['role' => 'admin']);
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 20.0,
-            'initial_balance' => 20.0,
-            'is_running' => false,
-            'kill_switch' => false,
-        ]);
+        $this->mock(SignalAlgoTrader::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('executeManual')->once()->with('SOLUSDT', 'LONG', 'paper')->andReturn(['success' => true, 'message' => 'LONG SOLUSDT opened [PAPER]', 'trade' => null]);
+        });
 
-        Cache::put('trading:radar_opportunities', [
-            [
-                'symbol' => 'SOLUSDT',
-                'direction' => 'LONG',
-                'price' => 150.0,
-                'score' => 88,
-                'grade' => 'A',
-                'setup_type' => 'RADAR_BREAKOUT',
-                'setup_label' => 'BREAKOUT SCANNER RADAR',
-                'sl' => 147.15,
-                'tp1' => 156.75,
-                'tp2' => 163.50,
-                'tp3' => 177.00,
-                'risk_reward' => '1 : 2.5',
-                'indicators' => [
-                    'volume_ratio' => 1.5,
-                    'rsi' => 55,
-                    'adx' => 25,
-                    'atr_pct' => 1.5,
-                    'rs_ratio' => 1.2,
-                ],
-            ],
-        ], now()->addMinutes(10));
-
-        $response = $this->actingAs($user)->postJson('/api/execute-radar-trade', [
-            'symbol' => 'SOLUSDT',
-            'direction' => 'LONG',
-            'mode' => 'paper',
-        ]);
+        $response = $this->actingAs($admin)->postJson('/api/execute-radar-trade', ['symbol' => 'SOLUSDT', 'direction' => 'LONG']);
 
         $response->assertStatus(200);
-        $response->assertJsonFragment(['success' => true]);
-        $this->assertDatabaseHas('trades', [
-            'symbol' => 'SOLUSDT',
-            'side' => 'LONG',
-            'mode' => 'paper',
-            'status' => 'OPEN',
-        ]);
+        $response->assertJsonFragment(['success' => true, 'mode' => 'paper']);
     }
 
-    public function test_radar_trade_blocked_if_coin_is_not_selected(): void
+    public function test_manual_trade_requires_the_manage_trading_permission(): void
     {
-        config(['trading.single_coin_strict' => true]);
-        $user = User::factory()->create();
-        TradingTargetManager::setActiveCoin('NEARUSDT');
+        $viewer = User::factory()->create(['role' => 'viewer']);
 
-        TradingAccount::create([
-            'mode' => 'paper',
-            'balance' => 20.0,
-            'initial_balance' => 20.0,
-            'is_running' => false,
-            'kill_switch' => false,
-        ]);
+        $response = $this->actingAs($viewer)->postJson('/api/execute-radar-trade', ['symbol' => 'SOLUSDT', 'direction' => 'LONG']);
 
-        $response = $this->actingAs($user)->postJson('/api/execute-radar-trade', [
-            'symbol' => 'SOLUSDT',
-            'direction' => 'LONG',
-            'mode' => 'paper',
-        ]);
-
-        $response->assertStatus(422);
-        $response->assertJsonFragment(['success' => false]);
-        $this->assertStringContainsString('Trading is strictly restricted to selected coin', $response->json('message'));
+        $response->assertStatus(403);
+        $this->assertSame(0, Trade::count());
     }
 
     public function test_stats_includes_cooldown_and_paused_reason_when_circuit_breaker_active(): void

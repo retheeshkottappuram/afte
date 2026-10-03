@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\CryptoSignal;
 use App\Services\Crypto\TelegramNotifier;
+use App\Services\Trading\TradingModeManager;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -129,19 +130,16 @@ class HealthCheckCommand extends Command
             }
         }
 
-        // 5. Sentinel Daemon Heartbeat
-        $heartbeat = (int) Cache::get('crypto:daemon:heartbeat', 0);
-        $daemonStatus = (string) Cache::get('crypto:daemon:status', 'STOPPED');
-        $pid = Cache::get('crypto:daemon:pid');
-        $ageSec = $heartbeat > 0 ? (now()->timestamp - $heartbeat) : 9999;
-        $daemonAlive = ($ageSec <= 90);
+        // 5. Cron trading engine heartbeat
+        $heartbeat = app(TradingModeManager::class)->heartbeat();
+        $engineAlive = in_array($heartbeat['state'], ['running', 'paused'], true);
 
-        $results['sentinel_daemon'] = [
-            'status' => $daemonAlive ? 'PASS' : 'WARN',
+        $results['trading_engine'] = [
+            'status' => $engineAlive ? 'PASS' : 'WARN',
             'latency_ms' => 0,
-            'details' => $daemonAlive
-                ? "{$daemonStatus} (PID: {$pid}, Heartbeat: {$ageSec}s ago)"
-                : "Inactive/Stopped (Last heartbeat: {$ageSec}s ago)",
+            'details' => $engineAlive
+                ? "Engine {$heartbeat['state']} (last cycle {$heartbeat['seconds_ago']}s ago)"
+                : 'Engine '.$heartbeat['state'].'. Check the hosting cron: * * * * * php artisan schedule:run',
         ];
 
         // Output results

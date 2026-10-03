@@ -2,49 +2,63 @@
 
 namespace App\Services\Trading;
 
+use App\Models\SystemLog;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Binance\BinanceFuturesClient;
+use App\Services\Notifications\TelegramNotifier;
 use Carbon\Carbon;
 
+/**
+ * Hard risk rules. Risk per trade is defined by the stop-loss distance, never by leverage.
+ *
+ *  - 2% of equity at risk per trade (min-notional trades allowed up to 3% on small accounts).
+ *  - Max positions scale with equity (1 below $25, 2 below $100, 3 above).
+ *  - Daily loss stop: -6% of start-of-day equity blocks entries until the next UTC day.
+ *  - Losing streak: 3 losses in a row pauses entries for 12 hours.
+ *  - Drawdown kill: -30% from peak equity engages the kill switch (manual reset).
+ */
 class RiskManager
 {
     public function __construct(
-        protected BinanceFuturesClient $client
-    ) {}
+        protected BinanceFuturesClient $client,
+        protected ?TelegramNotifier $notifier = null
+    ) {
+        $this->notifier ??= app(TelegramNotifier::class);
+    }
 
     /**
-     * Get active compounding stage configuration for an account.
+     * Describe the current account tier (used by the dashboard).
      *
-     * @return array{
-     *     stage: string,
-     *     max_equity: float,
-     *     max_positions: int,
-     *     default_leverage: int,
-     *     max_risk_pct: float,
-     *     min_score: int
-     * }
+     * @return array{stage: string, max_positions: int, default_leverage: int, max_risk_pct: float, min_score: int}
      */
     public function getCompoundingStage(TradingAccount $account): array
     {
-        $stages = (array) config('trading.stages');
-        $equity = $account->balance;
+        $equity = (float) $account->balance;
+        $label = match (true) {
+            $equity < 25.0 => 'Tier 1 (under $25)',
+            $equity < 100.0 => 'Tier 2 ($25-$100)',
+            default => 'Tier 3 ($100+)',
+        };
 
-        if ($equity < 25.0) {
-            $cfg = $stages['stage_1'] ?? [];
+        return [
+            'stage' => $label,
+            'max_positions' => $this->maxPositions($equity),
+            'default_leverage' => (int) config('trading.sizing.max_leverage', 10),
+            'max_risk_pct' => (float) config('trading.sizing.risk_per_trade_pct', 2.0),
+            'min_score' => 0,
+        ];
+    }
 
-            return array_merge(['stage' => 'Stage 1 (Seed $5-$25)'], $cfg);
+    public function maxPositions(float $equity): int
+    {
+        foreach ((array) config('trading.sizing.max_positions', [25 => 1, 100 => 2, PHP_INT_MAX => 3]) as $ceiling => $max) {
+            if ($equity < (float) $ceiling) {
+                return (int) $max;
+            }
         }
 
-        if ($equity < 100.0) {
-            $cfg = $stages['stage_2'] ?? [];
-
-            return array_merge(['stage' => 'Stage 2 (Acceleration $25-$100)'], $cfg);
-        }
-
-        $cfg = $stages['stage_3'] ?? [];
-
-        return array_merge(['stage' => 'Stage 3 (Scale $100-$500)'], $cfg);
+        return 1;
     }
 
     /**
@@ -54,21 +68,17 @@ class RiskManager
     {
         if ($account->mode === 'live' && $this->client->hasCredentials()) {
             try {
-                $balances = $this->client->forMode($account->mode)->getBalance();
+                $balances = $this->client->forMode('live')->getBalance();
                 foreach ($balances as $b) {
                     if (($b['asset'] ?? '') === 'USDT') {
-                        $avail = (float) ($b['availableBalance'] ?? $b['crossWalletBalance'] ?? 0.0);
-                        if ($avail > 0) {
-                            return round($avail, 4);
-                        }
+                        return round((float) ($b['availableBalance'] ?? $b['crossWalletBalance'] ?? 0.0), 4);
                     }
                 }
             } catch (\Throwable) {
-                // Fallback to local calculation if Binance API transient error
+                // Fall back to the local ledger on transient API errors
             }
         }
 
-        // Local calculation fallback: account balance minus margin used by currently open trades
         $openMargin = (float) Trade::where('mode', $account->mode)
             ->where('status', 'OPEN')
             ->sum('margin_used');
@@ -77,316 +87,192 @@ class RiskManager
     }
 
     /**
-     * Verify if account is permitted to take a new trade.
+     * Verify whether a new trade may be opened.
      *
      * @return array{allowed: bool, reason: string}
      */
-    public function canOpenTrade(
-        TradingAccount $account,
-        string $symbol,
-        int $signalScore,
-        bool $isManual = false,
-        bool $isReversal = false
-    ): array {
+    public function canOpenTrade(TradingAccount $account, string $symbol, ?string $side = null, bool $isManual = false): array
+    {
         if ($account->mode === 'live' && ! config('trading.allow_live_trading', false)) {
-            return ['allowed' => false, 'reason' => 'LIVE trading is disabled in this environment to prevent dual-instance collisions with production.'];
+            return ['allowed' => false, 'reason' => 'Live trading is disabled on this server (ALLOW_LIVE_TRADING=false).'];
         }
 
         if ($account->kill_switch) {
-            return ['allowed' => false, 'reason' => 'Emergency Kill Switch is ACTIVE. Trading halted.'];
+            return ['allowed' => false, 'reason' => 'Emergency kill switch is active. Trading halted until it is reset.'];
         }
 
-        if (! $isReversal && $account->paused_until !== null && $account->paused_until->isFuture()) {
-            $remaining = $account->paused_until->diffForHumans();
+        $this->rollTradingDay($account);
 
-            return ['allowed' => false, 'reason' => "Circuit breaker active after consecutive losses. Paused until {$remaining}."];
+        if ($this->checkDrawdownKill($account)) {
+            return ['allowed' => false, 'reason' => 'Drawdown limit reached: kill switch engaged.'];
+        }
+
+        if ($account->paused_until !== null && $account->paused_until->isFuture()) {
+            $reason = $account->pause_reason ?: 'Circuit breaker active';
+
+            return ['allowed' => false, 'reason' => "Circuit breaker: {$reason}. Paused until {$account->paused_until->toDateTimeString()} UTC."];
+        }
+
+        if ($this->checkDailyLossStop($account)) {
+            return ['allowed' => false, 'reason' => "Circuit breaker: {$account->pause_reason}."];
         }
 
         if (! $isManual && ! $account->is_running) {
-            return ['allowed' => false, 'reason' => 'Auto-trading is paused. Enable Auto-Trading to execute new signals.'];
+            return ['allowed' => false, 'reason' => 'Auto-trading is paused. Start the engine to take new signals.'];
         }
 
-        $stage = $this->getCompoundingStage($account);
+        $openTrades = Trade::where('mode', $account->mode)->where('status', 'OPEN')->get();
 
-        // Check Signal Score against stage requirements
-        if ($signalScore < (int) ($stage['min_score'] ?? 80)) {
-            return ['allowed' => false, 'reason' => "Signal score {$signalScore} is below required threshold {$stage['min_score']} for {$stage['stage']}."];
+        if ($openTrades->contains(fn (Trade $t): bool => $t->symbol === strtoupper($symbol))) {
+            return ['allowed' => false, 'reason' => "A trade on {$symbol} is already open."];
         }
 
-        // Restrict high-priced/heavyweight coins (BTC/ETH) in micro-account stage to preserve lot sizing
-        $excludedSymbols = (array) ($stage['exclude_symbols'] ?? []);
-        if (in_array(strtoupper($symbol), $excludedSymbols, true)) {
-            return ['allowed' => false, 'reason' => "Symbol {$symbol} is excluded in {$stage['stage']} to preserve micro-capital lot sizing."];
-        }
-
-        // Strict single-coin strategy enforcement: Only permitted monitored coins
-        if (config('trading.single_coin_strict', false) && ! TradingTargetManager::isCoinAllowed($symbol)) {
-            $activeCoin = TradingTargetManager::getActiveCoin();
-
-            return [
-                'allowed' => false,
-                'reason' => "Trading is strictly restricted to permitted monitored coins. Trades on {$symbol} are not allowed.",
-            ];
-        }
-
-        // Check if there is already an open trade for this exact symbol (unless flipping in a reversal)
-        if (! $isReversal) {
-            $existingTrade = Trade::where('mode', $account->mode)
-                ->where('symbol', $symbol)
-                ->where('status', 'OPEN')
-                ->exists();
-
-            if ($existingTrade) {
-                return ['allowed' => false, 'reason' => "An active trade for {$symbol} is already open."];
-            }
-        }
-
-        // Fetch all currently open trades
-        $openTrades = Trade::where('mode', $account->mode)
-            ->where('status', 'OPEN')
-            ->get();
-
-        $maxPositions = (int) ($stage['max_positions'] ?? 3);
-        $maxUnprotected = (int) ($stage['max_unprotected'] ?? 2);
-
-        // Classify trades into Unprotected (at-risk) vs Protected (risk-free runners)
-        $unprotectedTrades = $openTrades->filter(fn (Trade $t): bool => ! $t->isProtected());
-
-        // 1. Check total positions limit
+        $maxPositions = $this->maxPositions((float) $account->balance);
         if ($openTrades->count() >= $maxPositions) {
-            // If all active positions are protected/risk-free, allow up to 1 extra runner slot if available balance allows
-            $hasOnlyProtected = $unprotectedTrades->isEmpty();
-            $maxAllowedWithRunners = $maxPositions + 1;
+            return ['allowed' => false, 'reason' => "Max open positions ({$maxPositions}) reached for this account size."];
+        }
 
-            if (! $hasOnlyProtected || $openTrades->count() >= $maxAllowedWithRunners) {
-                return ['allowed' => false, 'reason' => "Max open positions limit ({$maxPositions}) reached for {$stage['stage']}."];
+        if ($side !== null) {
+            $sameSide = $openTrades->where('side', strtoupper($side))->count();
+            $maxSameSide = (int) config('trading.sizing.max_same_side', 2);
+            if ($sameSide >= $maxSameSide) {
+                return ['allowed' => false, 'reason' => "Already {$sameSide} {$side} positions open (correlation limit)."];
             }
         }
 
-        // 2. Check unprotected (at-risk) positions limit (prevents simultaneous risk exposure)
-        if ($unprotectedTrades->count() >= $maxUnprotected) {
-            return ['allowed' => false, 'reason' => "Active risk capacity reached ({$unprotectedTrades->count()}/{$maxUnprotected} unprotected positions). Waiting for current trade to lock breakeven or TP1."];
-        }
-
-        // 3. Check real Available Margin Balance
         $availMargin = $this->getAvailableBalance($account);
-        $minRequiredMargin = (float) config('trading.fund_management.min_available_margin', 0.50);
-
-        if ($availMargin < $minRequiredMargin) {
-            return ['allowed' => false, 'reason' => "Insufficient available margin (\${$availMargin}). Minimum \${$minRequiredMargin} free balance required to open an additional trade."];
+        $minRequired = (float) config('trading.fund_management.min_available_margin', 0.50);
+        if ($availMargin < $minRequired) {
+            return ['allowed' => false, 'reason' => "Insufficient free margin (\${$availMargin})."];
         }
 
-        return ['allowed' => true, 'reason' => 'Risk parameters and available capital approved.'];
+        return ['allowed' => true, 'reason' => 'Risk checks passed.'];
     }
 
     /**
-     * Compute a strictly bounded Stop Loss price guaranteeing mathematical asset protection.
-     * Prevents catastrophic capital loss on high-allocation single coin positions.
+     * Fallback stop when a signal carries none, or when it is on the wrong side of entry.
+     * Clamps an existing stop into the configured distance band.
      */
-    public function calculateAssetProtectionStopLoss(
-        string $direction,
-        float $entryPrice,
-        ?float $proposedSl = null
-    ): float {
+    public function calculateAssetProtectionStopLoss(string $direction, float $entryPrice, ?float $proposedSl = null): float
+    {
         if ($entryPrice <= 0) {
             return 0.0;
         }
 
         $isLong = in_array(strtoupper($direction), ['LONG', 'BUY'], true);
-        $minSlPct = (float) config('trading.risk.min_sl_distance_pct', 0.80);
-        $maxSlPct = (float) config('trading.risk.max_sl_distance_pct', 1.60);
-        $defaultSlPct = (float) config('trading.risk.default_sl_distance_pct', 1.25);
+        $sign = $isLong ? -1 : 1;
+        $minPct = (float) config('trading.strategy.min_sl_pct', 0.6);
+        $maxPct = (float) config('trading.strategy.max_sl_pct', 1.8);
+        $defaultPct = (float) config('trading.risk.default_sl_distance_pct', 1.25);
 
-        $defaultSl = $isLong
-            ? round($entryPrice * (1.0 - ($defaultSlPct / 100.0)), 6)
-            : round($entryPrice * (1.0 + ($defaultSlPct / 100.0)), 6);
+        $atPct = fn (float $pct): float => $entryPrice * (1.0 + $sign * $pct / 100.0);
 
-        if ($proposedSl === null || $proposedSl <= 0) {
-            return $defaultSl;
+        if ($proposedSl === null || $proposedSl <= 0 || ($isLong ? $proposedSl >= $entryPrice : $proposedSl <= $entryPrice)) {
+            return $atPct($defaultPct);
         }
 
-        // Direction sanity check: Long SL must be strictly below entry, Short SL must be strictly above entry
-        if ($isLong && $proposedSl >= $entryPrice) {
-            return $defaultSl;
-        }
-        if (! $isLong && $proposedSl <= $entryPrice) {
-            return $defaultSl;
-        }
+        $distancePct = abs($entryPrice - $proposedSl) / $entryPrice * 100.0;
 
-        $distancePct = (abs($entryPrice - $proposedSl) / $entryPrice) * 100.0;
-
-        // Clamp within asset protection bounds
-        if ($distancePct < $minSlPct) {
-            return $isLong
-                ? round($entryPrice * (1.0 - ($minSlPct / 100.0)), 6)
-                : round($entryPrice * (1.0 + ($minSlPct / 100.0)), 6);
-        }
-
-        if ($distancePct > $maxSlPct) {
-            return $isLong
-                ? round($entryPrice * (1.0 - ($maxSlPct / 100.0)), 6)
-                : round($entryPrice * (1.0 + ($maxSlPct / 100.0)), 6);
-        }
-
-        return round($proposedSl, 6);
+        return match (true) {
+            $distancePct < $minPct => $atPct($minPct),
+            $distancePct > $maxPct => $atPct($maxPct),
+            default => $proposedSl,
+        };
     }
 
     /**
-     * Compute safe position size, margin, and leverage for $5 -> $500 challenge.
-     * Enforces >= 50% available fund utilization in single-coin mode.
+     * Size a position from equity at risk and stop distance.
      *
-     * @return array{
-     *     allowed: bool,
-     *     quantity: float,
-     *     margin: float,
-     *     leverage: int,
-     *     risk_usd: float,
-     *     notional: float,
-     *     reason: string
-     * }
+     * @return array{allowed: bool, quantity: float, margin: float, amount_added: float, leverage: int, risk_usd: float, risk_pct: float, notional: float, reason: string}
      */
-    public function calculatePositionSize(
-        TradingAccount $account,
-        string $symbol,
-        float $entryPrice,
-        float $slPrice
-    ): array {
-        $stage = $this->getCompoundingStage($account);
-        $leverage = (int) ($stage['default_leverage'] ?? 10);
-        $maxRiskPct = (float) ($stage['max_risk_pct'] ?? 5.0);
+    public function calculatePositionSize(TradingAccount $account, string $symbol, float $entryPrice, float $slPrice): array
+    {
+        $reject = fn (string $reason): array => [
+            'allowed' => false, 'quantity' => 0.0, 'margin' => 0.0, 'amount_added' => 0.0, 'leverage' => 0,
+            'risk_usd' => 0.0, 'risk_pct' => 0.0, 'notional' => 0.0, 'reason' => $reason,
+        ];
 
         $slDistance = abs($entryPrice - $slPrice);
-        if ($slDistance <= 0 || $entryPrice <= 0) {
-            if ($entryPrice > 0) {
-                $slPrice = $this->calculateAssetProtectionStopLoss('LONG', $entryPrice, null);
-                $slDistance = abs($entryPrice - $slPrice);
-            } else {
-                return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => 'Invalid SL or entry price.'];
-            }
+        if ($entryPrice <= 0 || $slDistance <= 0) {
+            return $reject('Invalid entry or stop-loss price.');
         }
 
-        $slPct = $slDistance / $entryPrice;
-
-        // Determine Available Free Margin
-        $availMargin = $this->getAvailableBalance($account);
-
-        // Binance Minimum Notional enforcement ($5.00 minimum)
-        $minNotional = max(5.20, $this->client->getMinNotional($symbol));
-
-        // Check if an explicit amount added per trade (in USD) is configured
-        $configuredAmount = config('trading.fund_management.amount_per_trade');
-        $isSingleCoin = (bool) config('trading.single_coin_strict', false);
-        $singleCoinFundPct = (float) config('trading.fund_management.single_coin_fund_percent', 50.0);
-        $maxAllocPct = (float) config('trading.fund_management.max_fund_allocation_pct', 75.0);
-
-        if ($configuredAmount !== null && (float) $configuredAmount > 0) {
-            // User-configured exact margin amount added per trade
-            $targetMargin = max((float) $configuredAmount, $minNotional / $leverage);
-            $targetNotional = $targetMargin * $leverage;
-        } elseif ($isSingleCoin) {
-            // Dedicated Single-Coin Strategy: At least 50% of available funds utilized for the trade
-            $targetMargin = max($minNotional / $leverage, $availMargin * ($singleCoinFundPct / 100.0));
-            // Cap at maximum allocation safety ceiling (e.g. 75% margin, ensuring >= 25% liquidation shield)
-            $targetMargin = min($targetMargin, $availMargin * ($maxAllocPct / 100.0));
-            $targetNotional = max($minNotional, $targetMargin * $leverage);
-        } elseif ($account->balance < 25.0) {
-            // In Stage 1 ($3 - $25) multi-coin mode, size position close to minimum notional so multiple trades can run safely
-            $targetNotional = (float) config('trading.fund_management.stage1_target_notional', 5.25);
-            $targetNotional = max($minNotional, $targetNotional);
-        } else {
-            // For larger accounts, scale notional based on risk % and SL distance
-            $riskUsd = $account->balance * ($maxRiskPct / 100.0);
-            $targetNotional = max($minNotional, $riskUsd / $slPct);
-        }
-
-        $marginRequired = $targetNotional / $leverage;
-
-        // Ensure margin does not exceed available free margin (keep at least 25% safety buffer in single-coin mode, 15% in multi-coin)
-        $maxAffordableMargin = $availMargin * ($maxAllocPct / 100.0);
-
-        if ($marginRequired > $maxAffordableMargin) {
-            $targetNotional = $maxAffordableMargin * $leverage;
-            $marginRequired = $targetNotional / $leverage;
-
-            if ($targetNotional < $minNotional) {
-                return [
-                    'allowed' => false,
-                    'quantity' => 0,
-                    'margin' => 0,
-                    'amount_added' => 0,
-                    'leverage' => $leverage,
-                    'risk_usd' => 0,
-                    'notional' => 0,
-                    'reason' => "Available margin (\${$availMargin}) insufficient to fund Binance minimum notional (\${$minNotional}) at {$leverage}x leverage.",
-                ];
-            }
-        }
-
-        $rawQuantity = $targetNotional / $entryPrice;
-        $formattedQuantity = $this->client->formatQuantity($symbol, $rawQuantity);
+        $equity = max(0.0, (float) $account->balance);
+        $riskPct = (float) config('trading.sizing.risk_per_trade_pct', 2.0);
+        $smallAccountMaxRiskPct = (float) config('trading.sizing.small_account_max_risk_pct', 3.0);
+        $maxLeverage = (int) config('trading.sizing.max_leverage', 10);
+        $maxMarginPct = (float) config('trading.sizing.max_margin_pct', 90.0) / 100.0;
 
         $info = $this->client->getExchangeInfo()[$symbol] ?? null;
-        $step = (float) ($info['stepSize'] ?? 0.001);
+        $step = (float) ($info['stepSize'] ?? 0.0);
         $precision = (int) ($info['quantityPrecision'] ?? 3);
+        $minNotional = max(5.0, $this->client->getMinNotional($symbol)) * 1.01;
 
-        // Fallback: If target notional was smaller than 1 exchange lot step, check if 1 step is affordable
-        if ($formattedQuantity <= 0 && $step > 0) {
-            $stepNotional = $step * $entryPrice;
-            $stepMargin = $stepNotional / $leverage;
-            if ($stepMargin <= $maxAffordableMargin && $stepMargin <= ($availMargin * 0.45)) {
-                $formattedQuantity = round($step, $precision);
+        $quantity = $this->client->formatQuantity($symbol, ($equity * $riskPct / 100.0) / $slDistance);
+
+        if ($quantity * $entryPrice < $minNotional) {
+            // Smallest tradable size, rounded UP to the lot step
+            $minQty = $step > 0
+                ? round(ceil(($minNotional / $entryPrice) / $step) * $step, $precision)
+                : round($minNotional / $entryPrice, $precision);
+            $riskAtMin = $minQty * $slDistance;
+
+            if ($riskAtMin > $equity * $smallAccountMaxRiskPct / 100.0) {
+                $riskAtMinPct = $equity > 0 ? round($riskAtMin / $equity * 100, 1) : 100;
+
+                return $reject("Minimum order size would risk {$riskAtMinPct}% of equity (limit {$smallAccountMaxRiskPct}%). Stop too wide for this account size.");
             }
+
+            $quantity = $minQty;
         }
 
-        // Ensure lot size meets exchange minNotional ($5.00)
-        if ($formattedQuantity > 0 && ($formattedQuantity * $entryPrice) < $minNotional && $step > 0) {
-            while (($formattedQuantity * $entryPrice) < $minNotional) {
-                $candidateQty = round($formattedQuantity + $step, $precision);
-                if (($candidateQty * $entryPrice / $leverage) > $maxAffordableMargin) {
-                    break;
-                }
-                $formattedQuantity = $candidateQty;
-            }
+        if ($quantity <= 0) {
+            return $reject('Position size rounds to zero at this lot size.');
         }
 
-        if ($formattedQuantity <= 0) {
-            return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'amount_added' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => 'Calculated lot size resulted in 0 after precision rounding.'];
+        $notional = $quantity * $entryPrice;
+        $availMargin = $this->getAvailableBalance($account);
+        $usableMargin = $availMargin * $maxMarginPct;
+
+        if ($usableMargin <= 0) {
+            return $reject('No free margin available.');
         }
 
-        $finalNotional = $formattedQuantity * $entryPrice;
-        if ($finalNotional < $minNotional) {
-            return ['allowed' => false, 'quantity' => 0, 'margin' => 0, 'amount_added' => 0, 'leverage' => $leverage, 'risk_usd' => 0, 'notional' => 0, 'reason' => "Position notional (\${$finalNotional}) is below Binance minimum notional (\${$minNotional})."];
+        // Use at least 5x so margin is left for other positions; liquidation stays far beyond a <=1.8% stop.
+        $leverage = (int) max(min(5, $maxLeverage), ceil($notional / $usableMargin));
+        if ($leverage > $maxLeverage) {
+            return $reject("Free margin \${$availMargin} cannot fund a \$".round($notional, 2)." position at {$maxLeverage}x.");
         }
 
-        $finalMargin = round($finalNotional / $leverage, 4);
+        $margin = round($notional / $leverage, 4);
+        $riskUsd = round($quantity * $slDistance, 4);
 
         return [
             'allowed' => true,
-            'quantity' => $formattedQuantity,
-            'margin' => $finalMargin,
-            'amount_added' => $finalMargin,
+            'quantity' => $quantity,
+            'margin' => $margin,
+            'amount_added' => $margin,
             'leverage' => $leverage,
-            'risk_usd' => round($slDistance * $formattedQuantity, 4),
-            'notional' => round($finalNotional, 2),
-            'reason' => 'Calculated successfully within compounding risk and available fund limits.',
+            'risk_usd' => $riskUsd,
+            'risk_pct' => $equity > 0 ? round($riskUsd / $equity * 100, 2) : 0.0,
+            'notional' => round($notional, 2),
+            'reason' => 'Sized by stop distance and equity at risk.',
         ];
     }
 
     /**
-     * Handle trade closed event to update account balance, stats, and circuit breakers.
+     * Update account statistics and circuit breakers after a trade closes.
      */
     public function handleTradeClosed(TradingAccount $account, Trade $trade): void
     {
         $account->refresh();
+        $this->rollTradingDay($account);
         $pnl = (float) $trade->realized_pnl;
 
         $account->balance = round($account->balance + $pnl, 4);
         $account->equity = $account->balance;
         $account->total_trades += 1;
-
-        if ($account->balance > $account->peak_equity) {
-            $account->peak_equity = $account->balance;
-        }
+        $account->peak_equity = max((float) $account->peak_equity, $account->balance);
 
         if ($pnl > 0) {
             $account->winning_trades += 1;
@@ -396,19 +282,89 @@ class RiskManager
             $account->losing_trades += 1;
             $account->consecutive_wins = 0;
 
-            // Only increment consecutive losses if it was a genuine adverse loss (not tiny fee friction <= $0.015)
+            // Fee-only scratches do not count towards the losing streak
             if ($pnl < -0.015) {
                 $account->consecutive_losses += 1;
             }
 
-            // Circuit breaker: Check consecutive loss limit
-            $maxConsecutive = (int) config('trading.circuit_breakers.max_consecutive_losses', 4);
+            $maxConsecutive = (int) config('trading.circuit_breakers.max_consecutive_losses', 3);
             if ($account->consecutive_losses >= $maxConsecutive) {
-                $cooldownMinutes = (int) config('trading.circuit_breakers.loss_cooldown_minutes', 20);
-                $account->paused_until = Carbon::now()->addMinutes($cooldownMinutes);
+                $minutes = (int) config('trading.circuit_breakers.loss_cooldown_minutes', 720);
+                $this->pause($account, Carbon::now()->addMinutes($minutes), "{$account->consecutive_losses} losses in a row");
             }
         }
 
         $account->save();
+
+        $this->checkDailyLossStop($account);
+        $this->checkDrawdownKill($account);
+    }
+
+    /**
+     * Set the start-of-day equity reference at the first check of each UTC day.
+     */
+    public function rollTradingDay(TradingAccount $account): void
+    {
+        $today = Carbon::now('UTC')->startOfDay();
+
+        if ($account->day_start_date === null || ! $account->day_start_date->isSameDay($today)) {
+            $account->day_start_date = $today;
+            $account->day_start_equity = (float) $account->balance;
+            $account->save();
+        }
+    }
+
+    /**
+     * Engage the daily loss stop when today's loss exceeds the limit.
+     */
+    protected function checkDailyLossStop(TradingAccount $account): bool
+    {
+        $start = (float) ($account->day_start_equity ?? 0);
+        $limitPct = (float) config('trading.circuit_breakers.max_daily_loss_pct', 6.0);
+
+        if ($start <= 0 || $account->balance > $start * (1 - $limitPct / 100.0)) {
+            return false;
+        }
+
+        if ($account->paused_until === null || $account->paused_until->isPast()) {
+            $lossPct = round(($start - $account->balance) / $start * 100, 2);
+            $this->pause($account, Carbon::now('UTC')->addDay()->startOfDay(), "daily loss limit hit (-{$lossPct}%)");
+            $account->save();
+        }
+
+        return true;
+    }
+
+    /**
+     * Engage the kill switch when equity falls too far from its peak.
+     */
+    protected function checkDrawdownKill(TradingAccount $account): bool
+    {
+        $peak = (float) $account->peak_equity;
+        $limitPct = (float) config('trading.circuit_breakers.max_drawdown_pct', 30.0);
+
+        if ($peak <= 0 || $account->balance > $peak * (1 - $limitPct / 100.0)) {
+            return false;
+        }
+
+        if (! $account->kill_switch) {
+            $account->kill_switch = true;
+            $account->pause_reason = "drawdown -{$limitPct}% from peak \${$peak}";
+            $account->save();
+
+            SystemLog::write('risk', "[{$account->mode}] Kill switch engaged: {$account->pause_reason}.", 'error');
+            $this->notifier?->notifyRiskEvent($account->mode, 'Kill switch engaged', "Equity \${$account->balance} is {$limitPct}% below peak \${$peak}. Reset it manually from the dashboard after reviewing.");
+        }
+
+        return true;
+    }
+
+    protected function pause(TradingAccount $account, Carbon $until, string $reason): void
+    {
+        $account->paused_until = $until;
+        $account->pause_reason = $reason;
+
+        SystemLog::write('risk', "[{$account->mode}] Entries paused until {$until->toDateTimeString()} UTC: {$reason}.", 'warning');
+        $this->notifier?->notifyRiskEvent($account->mode, 'New entries paused', ucfirst($reason).". Resuming at {$until->toDateTimeString()} UTC. Open trades stay protected.");
     }
 }

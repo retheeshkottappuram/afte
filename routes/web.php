@@ -37,25 +37,30 @@ Route::middleware('auth')->group(function (): void {
         Route::get('/history', [DashboardController::class, 'history'])->name('api.history');
         Route::get('/equity-curve', [DashboardController::class, 'equityCurve'])->name('api.equity_curve');
         Route::get('/scan', [DashboardController::class, 'scanMarket'])->name('api.scan');
-        Route::post('/execute-radar-trade', [DashboardController::class, 'executeRadarTrade'])->name('api.execute_radar_trade');
         Route::get('/live-sync', [DashboardController::class, 'liveSync'])->name('api.live_sync');
-        Route::post('/lock-breakeven', [DashboardController::class, 'lockBreakeven'])->name('api.lock_breakeven');
-        Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');
-        Route::post('/close-all-positions', [DashboardController::class, 'closeAllPositions'])->name('api.close_all_positions');
-        Route::post('/kill-switch', [DashboardController::class, 'toggleKillSwitch'])->name('api.kill_switch');
-        Route::post('/toggle-auto-trading', [DashboardController::class, 'toggleAutoTrading'])->name('api.toggle_auto_trading');
-        Route::post('/resume-cooldown', [DashboardController::class, 'resumeCooldown'])->name('api.resume_cooldown');
         Route::post('/auto-tick', [DashboardController::class, 'autoTick'])->name('api.auto_tick');
         Route::post('/backtest', [DashboardController::class, 'runBacktest'])->name('api.backtest');
 
+        // Trading actions: require the manage_trading permission (admins always pass)
+        Route::middleware('permission:manage_trading')->group(function (): void {
+            Route::post('/execute-radar-trade', [DashboardController::class, 'executeRadarTrade'])->name('api.execute_radar_trade');
+            Route::post('/lock-breakeven', [DashboardController::class, 'lockBreakeven'])->name('api.lock_breakeven');
+            Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');
+            Route::post('/close-all-positions', [DashboardController::class, 'closeAllPositions'])->name('api.close_all_positions');
+            Route::post('/kill-switch', [DashboardController::class, 'toggleKillSwitch'])->name('api.kill_switch');
+            Route::post('/toggle-auto-trading', [DashboardController::class, 'toggleAutoTrading'])->name('api.toggle_auto_trading');
+            Route::post('/resume-cooldown', [DashboardController::class, 'resumeCooldown'])->name('api.resume_cooldown');
+            Route::post('/trading/mode', [DashboardController::class, 'setTradingMode'])->name('api.trading_mode');
+        });
+
         // Targeted Single-Coin Trading Strategy Endpoints
         Route::get('/trading-coin', [DashboardController::class, 'getTradingCoin'])->name('api.trading_coin.get');
-        Route::post('/trading-coin', [DashboardController::class, 'setTradingCoin'])->name('api.trading_coin.set');
+        Route::post('/trading-coin', [DashboardController::class, 'setTradingCoin'])->middleware('permission:manage_trading')->name('api.trading_coin.set');
 
         // 24/7 Trading Daemon Endpoints
         Route::get('/trading-daemon/status', [DashboardController::class, 'daemonStatus'])->name('api.trading_daemon.status');
-        Route::post('/trading-daemon/start', [DashboardController::class, 'startDaemon'])->name('api.trading_daemon.start');
-        Route::post('/trading-daemon/stop', [DashboardController::class, 'stopDaemon'])->name('api.trading_daemon.stop');
+        Route::post('/trading-daemon/start', [DashboardController::class, 'startDaemon'])->middleware('permission:manage_trading')->name('api.trading_daemon.start');
+        Route::post('/trading-daemon/stop', [DashboardController::class, 'stopDaemon'])->middleware('permission:manage_trading')->name('api.trading_daemon.stop');
         Route::get('/trading-daemon/logs', [DashboardController::class, 'daemonLogs'])->name('api.trading_daemon.logs');
     });
 

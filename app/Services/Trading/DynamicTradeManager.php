@@ -2,520 +2,437 @@
 
 namespace App\Services\Trading;
 
+use App\Models\SystemLog;
 use App\Models\Trade;
-use App\Services\AI\ActiveTradeMonitorAgent;
 use App\Services\Binance\BinanceFuturesClient;
+use App\Services\Crypto\BinanceClient;
+use App\Services\Crypto\Indicators;
 use App\Services\Notifications\TelegramNotifier;
-use Carbon\Carbon;
+use App\Services\Strategy\ExitPlan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
+/**
+ * The single owner of open-trade management (stop moves, partials, trailing, time stops, closes).
+ * Rules come from ExitPlan so live, paper and backtests behave the same.
+ */
 class DynamicTradeManager
 {
+    protected ExitPlan $exitPlan;
+
     public function __construct(
         protected BinanceFuturesClient $client,
         protected RiskManager $riskManager,
         protected TelegramNotifier $notifier,
-        protected ActiveTradeMonitorAgent $aiMonitor,
-        protected TradeReconciler $tradeReconciler
-    ) {}
+        protected TradeReconciler $tradeReconciler,
+        protected ExchangeOrders $exchangeOrders,
+        protected BinanceClient $marketData
+    ) {
+        $this->exitPlan = ExitPlan::fromConfig();
+    }
 
     /**
-     * Manage an active trade against current market price.
+     * Manage an open trade against the current mark price.
      *
      * @return array{status: string, message: string}
      */
     public function manageTrade(Trade $trade, ?float $currentPrice = null): array
     {
-        if (! $trade->isOpen()) {
-            return ['status' => 'ignored', 'message' => 'Trade is not open.'];
+        $lock = Cache::lock("trade-manage:{$trade->id}", 30);
+        if (! $lock->get()) {
+            return ['status' => 'locked', 'message' => "Trade {$trade->id} is being managed by another process."];
         }
 
         try {
-            $price = $currentPrice ?? $this->client->getMarkPrice($trade->symbol);
+            $trade->refresh();
+            if (! $trade->isOpen()) {
+                return ['status' => 'ignored', 'message' => 'Trade is not open.'];
+            }
+
+            if ($trade->mode === 'live') {
+                $syncResult = $this->syncLivePosition($trade);
+                if ($syncResult !== null) {
+                    return $syncResult;
+                }
+            }
+
+            $price = $currentPrice ?? (float) $this->client->getMarkPrice($trade->symbol);
             if ($price <= 0) {
                 return ['status' => 'error', 'message' => 'Invalid mark price.'];
             }
 
-            // Update highest / lowest peaks
-            if ($trade->highest_price === null || $price > $trade->highest_price) {
-                $trade->highest_price = $price;
-            }
-            if ($trade->lowest_price === null || $price < $trade->lowest_price) {
-                $trade->lowest_price = $price;
-            }
+            [$atr, $isBarClose] = $this->trailingInputs($trade);
+            $result = $this->exitPlan->evaluate($this->stateOf($trade), $price, $price, $price, now()->timestamp, $atr, $isBarClose);
+            $state = $result['state'];
 
-            // 1. Check Hard Stop Loss Breach
-            if ($this->isStopLossTriggered($trade, $price)) {
-                $reason = $trade->stage === 'TRAILING' ? 'TRAILING_STOP' : ($trade->be_locked ? 'BREAKEVEN_STOP' : 'STOP_LOSS');
+            $trade->highest_price = $state['highest'];
+            $trade->lowest_price = $state['lowest'];
 
-                return $this->closeTrade($trade, $price, $reason);
-            }
+            foreach ($result['events'] as $event) {
+                if ($event['type'] === 'close') {
+                    $exitPrice = $trade->mode === 'live' ? $price : $this->paperExitPrice($trade, (float) $event['price'], $price);
 
-            // 2. Active AI Sentinel Trade Monitor (Watches trend, volume, and momentum on every tick)
-            $aiResult = $this->aiMonitor->monitorTrade($trade, $price);
-            $meta = $trade->meta ?? [];
-            $meta['ai_monitor'] = [
-                'action' => $aiResult['action'],
-                'decision' => $aiResult['decision'],
-                'reason' => $aiResult['reason'],
-                'target_price' => $aiResult['target_price'] ?? null,
-                'metrics' => $aiResult['metrics'] ?? [],
-                'updated_at' => now()->toIso8601String(),
-            ];
-            $trade->meta = $meta;
+                    return $this->closeTradeUnlocked($trade, $exitPrice, (string) $event['reason']);
+                }
 
-            // If AI detects high-confidence structural trend invalidation (high volume breakdown through support):
-            if ($aiResult['action'] === 'EMERGENCY_EXIT') {
-                return $this->closeTrade($trade, $price, 'AI_TREND_INVALIDATION');
-            }
-
-            // If AI recommends elevated structural trailing stop behind swing pivot:
-            if ($aiResult['action'] === 'TRAIL_SL' && ! empty($aiResult['suggested_sl'])) {
-                $this->applyElevatedStopLoss($trade, (float) $aiResult['suggested_sl']);
-            }
-
-            // 3. Anti-Giveback Circuit: Check Peak Reversal Exit
-            // If the active AI monitor has confirmed the trend is intact and is letting the winner run
-            // toward extended targets, protect the runner from premature noise exit.
-            $aiHoldingWinner = ($aiResult['action'] ?? '') === 'HOLD' && ($aiResult['decision'] ?? '') === 'LET_WINNER_RUN';
-            if (! $aiHoldingWinner) {
-                $peakExit = $this->checkPeakReversalExit($trade, $price);
-                if ($peakExit !== null) {
-                    return $peakExit;
+                if ($event['type'] === 'partial') {
+                    $this->bookTp1($trade, (float) $event['price']);
                 }
             }
 
-            // 4. Check Breakeven Protection
-            $this->checkBreakeven($trade, $price);
-
-            // 5. Check Stagnant Dead-Position Timeout (Does NOT kill profitable trades)
-            $stagnationExit = $this->checkStagnationExit($trade, $price);
-            if ($stagnationExit !== null) {
-                return $stagnationExit;
-            }
-
-            // 6. Check TP1 Partial Booking
-            $this->checkTp1($trade, $price);
-
-            // 7. Check TP2 Partial Booking
-            $this->checkTp2($trade, $price);
-
-            // 8. Dynamic Trailing Stop & Stepped Ratchet Profit Protection on Runner
-            $this->updateTrailingStop($trade, $price);
-
+            $this->applyStop($trade, $state);
             $trade->save();
 
-            return ['status' => 'managed', 'message' => "Trade {$trade->id} active at \${$price}."];
-        } catch (\Exception $e) {
-            Log::error("Dynamic trade manager error on trade {$trade->id}: {$e->getMessage()}");
+            return ['status' => 'managed', 'message' => "Trade {$trade->id} {$trade->symbol} at {$price}, stop {$trade->current_sl}."];
+        } catch (Throwable $e) {
+            Log::error("[DynamicTradeManager] Trade {$trade->id} management error: {$e->getMessage()}");
 
             return ['status' => 'error', 'message' => $e->getMessage()];
+        } finally {
+            $lock->release();
         }
     }
 
     /**
-     * Check if stop loss level is breached.
-     */
-    protected function isStopLossTriggered(Trade $trade, float $currentPrice): bool
-    {
-        if ($trade->isLong()) {
-            return $currentPrice <= $trade->current_sl;
-        }
-
-        return $currentPrice >= $trade->current_sl;
-    }
-
-    /**
-     * Anti-Giveback Circuit: Peak Reversal Exit.
-     * Prevents large accumulated profits from turning into losses, while giving normal
-     * pullbacks ample room to breathe.
-     *
-     * @return array{status: string, message: string}|null
-     */
-    protected function checkPeakReversalExit(Trade $trade, float $currentPrice): ?array
-    {
-        $minPeakGainPct = (float) config('trading.management.peak_profit_min_gain_pct', 0.60);
-        $maxGivebackPct = (float) config('trading.management.peak_profit_giveback_pct', 35.0);
-
-        if ($trade->entry_price <= 0) {
-            return null;
-        }
-
-        $highestPrice = $trade->highest_price ?? $trade->entry_price;
-        $lowestPrice = $trade->lowest_price ?? $trade->entry_price;
-
-        $peakGainPct = $trade->isLong()
-            ? (($highestPrice - $trade->entry_price) / $trade->entry_price) * 100.0
-            : (($trade->entry_price - $lowestPrice) / $trade->entry_price) * 100.0;
-
-        if ($peakGainPct < $minPeakGainPct) {
-            return null;
-        }
-
-        $currentGainPct = $trade->isLong()
-            ? (($currentPrice - $trade->entry_price) / $trade->entry_price) * 100.0
-            : (($trade->entry_price - $currentPrice) / $trade->entry_price) * 100.0;
-
-        $givebackRatio = $peakGainPct > 0 ? (($peakGainPct - $currentGainPct) / $peakGainPct) * 100.0 : 0.0;
-
-        if (($givebackRatio >= $maxGivebackPct && $currentGainPct > 0.05) || ($currentGainPct <= 0.15 && $peakGainPct >= $minPeakGainPct)) {
-            Log::info("Peak profit protection triggered on trade {$trade->id}: Peak was +{$peakGainPct}%, current +{$currentGainPct}% ({$givebackRatio}% surrendered). Preserving profit!");
-
-            return $this->closeTrade($trade, $currentPrice, 'PEAK_PROFIT_PROTECTION');
-        }
-
-        return null;
-    }
-
-    /**
-     * Breakeven logic: locks in Entry + fee buffer when price reaches safe threshold.
-     * Prevents winning positions from ever turning into losses without choking on noise.
-     */
-    protected function checkBreakeven(Trade $trade, float $currentPrice): void
-    {
-        if ($trade->be_locked) {
-            return;
-        }
-
-        $gainPctThreshold = (float) config('trading.management.be_gain_pct', 0.45);
-        $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.08);
-        $roeThreshold = (float) config('trading.management.be_roe_threshold', 4.5);
-
-        $gainPct = $trade->isLong()
-            ? (($currentPrice - $trade->entry_price) / $trade->entry_price) * 100.0
-            : (($trade->entry_price - $currentPrice) / $trade->entry_price) * 100.0;
-
-        $currentRoe = $trade->calculateRoe($currentPrice);
-
-        if ($gainPct >= $gainPctThreshold || $currentRoe >= $roeThreshold) {
-            $newSl = $trade->isLong()
-                ? $trade->entry_price * (1.0 + ($bufferPct / 100.0))
-                : $trade->entry_price * (1.0 - ($bufferPct / 100.0));
-
-            $trade->current_sl = round($newSl, 6);
-            $trade->be_locked = true;
-            if ($trade->stage === 'ENTRY') {
-                $trade->stage = 'BE_LOCKED';
-            }
-
-            $this->updateExchangeStopLoss($trade, $trade->current_sl);
-            $this->notifier->notifyBreakevenLocked($trade, $currentPrice);
-        }
-    }
-
-    /**
-     * Dead-Position Timeout Pruner.
-     * Only closes flat, inactive positions that never gained traction, freeing capital.
-     * Never closes winning trades with positive momentum.
-     *
-     * @return array{status: string, message: string}|null
-     */
-    protected function checkStagnationExit(Trade $trade, float $currentPrice): ?array
-    {
-        if (! $trade->opened_at) {
-            return null;
-        }
-
-        $hardTimeout = (int) config('trading.management.max_hold_minutes', 0);
-        if ($hardTimeout <= 0) {
-            return null;
-        }
-
-        $ageMinutes = $trade->opened_at->diffInMinutes(Carbon::now());
-        if ($ageMinutes < $hardTimeout) {
-            return null;
-        }
-
-        // Never kill trades if AI Sentinel is actively monitoring or letting winner run
-        if ($this->aiMonitor !== null && $this->aiMonitor->shouldLetWinnerRun($trade, $currentPrice)) {
-            return null;
-        }
-
-        $gainPct = $trade->isLong()
-            ? (($currentPrice - $trade->entry_price) / $trade->entry_price) * 100.0
-            : (($trade->entry_price - $currentPrice) / $trade->entry_price) * 100.0;
-
-        // Only exit if trade has not hit TP1, is strictly non-profitable (gain <= 0.0%), and hard timeout is explicitly enabled
-        // Winning trades and consolidations with positive momentum are NEVER closed by time!
-        if (! $trade->tp1_hit && $gainPct <= 0.0) {
-            return $this->closeTrade($trade, $currentPrice, 'STAGNATION_TIMEOUT_EXIT');
-        }
-
-        return null;
-    }
-
-    /**
-     * TP1 Logic: Book 50% profit and guarantee breakeven lock.
-     */
-    protected function checkTp1(Trade $trade, float $currentPrice): void
-    {
-        if ($trade->tp1_hit) {
-            return;
-        }
-
-        $isHit = $trade->isLong()
-            ? ($currentPrice >= $trade->tp1_price)
-            : ($currentPrice <= $trade->tp1_price);
-
-        if (! $isHit) {
-            return;
-        }
-
-        $ratio = (float) config('trading.management.tp1_close_ratio', 0.40);
-        $closeQty = $this->client->formatQuantity($trade->symbol, $trade->quantity * $ratio);
-
-        if ($closeQty > 0 && $closeQty < $trade->remaining_quantity) {
-            $pnl = $trade->isLong()
-                ? ($currentPrice - $trade->entry_price) * $closeQty
-                : ($trade->entry_price - $currentPrice) * $closeQty;
-
-            $trade->realized_pnl = round($trade->realized_pnl + $pnl, 4);
-            $trade->remaining_quantity = round($trade->remaining_quantity - $closeQty, 6);
-            $trade->margin_used = round(($trade->remaining_quantity * $trade->entry_price) / max(1, $trade->leverage), 4);
-            $trade->tp1_hit = true;
-            $trade->stage = 'TP1_HIT';
-
-            // Ensure SL is elevated to at least Breakeven + small buffer (or lock1 SL)
-            $bufferPct = (float) config('trading.management.be_fee_buffer_pct', 0.08);
-            $lock1Sl = (float) config('trading.management.lock1_sl_pct', 0.18);
-            $minElevatedPct = max($bufferPct, $lock1Sl);
-            $targetSl = $trade->isLong()
-                ? round($trade->entry_price * (1.0 + ($minElevatedPct / 100.0)), 6)
-                : round($trade->entry_price * (1.0 - ($minElevatedPct / 100.0)), 6);
-            $trade->be_locked = true;
-            $this->applyElevatedStopLoss($trade, $targetSl);
-
-            $this->notifier->notifyTp1Hit($trade, $closeQty, round($pnl, 2));
-
-            if ($trade->mode === 'live') {
-                try {
-                    $client = $this->client->forMode($trade->mode);
-                    if ($client->hasCredentials()) {
-                        $closeSide = $trade->isLong() ? 'SELL' : 'BUY';
-                        $client->placeOrder([
-                            'symbol' => $trade->symbol,
-                            'side' => $closeSide,
-                            'type' => 'MARKET',
-                            'quantity' => $closeQty,
-                            'reduceOnly' => 'true',
-                        ]);
-                    }
-                } catch (\Exception $e) {
-                    Log::error("Failed to execute TP1 on Binance for {$trade->symbol}: {$e->getMessage()}");
-                }
-            }
-        }
-    }
-
-    /**
-     * TP2 Logic: Book 30% profit and trail SL to TP1 level.
-     */
-    protected function checkTp2(Trade $trade, float $currentPrice): void
-    {
-        if ($trade->tp2_hit || ! $trade->tp1_hit) {
-            return;
-        }
-
-        $isHit = $trade->isLong()
-            ? ($currentPrice >= $trade->tp2_price)
-            : ($currentPrice <= $trade->tp2_price);
-
-        if (! $isHit) {
-            return;
-        }
-
-        $ratio = (float) config('trading.management.tp2_close_ratio', 0.30);
-        $closeQty = $this->client->formatQuantity($trade->symbol, $trade->quantity * $ratio);
-
-        if ($closeQty > 0 && $closeQty < $trade->remaining_quantity) {
-            $pnl = $trade->isLong()
-                ? ($currentPrice - $trade->entry_price) * $closeQty
-                : ($trade->entry_price - $currentPrice) * $closeQty;
-
-            $trade->realized_pnl = round($trade->realized_pnl + $pnl, 4);
-            $trade->remaining_quantity = round($trade->remaining_quantity - $closeQty, 6);
-            $trade->margin_used = round(($trade->remaining_quantity * $trade->entry_price) / max(1, $trade->leverage), 4);
-            $trade->tp2_hit = true;
-            $trade->stage = 'TRAILING';
-
-            // Move SL up to TP1 price level or lock2 SL level!
-            $lock2Sl = (float) config('trading.management.lock2_sl_pct', 0.45);
-            $lock2TargetSl = $trade->isLong()
-                ? round($trade->entry_price * (1.0 + ($lock2Sl / 100.0)), 6)
-                : round($trade->entry_price * (1.0 - ($lock2Sl / 100.0)), 6);
-
-            $targetSl = $trade->isLong()
-                ? max($trade->tp1_price, $lock2TargetSl)
-                : min($trade->tp1_price, $lock2TargetSl);
-
-            $this->applyElevatedStopLoss($trade, $targetSl);
-
-            $this->notifier->notifyTp2Hit($trade, $closeQty, round($pnl, 2));
-
-            if ($trade->mode === 'live') {
-                try {
-                    $client = $this->client->forMode($trade->mode);
-                    if ($client->hasCredentials()) {
-                        $closeSide = $trade->isLong() ? 'SELL' : 'BUY';
-                        $client->placeOrder([
-                            'symbol' => $trade->symbol,
-                            'side' => $closeSide,
-                            'type' => 'MARKET',
-                            'quantity' => $closeQty,
-                            'reduceOnly' => 'true',
-                        ]);
-                    }
-                } catch (\Exception $e) {
-                    Log::error("Failed to execute TP2 on Binance for {$trade->symbol}: {$e->getMessage()}");
-                }
-            }
-        }
-    }
-
-    /**
-     * Dynamic Trailing Stop & High-Water Mark Stepped Profit Ratchet.
-     */
-    protected function updateTrailingStop(Trade $trade, float $currentPrice): void
-    {
-        // 1. High-Water Mark Stepped Ratchet Protection (permanently elevates SL as profit grows)
-        $peakGainPct = $trade->isLong()
-            ? ((($trade->highest_price ?? $currentPrice) - $trade->entry_price) / $trade->entry_price) * 100.0
-            : (($trade->entry_price - ($trade->lowest_price ?? $currentPrice)) / $trade->entry_price) * 100.0;
-
-        $lock1Gain = (float) config('trading.management.lock1_gain_pct', 0.45);
-        $lock1Sl = (float) config('trading.management.lock1_sl_pct', 0.18);
-        $lock2Gain = (float) config('trading.management.lock2_gain_pct', 0.90);
-        $lock2Sl = (float) config('trading.management.lock2_sl_pct', 0.45);
-
-        // Tier 3: Peak >= 1.50% (+15% ROE) -> Ratchet SL to lock in +0.95% profit (+9.5% ROE)
-        if ($peakGainPct >= 1.50) {
-            $steppedSl = $trade->isLong()
-                ? $trade->entry_price * 1.0095
-                : $trade->entry_price * 0.9905;
-            $this->applyElevatedStopLoss($trade, $steppedSl);
-        }
-        // Tier 2: Peak >= 0.90% (+9.0% ROE) -> Ratchet SL to lock in +0.45% profit (+4.5% ROE)
-        elseif ($peakGainPct >= $lock2Gain) {
-            $steppedSl = $trade->isLong()
-                ? $trade->entry_price * (1.0 + ($lock2Sl / 100.0))
-                : $trade->entry_price * (1.0 - ($lock2Sl / 100.0));
-            $this->applyElevatedStopLoss($trade, $steppedSl);
-        }
-        // Tier 1: Peak >= 0.45% (+4.5% ROE) -> Ratchet SL to lock in +0.18% profit (+1.8% ROE)
-        elseif ($peakGainPct >= $lock1Gain) {
-            $steppedSl = $trade->isLong()
-                ? $trade->entry_price * (1.0 + ($lock1Sl / 100.0))
-                : $trade->entry_price * (1.0 - ($lock1Sl / 100.0));
-            $this->applyElevatedStopLoss($trade, $steppedSl);
-        }
-
-        // 2. ATR Trailing Stop (active on final runner in TRAILING stage)
-        if ($trade->stage !== 'TRAILING') {
-            return;
-        }
-
-        $atr = (float) ($trade->meta['atr'] ?? ($trade->entry_price * 0.010));
-        $trailDist = $atr * (float) config('trading.management.trailing_sl_atr_mult', 1.4);
-
-        if ($trade->isLong()) {
-            $candidateSl = round(($trade->highest_price ?? $currentPrice) - $trailDist, 6);
-            $this->applyElevatedStopLoss($trade, $candidateSl);
-        } else {
-            $candidateSl = round(($trade->lowest_price ?? $currentPrice) + $trailDist, 6);
-            $this->applyElevatedStopLoss($trade, $candidateSl);
-        }
-    }
-
-    /**
-     * Helper to ratchet Stop Loss upward for Long (or downward for Short).
-     */
-    protected function applyElevatedStopLoss(Trade $trade, float $newSl): void
-    {
-        $newSl = round($newSl, 6);
-        $shouldUpdate = $trade->isLong()
-            ? ($newSl > $trade->current_sl)
-            : ($newSl < $trade->current_sl);
-
-        if ($shouldUpdate) {
-            $trade->current_sl = $newSl;
-            $this->updateExchangeStopLoss($trade, $trade->current_sl);
-        }
-    }
-
-    /**
-     * Close out remaining position and finalize trade.
+     * Close the remaining position. A live trade is only marked CLOSED once Binance shows it flat.
      *
      * @return array{status: string, message: string}
      */
     public function closeTrade(Trade $trade, float $exitPrice, string $reason): array
     {
-        $closeQty = $trade->remaining_quantity > 0 ? $trade->remaining_quantity : $trade->quantity;
+        $lock = Cache::lock("trade-manage:{$trade->id}", 30);
+        if (! $lock->block(10)) {
+            return ['status' => 'locked', 'message' => "Trade {$trade->id} is busy, try again."];
+        }
+
+        try {
+            $trade->refresh();
+            if (! $trade->isOpen()) {
+                return ['status' => 'closed', 'message' => "Trade {$trade->id} is already closed."];
+            }
+
+            return $this->closeTradeUnlocked($trade, $exitPrice, $reason);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Manually move the stop to breakeven (dashboard action).
+     */
+    public function lockBreakeven(Trade $trade): bool
+    {
+        $buffer = $trade->entry_price * $this->exitPlan->feeRate() * 2;
+        $state = $this->stateOf($trade);
+        $target = $trade->isLong() ? $trade->entry_price + $buffer : $trade->entry_price - $buffer;
+        $improves = $trade->isLong() ? $target > $state['current_sl'] : $target < $state['current_sl'];
+
+        if (! $improves) {
+            return false;
+        }
+
+        $state['current_sl'] = $target;
+        $trade->be_locked = true;
+        $trade->stage = $trade->stage === 'ENTRY' ? 'BE_LOCKED' : $trade->stage;
+        $this->applyStop($trade, $state);
+        $trade->save();
+
+        return true;
+    }
+
+    /**
+     * @return array{status: string, message: string}
+     */
+    protected function closeTradeUnlocked(Trade $trade, float $exitPrice, string $reason): array
+    {
         $exitOrderId = null;
 
         if ($trade->mode === 'live') {
-            try {
-                $client = $this->client->forMode($trade->mode);
-                if ($client->hasCredentials()) {
-                    if ($closeQty > 0) {
-                        $closeSide = $trade->isLong() ? 'SELL' : 'BUY';
-                        $orderRes = $client->placeOrder([
-                            'symbol' => $trade->symbol,
-                            'side' => $closeSide,
-                            'type' => 'MARKET',
-                            'quantity' => $client->formatQuantity($trade->symbol, $closeQty),
-                            'reduceOnly' => 'true',
-                        ]);
-                        $exitOrderId = $orderRes['orderId'] ?? null;
-                    }
-                    // Clean up any remaining exchange-side conditional orders
-                    $client->cancelAllAlgoOrders($trade->symbol);
-                    $client->cancelAllOrders($trade->symbol);
-                }
-            } catch (\Exception $e) {
-                Log::error("Failed to close live position on Binance for {$trade->symbol}: {$e->getMessage()}");
+            $result = $this->exchangeOrders->closeAndConfirmFlat($trade);
+
+            if (! $result['flat']) {
+                $meta = $trade->meta ?? [];
+                $meta['close_failed_at'] = now()->toIso8601String();
+                $meta['close_failed_reason'] = $result['message'];
+                $trade->meta = $meta;
+                $trade->save();
+
+                SystemLog::write('risk', "Close of {$trade->symbol} #{$trade->id} not confirmed: {$result['message']}", 'error');
+                $this->notifier->notifyRiskEvent('live', 'Close not confirmed', "{$trade->symbol} #{$trade->id} ({$reason}): {$result['message']} The trade stays OPEN and will be retried.");
+
+                return ['status' => 'error', 'message' => "Close not confirmed on Binance: {$result['message']}"];
             }
+
+            $exitOrderId = $result['order_id'];
+            $exitPrice = $result['avg_price'] ?? $exitPrice;
         }
 
         $trade->exit_price = $exitPrice;
         $trade->exit_reason = $reason;
+        $trade->closed_at = now();
 
-        // Truthfully reconcile trade (sourcing real fills, fees, and funding from Binance for live trades)
-        $this->tradeReconciler->reconcileClosedTrade($trade, $exitOrderId, $reason);
+        try {
+            $this->tradeReconciler->reconcileClosedTrade($trade, $exitOrderId, $reason);
+        } catch (Throwable $e) {
+            // The position IS flat on Binance; record an estimate and flag it for the daily reconciler.
+            Log::warning("[DynamicTradeManager] Reconciliation deferred for trade {$trade->id}: {$e->getMessage()}");
+            $this->tradeReconciler->reconcileEstimated($trade, $reason);
+            $meta = $trade->meta ?? [];
+            $meta['reconcile_pending'] = true;
+            $trade->meta = $meta;
+            $trade->save();
+        }
 
         return [
             'status' => 'closed',
-            'message' => "Trade {$trade->id} closed at \${$trade->exit_price}. Net PnL: \${$trade->net_pnl} ({$trade->pnl_percent}%). Reason: {$reason}.",
+            'message' => "Trade {$trade->id} {$trade->symbol} closed at {$trade->exit_price} ({$reason}). Net PnL \${$trade->net_pnl}.",
         ];
     }
 
     /**
-     * Update exchange-side Stop Loss on Binance Futures via Algo Orders API.
+     * Detect exchange-side fills (TP1 order, stop-loss) by comparing the live position size.
+     *
+     * @return array{status: string, message: string}|null
      */
-    protected function updateExchangeStopLoss(Trade $trade, float $newSl): void
+    protected function syncLivePosition(Trade $trade): ?array
     {
-        if ($trade->mode !== 'live') {
-            return;
+        if ($trade->opened_at && $trade->opened_at->diffInSeconds(now()) < 15) {
+            return null;
         }
 
         try {
-            $client = $this->client->forMode($trade->mode);
-            if (! $client->hasCredentials()) {
+            $amount = $this->client->forMode('live')->getPositionAmount($trade->symbol);
+        } catch (Throwable $e) {
+            Log::warning("[DynamicTradeManager] Position read failed for {$trade->symbol}: {$e->getMessage()}");
+
+            return null;
+        }
+
+        if ($amount === null) {
+            return null;
+        }
+
+        $expectedSign = $trade->isLong() ? 1 : -1;
+        $liveQty = $amount * $expectedSign > 0 ? abs($amount) : 0.0;
+
+        if ($liveQty <= 0) {
+            // Stop or target filled on the exchange.
+            $hint = $trade->tp1_hit ? 'TRAILING_STOP' : 'EXCHANGE_CLOSED';
+
+            return $this->closeTradeUnlocked($trade, (float) $trade->current_sl, $hint);
+        }
+
+        if (! $trade->tp1_hit && $liveQty < (float) $trade->remaining_quantity * 0.98) {
+            // TP1 take-profit order filled on the exchange.
+            $closedQty = (float) $trade->remaining_quantity - $liveQty;
+            $this->recordPartial($trade, (float) $trade->tp1_price, $closedQty);
+            $trade->remaining_quantity = $liveQty;
+            $this->afterTp1($trade);
+            $trade->save();
+        }
+
+        return null;
+    }
+
+    /**
+     * Book TP1 when the exit plan says the target was reached.
+     */
+    protected function bookTp1(Trade $trade, float $tp1Price): void
+    {
+        if ($trade->tp1_hit) {
+            return;
+        }
+
+        $closeQty = $this->client->formatQuantity($trade->symbol, (float) $trade->quantity * $this->exitPlan->tp1CloseRatio());
+        if ($closeQty <= 0 || $closeQty >= (float) $trade->remaining_quantity) {
+            // Lot too small to split: keep the whole position running with the tighter stop.
+            $trade->tp1_hit = true;
+            $trade->stage = 'TP1_HIT';
+
+            return;
+        }
+
+        if ($trade->mode === 'live') {
+            if (! empty($trade->meta['tp_order'])) {
+                // The exchange TP order fills it; syncLivePosition records it on the next pass.
                 return;
             }
 
-            // Cancel existing algo orders for symbol to avoid conflicting stops
-            $client->cancelAllAlgoOrders($trade->symbol);
+            try {
+                $this->client->forMode('live')->placeOrder([
+                    'symbol' => $trade->symbol,
+                    'side' => $trade->isLong() ? 'SELL' : 'BUY',
+                    'type' => 'MARKET',
+                    'quantity' => $closeQty,
+                    'reduceOnly' => 'true',
+                ]);
+            } catch (Throwable $e) {
+                Log::error("[DynamicTradeManager] TP1 market partial failed for {$trade->symbol}: {$e->getMessage()}");
 
-            // Place updated Stop Loss algo order
-            $closeSide = $trade->isLong() ? 'SELL' : 'BUY';
-            $res = $client->placeStopLoss($trade->symbol, $closeSide, $newSl, null, true);
-
-            $meta = $trade->meta ?? [];
-            $meta['binance_sl_algo_id'] = $res['algoId'] ?? null;
-            $trade->meta = $meta;
-            $trade->save();
-        } catch (\Throwable $e) {
-            Log::warning("Failed to update exchange Stop Loss on Binance for {$trade->symbol}: {$e->getMessage()}");
+                return;
+            }
         }
+
+        $this->recordPartial($trade, $tp1Price, $closeQty);
+        $trade->remaining_quantity = round((float) $trade->remaining_quantity - $closeQty, 8);
+        $this->afterTp1($trade);
+    }
+
+    protected function recordPartial(Trade $trade, float $price, float $quantity): void
+    {
+        $gross = ($price - $trade->entry_price) * $quantity * ($trade->isLong() ? 1 : -1);
+        $fee = $price * $quantity * $this->exitPlan->feeRate();
+
+        $meta = $trade->meta ?? [];
+        $meta['partial_gross'] = round((float) ($meta['partial_gross'] ?? 0) + $gross, 6);
+        $meta['partial_fee'] = round((float) ($meta['partial_fee'] ?? 0) + $fee, 6);
+        $meta['partial_qty'] = round((float) ($meta['partial_qty'] ?? 0) + $quantity, 8);
+        $trade->meta = $meta;
+        $trade->realized_pnl = round((float) $meta['partial_gross'] - (float) $meta['partial_fee'], 4);
+
+        $this->notifier->notifyTp1Hit($trade, $quantity, round($gross - $fee, 4));
+    }
+
+    /**
+     * After TP1: mark stage and lock +0.5R (ExitPlan moves the stop on the next evaluation too).
+     */
+    protected function afterTp1(Trade $trade): void
+    {
+        $trade->tp1_hit = true;
+        $trade->be_locked = true;
+        $trade->stage = 'TP1_HIT';
+        $trade->margin_used = round((float) $trade->remaining_quantity * $trade->entry_price / max(1, $trade->leverage), 4);
+
+        $state = $this->stateOf($trade);
+        $risk = abs($trade->entry_price - $trade->initial_sl);
+        $lockR = (float) config('trading.exits.after_tp1_lock_r', 0.5);
+        $target = $trade->entry_price + ($trade->isLong() ? 1 : -1) * $risk * $lockR;
+        if ($trade->isLong() ? $target > $state['current_sl'] : $target < $state['current_sl']) {
+            $state['current_sl'] = $target;
+        }
+
+        $this->applyStop($trade, $state);
+    }
+
+    /**
+     * Persist a stop move (and push it to the exchange for live trades, new-then-cancel-old).
+     *
+     * @param  array<string, mixed>  $state
+     */
+    protected function applyStop(Trade $trade, array $state): void
+    {
+        $newSl = (float) $state['current_sl'];
+        if (abs($newSl - (float) $trade->current_sl) < 1e-12) {
+            if ($state['be_locked'] && ! $trade->be_locked) {
+                $trade->be_locked = true;
+            }
+
+            return;
+        }
+
+        $improves = $trade->isLong() ? $newSl > $trade->current_sl : $newSl < $trade->current_sl;
+        if (! $improves) {
+            return;
+        }
+
+        if ($trade->mode === 'live') {
+            $formatted = $this->client->formatPrice($trade->symbol, $newSl);
+            if (! $this->exchangeOrders->replaceStop($trade, $formatted)) {
+                return;
+            }
+            $newSl = $formatted;
+        }
+
+        $wasBeLocked = $trade->be_locked;
+        $trade->current_sl = $newSl;
+        $trade->be_locked = $trade->be_locked || $state['be_locked'];
+
+        if ($trade->stage === 'ENTRY' && $trade->be_locked) {
+            $trade->stage = 'BE_LOCKED';
+        }
+        if ($trade->tp1_hit && $trade->stage !== 'TRAILING' && $this->isTrailing($trade)) {
+            $trade->stage = 'TRAILING';
+        }
+
+        if (! $wasBeLocked && $trade->be_locked && ! $trade->tp1_hit) {
+            $this->notifier->notifyBreakevenLocked($trade, $newSl);
+        }
+    }
+
+    protected function isTrailing(Trade $trade): bool
+    {
+        $risk = abs($trade->entry_price - $trade->initial_sl);
+        $lockR = (float) config('trading.exits.after_tp1_lock_r', 0.5);
+
+        return $risk > 0 && (($trade->current_sl - $trade->entry_price) * ($trade->isLong() ? 1 : -1)) / $risk > $lockR + 0.01;
+    }
+
+    /**
+     * ATR of the base timeframe, refreshed once per closed candle.
+     *
+     * @return array{0: ?float, 1: bool}
+     */
+    protected function trailingInputs(Trade $trade): array
+    {
+        if (! $trade->tp1_hit) {
+            return [null, false];
+        }
+
+        $interval = (string) ($trade->meta['interval'] ?? config('trading.strategy.base_interval', '1h'));
+        $barSeconds = $interval === '15m' ? 900 : ($interval === '4h' ? 14400 : 3600);
+        $currentBar = intdiv(now()->timestamp, $barSeconds);
+        $meta = $trade->meta ?? [];
+
+        if ((int) ($meta['last_trail_bar'] ?? 0) === $currentBar) {
+            return [null, false];
+        }
+
+        try {
+            $atr = Cache::remember("trail-atr:{$trade->symbol}:{$interval}:{$currentBar}", $barSeconds, function () use ($trade, $interval): ?float {
+                $candles = $this->marketData->klines($trade->symbol, $interval, 60);
+                $series = Indicators::atr($candles['highs'], $candles['lows'], $candles['closes'], 14);
+                $closedIndex = count($series) - 2;
+
+                return $closedIndex >= 0 && $series[$closedIndex] !== null ? (float) $series[$closedIndex] : null;
+            });
+        } catch (Throwable) {
+            $atr = isset($meta['atr']) ? (float) $meta['atr'] : null;
+        }
+
+        $meta['last_trail_bar'] = $currentBar;
+        $trade->meta = $meta;
+
+        return [$atr, $atr !== null];
+    }
+
+    protected function paperExitPrice(Trade $trade, float $plannedPrice, float $currentPrice): float
+    {
+        // A gap through the stop fills at the worse price.
+        if ($trade->isLong()) {
+            return min($plannedPrice, $currentPrice) > 0 ? min($plannedPrice, $currentPrice) : $plannedPrice;
+        }
+
+        return max($plannedPrice, $currentPrice);
+    }
+
+    /**
+     * @return array{side: string, entry: float, initial_sl: float, current_sl: float, tp1: float, tp2: float, tp1_hit: bool, be_locked: bool, highest: ?float, lowest: ?float, opened_at: int}
+     */
+    protected function stateOf(Trade $trade): array
+    {
+        return [
+            'side' => $trade->side,
+            'entry' => (float) $trade->entry_price,
+            'initial_sl' => (float) $trade->initial_sl,
+            'current_sl' => (float) $trade->current_sl,
+            'tp1' => (float) $trade->tp1_price,
+            'tp2' => (float) $trade->tp2_price,
+            'tp1_hit' => (bool) $trade->tp1_hit,
+            'be_locked' => (bool) $trade->be_locked,
+            'highest' => $trade->highest_price !== null ? (float) $trade->highest_price : null,
+            'lowest' => $trade->lowest_price !== null ? (float) $trade->lowest_price : null,
+            'opened_at' => ($trade->opened_at ?? $trade->created_at ?? now())->timestamp,
+        ];
     }
 }

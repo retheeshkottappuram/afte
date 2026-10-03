@@ -34,9 +34,29 @@ class TradeReconciler
     }
 
     /**
-     * Reconcile simulated paper trade ensuring realistic fees, stop distance, MAE/MFE.
+     * Reconcile a simulated paper trade with realistic fees, including TP1 partial profits.
      */
     protected function reconcilePaperTrade(Trade $trade, ?string $hintedReason = null): Trade
+    {
+        $this->applyEstimatedAccounting($trade, $hintedReason);
+        $this->finalize($trade);
+
+        return $trade;
+    }
+
+    /**
+     * Fallback accounting when exchange fills cannot be fetched yet. The position is known to be flat;
+     * figures are estimated from prices and the daily reconciler can correct them later.
+     */
+    public function reconcileEstimated(Trade $trade, ?string $hintedReason = null): Trade
+    {
+        $this->applyEstimatedAccounting($trade, $hintedReason);
+        $this->finalize($trade);
+
+        return $trade;
+    }
+
+    protected function applyEstimatedAccounting(Trade $trade, ?string $hintedReason): void
     {
         $exitPrice = $trade->exit_price ?: $trade->current_sl;
         if ($exitPrice <= 0) {
@@ -44,59 +64,39 @@ class TradeReconciler
         }
 
         $closeQty = $trade->remaining_quantity > 0 ? $trade->remaining_quantity : $trade->quantity;
-        if ($closeQty <= 0) {
-            $closeQty = $trade->quantity;
-        }
+        $direction = $trade->isLong() ? 1 : -1;
+        $feeRate = (float) config('trading.exits.fee_rate', 0.0005);
+        $meta = $trade->meta ?? [];
 
-        $grossPnl = $trade->isLong()
-            ? ($exitPrice - $trade->entry_price) * $closeQty
-            : ($trade->entry_price - $exitPrice) * $closeQty;
+        $partialGross = (float) ($meta['partial_gross'] ?? 0.0);
+        $partialFee = (float) ($meta['partial_fee'] ?? 0.0);
 
-        $entryNotional = $trade->quantity * $trade->entry_price;
-        $exitNotional = $closeQty * $exitPrice;
+        $grossPnl = ($exitPrice - $trade->entry_price) * $closeQty * $direction + $partialGross;
+        $commission = round(($trade->quantity * $trade->entry_price * $feeRate) + ($closeQty * $exitPrice * $feeRate) + $partialFee, 4);
+        $netPnl = round($grossPnl - $commission, 4);
 
-        // Realistic taker commission: 0.05% per leg = 0.10% round trip
-        $commission = round(($entryNotional * 0.0005) + ($exitNotional * 0.0005), 4);
-        if ($commission <= 0) {
-            $commission = round(($entryNotional + $exitNotional) * 0.0005, 4);
-        }
-
-        $fundingFee = 0.0;
-        $netPnl = round($grossPnl - $commission + $fundingFee, 4);
-
-        $reason = $hintedReason ?: ($trade->exit_reason ?: 'MANUAL_CLOSE');
-        $stopDistance = round(abs($trade->entry_price - $trade->initial_sl), 8);
-
-        $mae = 0.0;
-        $mfe = 0.0;
-        if ($trade->isLong()) {
-            if ($trade->lowest_price !== null && $trade->lowest_price < $trade->entry_price) {
-                $mae = round(($trade->entry_price - $trade->lowest_price) * $trade->quantity, 4);
-            }
-            if ($trade->highest_price !== null && $trade->highest_price > $trade->entry_price) {
-                $mfe = round(($trade->highest_price - $trade->entry_price) * $trade->quantity, 4);
-            }
-        } else {
-            if ($trade->highest_price !== null && $trade->highest_price > $trade->entry_price) {
-                $mae = round(($trade->highest_price - $trade->entry_price) * $trade->quantity, 4);
-            }
-            if ($trade->lowest_price !== null && $trade->lowest_price < $trade->entry_price) {
-                $mfe = round(($trade->entry_price - $trade->lowest_price) * $trade->quantity, 4);
-            }
-        }
+        [$mae, $mfe] = $this->excursions($trade);
 
         $trade->exit_price = $exitPrice;
-        $trade->exit_reason = $reason;
+        $trade->exit_reason = $hintedReason ?: ($trade->exit_reason ?: 'MANUAL_CLOSE');
         $trade->gross_pnl = round($grossPnl, 4);
         $trade->commission = $commission;
-        $trade->funding_fee = $fundingFee;
+        $trade->funding_fee = 0.0;
         $trade->net_pnl = $netPnl;
         $trade->realized_pnl = $netPnl;
         $trade->fee_paid = $commission;
-        $trade->pnl_percent = $trade->margin_used > 0 ? round(($netPnl / $trade->margin_used) * 100, 2) : 0.0;
-        $trade->stop_distance = $stopDistance;
+        $initialMargin = $trade->leverage > 0 ? $trade->quantity * $trade->entry_price / $trade->leverage : $trade->margin_used;
+        $trade->pnl_percent = $initialMargin > 0 ? round(($netPnl / $initialMargin) * 100, 2) : 0.0;
+        $trade->stop_distance = round(abs($trade->entry_price - $trade->initial_sl), 8);
         $trade->mae = $mae;
         $trade->mfe = $mfe;
+    }
+
+    /**
+     * Mark the trade closed, update account statistics and notify.
+     */
+    protected function finalize(Trade $trade): void
+    {
         $trade->remaining_quantity = 0.0;
         $trade->status = 'CLOSED';
         $trade->stage = 'CLOSED';
@@ -105,9 +105,25 @@ class TradeReconciler
 
         $account = TradingAccount::getForMode($trade->mode);
         $this->riskManager->handleTradeClosed($account, $trade);
+        $account->refresh();
         $this->notifier->notifyTradeClosed($trade, $account->balance);
+    }
 
-        return $trade;
+    /**
+     * Maximum adverse / favourable excursion in USD over the full position size.
+     *
+     * @return array{0: float, 1: float}
+     */
+    protected function excursions(Trade $trade): array
+    {
+        $high = $trade->highest_price ?? $trade->entry_price;
+        $low = $trade->lowest_price ?? $trade->entry_price;
+
+        if ($trade->isLong()) {
+            return [round(max(0, $trade->entry_price - $low) * $trade->quantity, 4), round(max(0, $high - $trade->entry_price) * $trade->quantity, 4)];
+        }
+
+        return [round(max(0, $high - $trade->entry_price) * $trade->quantity, 4), round(max(0, $trade->entry_price - $low) * $trade->quantity, 4)];
     }
 
     /**

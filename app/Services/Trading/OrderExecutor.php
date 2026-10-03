@@ -2,234 +2,330 @@
 
 namespace App\Services\Trading;
 
+use App\Models\SystemLog;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\TradingSignal;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
+use App\Services\Strategy\ExitPlan;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
+/**
+ * Opens positions. Live entries are only kept when an exchange-side stop-loss
+ * is confirmed; otherwise the position is closed immediately.
+ */
 class OrderExecutor
 {
     public function __construct(
         protected BinanceFuturesClient $client,
         protected RiskManager $riskManager,
-        protected TelegramNotifier $notifier
+        protected TelegramNotifier $notifier,
+        protected ExchangeOrders $exchangeOrders
     ) {}
 
     /**
-     * Execute an approved trading signal.
+     * Execute a strategy signal in the given mode.
      *
-     * @param  array<string, mixed>  $signal
-     * @param  array{approved: bool, confidence: int, regime: string, reason: string}  $aiResult
+     * @param  array<string, mixed>  $signal  keys: symbol, direction|side, price, initial_sl, setup, setup_label, interval, grade, score, indicators, ai_probability
      * @return array{status: string, trade: ?Trade, message: string}
      */
-    public function executeSignal(array $signal, array $aiResult, string $mode = 'paper', bool $isManual = false): array
+    public function executeSignal(array $signal, string $mode = 'paper', bool $isManual = false): array
     {
-        $account = TradingAccount::getForMode($mode);
         $symbol = TradingTargetManager::normalizeSymbol((string) $signal['symbol']);
-        $score = (int) $signal['score'];
+        $direction = $this->direction($signal);
+        $isLong = $direction === 'LONG';
+        $referencePrice = (float) ($signal['price'] ?? 0);
+        $structuralSl = (float) ($signal['initial_sl'] ?? 0);
 
-        // 0. Strict single-coin strategy gate: Block any coin other than permitted monitored coins
-        if (config('trading.single_coin_strict', false) && ! TradingTargetManager::isCoinAllowed($symbol)) {
-            $activeCoin = TradingTargetManager::getActiveCoin();
-            Log::warning("OrderExecutor: Blocked trade for {$symbol}. Active strategy is locked to {$activeCoin}.");
-
-            return [
-                'status' => 'rejected',
-                'trade' => null,
-                'message' => "Trading is restricted to permitted monitored coins. Trades on {$symbol} are not allowed.",
-            ];
+        if ($referencePrice <= 0 || $structuralSl <= 0 || ($isLong ? $structuralSl >= $referencePrice : $structuralSl <= $referencePrice)) {
+            return $this->rejected("Signal for {$symbol} has an invalid entry/stop-loss.");
         }
 
-        $isReversal = (bool) ($signal['is_reversal'] ?? false);
-
-        // 1. Verify Risk Engine permission
-        $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $score, $isManual, $isReversal);
-        if (! $canOpen['allowed']) {
-            return ['status' => 'rejected', 'trade' => null, 'message' => $canOpen['reason']];
+        $slPct = abs($referencePrice - $structuralSl) / $referencePrice * 100;
+        $minSlPct = (float) config('trading.strategy.min_sl_pct', 0.6);
+        $maxSlPct = (float) config('trading.strategy.max_sl_pct', 1.8);
+        if ($slPct > $maxSlPct + 0.0001) {
+            return $this->rejected(sprintf('Stop-loss %.2f%% is wider than the %.1f%% limit. Trade skipped instead of widening risk.', $slPct, $maxSlPct));
+        }
+        if ($slPct < $minSlPct) {
+            $structuralSl = $this->riskManager->calculateAssetProtectionStopLoss($direction, $referencePrice, $structuralSl);
         }
 
-        $entryPrice = (float) $signal['price'];
-        $direction = strtoupper((string) ($signal['direction'] ?? ($signal['side'] === 'BUY' ? 'LONG' : 'SHORT')));
-
-        // Replicate exact Stop Loss from SignalAlgo Pro chart signal or compute asset protection
-        $initialSl = (isset($signal['initial_sl']) && (float) $signal['initial_sl'] > 0)
-            ? (float) $signal['initial_sl']
-            : $this->riskManager->calculateAssetProtectionStopLoss($direction, $entryPrice, null);
-        $signal['initial_sl'] = $initialSl;
-
-        // Align Take Profit levels if missing or compressed
-        $slDist = abs($entryPrice - $initialSl);
-        if (empty($signal['tp1']) || (float) $signal['tp1'] <= 0) {
-            $signal['tp1'] = $direction === 'LONG' ? round($entryPrice + ($slDist * 1.35), 6) : round($entryPrice - ($slDist * 1.35), 6);
-        }
-        if (empty($signal['tp2']) || (float) $signal['tp2'] <= 0) {
-            $signal['tp2'] = $direction === 'LONG' ? round($entryPrice + ($slDist * 2.80), 6) : round($entryPrice - ($slDist * 2.80), 6);
+        $lock = Cache::lock("trade-entry:{$mode}:{$symbol}", 30);
+        if (! $lock->get()) {
+            return $this->rejected("Another process is already opening {$symbol}.");
         }
 
-        // 2. Calculate safe position sizing (>= 50% fund utilization in single-coin mode, Binance minNotional $5 compliant)
-        $sizing = $this->riskManager->calculatePositionSize(
-            $account,
-            $symbol,
-            $entryPrice,
-            $initialSl
-        );
-
-        if (! $sizing['allowed']) {
-            return ['status' => 'rejected', 'trade' => null, 'message' => $sizing['reason']];
-        }
-
-        $quantity = (float) $sizing['quantity'];
-        $margin = (float) $sizing['margin'];
-        $leverage = (int) $sizing['leverage'];
-        $side = $signal['direction'];
-        $binanceOrderId = null;
-
-        // 3. Live Execution
-        if ($mode === 'live') {
-            if (! config('trading.allow_live_trading', false)) {
-                Log::warning("OrderExecutor: Blocked LIVE trade for {$symbol}. Live order execution is disabled in this environment (allow_live_trading is false).");
-
-                return [
-                    'status' => 'rejected',
-                    'trade' => null,
-                    'message' => 'Live order execution is disabled in this environment to prevent collisions with the production server.',
-                ];
+        try {
+            $account = TradingAccount::getForMode($mode);
+            $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $direction, $isManual);
+            if (! $canOpen['allowed']) {
+                return $this->rejected($canOpen['reason']);
             }
 
-            try {
-                $client = $this->client->forMode($mode);
-                try {
-                    $client->setMarginType($symbol, 'ISOLATED');
-                } catch (\Throwable) {
-                    // Ignored if margin type cannot be adjusted or is already isolated
-                }
-                try {
-                    $client->setLeverage($symbol, $leverage);
-                } catch (\Throwable) {
-                    // Ignored if leverage is already set
-                }
-
-                $binanceSide = $side === 'LONG' ? 'BUY' : 'SELL';
-                $orderResult = $client->placeOrder([
-                    'symbol' => $symbol,
-                    'side' => $binanceSide,
-                    'type' => 'MARKET',
-                    'quantity' => $client->formatQuantity($symbol, $quantity),
-                ]);
-
-                $binanceOrderId = (string) ($orderResult['orderId'] ?? null);
-                if (isset($orderResult['avgPrice']) && (float) $orderResult['avgPrice'] > 0) {
-                    $entryPrice = (float) $orderResult['avgPrice'];
-                    $signal['initial_sl'] = $this->riskManager->calculateAssetProtectionStopLoss($direction, $entryPrice, $initialSl);
-                }
-
-                // Place Native Exchange Stop Loss & Take Profit on Binance via Algo Orders API
-                $slAlgoId = null;
-                $tpAlgoId = null;
-                $closeSide = $side === 'LONG' ? 'SELL' : 'BUY';
-
-                try {
-                    $slRes = $client->placeStopLoss($symbol, $closeSide, (float) $signal['initial_sl'], $quantity, true);
-                    $slAlgoId = (string) ($slRes['algoId'] ?? ($slRes['orderId'] ?? null));
-                    Log::info("Placed exchange-side asset protection SL for {$symbol} at \${$signal['initial_sl']} (ID: {$slAlgoId})");
-                } catch (\Throwable $slEx) {
-                    Log::warning("Failed to place native SL on Binance for {$symbol}: {$slEx->getMessage()}");
-                }
-
-                try {
-                    $tp1Ratio = (float) config('trading.management.tp1_close_ratio', 0.33);
-                    $tpQty = $client->formatQuantity($symbol, $quantity * $tp1Ratio);
-                    if ($tpQty > 0) {
-                        $tpRes = $client->placeTakeProfit($symbol, $closeSide, (float) $signal['tp1'], $tpQty, false);
-                        $tpAlgoId = (string) ($tpRes['algoId'] ?? null);
-                    }
-                } catch (\Throwable $tpEx) {
-                    Log::warning("Failed to place native TP on Binance for {$symbol}: {$tpEx->getMessage()}");
-                }
-
-                $client->clearAccountCache();
-            } catch (\Exception $e) {
-                Log::error("Failed to place live order on Binance: {$e->getMessage()}");
-
-                return ['status' => 'error', 'trade' => null, 'message' => "Binance order failed: {$e->getMessage()}"];
+            $sizing = $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl);
+            if (! $sizing['allowed']) {
+                return $this->rejected($sizing['reason']);
             }
+
+            $riskDistance = abs($referencePrice - $structuralSl);
+
+            return $mode === 'live'
+                ? $this->openLive($signal, $symbol, $direction, $riskDistance, $sizing, $isManual)
+                : $this->openPaper($signal, $symbol, $direction, $referencePrice, $riskDistance, $sizing, $mode, $isManual);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $signal
+     * @param  array<string, mixed>  $sizing
+     * @return array{status: string, trade: ?Trade, message: string}
+     */
+    protected function openPaper(array $signal, string $symbol, string $direction, float $referencePrice, float $riskDistance, array $sizing, string $mode, bool $isManual): array
+    {
+        $slippage = (float) config('trading.exits.paper_slippage', 0.0003);
+        $fillPrice = $direction === 'LONG' ? $referencePrice * (1 + $slippage) : $referencePrice * (1 - $slippage);
+
+        $trade = $this->recordTrade($signal, $symbol, $direction, $fillPrice, $riskDistance, $sizing, $mode, null, [], $isManual);
+
+        return ['status' => 'opened', 'trade' => $trade, 'message' => $this->openedMessage($trade, $sizing)];
+    }
+
+    /**
+     * @param  array<string, mixed>  $signal
+     * @param  array<string, mixed>  $sizing
+     * @return array{status: string, trade: ?Trade, message: string}
+     */
+    protected function openLive(array $signal, string $symbol, string $direction, float $riskDistance, array $sizing, bool $isManual): array
+    {
+        if (! config('trading.allow_live_trading', false)) {
+            return $this->rejected('Live trading is disabled on this server (ALLOW_LIVE_TRADING=false).');
         }
 
-        $setupTag = $aiResult['regime'] ?? ($signal['grade'] ?? 'STANDARD');
-        $stopDistance = round(abs($entryPrice - (float) $signal['initial_sl']), 8);
-        $btcTrend = $signal['indicators']['btc_trend'] ?? null;
-        if (! $btcTrend) {
-            try {
-                $btcTrend = app(MarketEngine::class)->getBtcMarketTrend()['trend'] ?? 'NEUTRAL';
-            } catch (\Throwable) {
-                $btcTrend = 'NEUTRAL';
-            }
+        $client = $this->client->forMode('live');
+        if (! $client->hasCredentials()) {
+            return $this->rejected('Binance API keys are not configured.');
         }
 
-        // 4. Create Trade Record
+        try {
+            $client->setMarginType($symbol, 'ISOLATED');
+            $this->setLeverage($client, $symbol, (int) $sizing['leverage']);
+        } catch (Throwable $e) {
+            return ['status' => 'error', 'trade' => null, 'message' => "Entry aborted, could not set isolated margin/leverage: {$e->getMessage()}"];
+        }
+
+        try {
+            $order = $client->placeOrder([
+                'symbol' => $symbol,
+                'side' => $direction === 'LONG' ? 'BUY' : 'SELL',
+                'type' => 'MARKET',
+                'quantity' => $client->formatQuantity($symbol, (float) $sizing['quantity']),
+                'newOrderRespType' => 'RESULT',
+            ]);
+        } catch (Throwable $e) {
+            Log::error("[OrderExecutor] Live entry rejected for {$symbol}: {$e->getMessage()}");
+
+            return ['status' => 'error', 'trade' => null, 'message' => "Binance entry order failed: {$e->getMessage()}"];
+        }
+
+        $fillPrice = (float) ($order['avgPrice'] ?? 0);
+        if ($fillPrice <= 0) {
+            $fillPrice = (float) $client->getMarkPrice($symbol);
+        }
+        $filledQty = (float) ($order['executedQty'] ?? 0);
+        if ($filledQty > 0) {
+            $sizing['quantity'] = $filledQty;
+            $sizing['margin'] = round($filledQty * $fillPrice / max(1, (int) $sizing['leverage']), 4);
+        }
+
+        $exitPlan = ExitPlan::fromConfig();
+        $stopLoss = $direction === 'LONG' ? $fillPrice - $riskDistance : $fillPrice + $riskDistance;
+        $targets = $exitPlan->targets($direction, $fillPrice, $stopLoss);
+
+        // Exchange-side stop is mandatory: no stop, no position.
+        try {
+            $slRef = $this->exchangeOrders->placeStop($symbol, $direction, $stopLoss, (float) $sizing['quantity']);
+        } catch (Throwable $e) {
+            return $this->emergencyExit($symbol, $direction, (float) $sizing['quantity'], $e->getMessage());
+        }
+
+        $tpRef = null;
+        try {
+            $tpQty = $client->formatQuantity($symbol, (float) $sizing['quantity'] * $exitPlan->tp1CloseRatio());
+            if ($tpQty > 0) {
+                $tpRef = $this->exchangeOrders->placeTakeProfit($symbol, $direction, $targets['tp1'], $tpQty);
+            }
+        } catch (Throwable $e) {
+            Log::warning("[OrderExecutor] TP1 order not placed for {$symbol}; software will book TP1 instead: {$e->getMessage()}");
+        }
+
+        $client->clearAccountCache();
+
+        $trade = $this->recordTrade($signal, $symbol, $direction, $fillPrice, $riskDistance, $sizing, 'live', isset($order['orderId']) ? (string) $order['orderId'] : null, [
+            'sl_order' => $slRef,
+            'tp_order' => $tpRef,
+            'binance_sl_algo_id' => $slRef['id'],
+            'binance_tp_algo_id' => $tpRef['id'] ?? null,
+        ], $isManual);
+
+        return ['status' => 'opened', 'trade' => $trade, 'message' => $this->openedMessage($trade, $sizing)];
+    }
+
+    /**
+     * Treat "already set" leverage responses as success; any other failure aborts the entry.
+     */
+    protected function setLeverage(BinanceFuturesClient $client, string $symbol, int $leverage): void
+    {
+        try {
+            $client->setLeverage($symbol, $leverage);
+        } catch (Throwable $e) {
+            if (! str_contains($e->getMessage(), '-4028') && ! str_contains($e->getMessage(), 'No need to change')) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * Close an unprotected position right after entry when its stop could not be placed.
+     *
+     * @return array{status: string, trade: ?Trade, message: string}
+     */
+    protected function emergencyExit(string $symbol, string $direction, float $quantity, string $error): array
+    {
+        $tempTrade = new Trade(['symbol' => $symbol, 'side' => $direction, 'mode' => 'live', 'quantity' => $quantity, 'remaining_quantity' => $quantity, 'meta' => []]);
+        $result = $this->exchangeOrders->closeAndConfirmFlat($tempTrade);
+
+        $details = "Stop-loss could not be placed for {$symbol} ({$error}). ".($result['flat']
+            ? 'The position was closed immediately.'
+            : "EMERGENCY CLOSE FAILED: {$result['message']} Close it manually on Binance now.");
+
+        SystemLog::write('risk', $details, 'error');
+        $this->notifier->notifyRiskEvent('live', 'Stop-loss placement failed', $details);
+
+        return ['status' => 'error', 'trade' => null, 'message' => $details];
+    }
+
+    /**
+     * @param  array<string, mixed>  $signal
+     * @param  array<string, mixed>  $sizing
+     * @param  array<string, mixed>  $exchangeMeta
+     */
+    protected function recordTrade(array $signal, string $symbol, string $direction, float $fillPrice, float $riskDistance, array $sizing, string $mode, ?string $orderId, array $exchangeMeta, bool $isManual): Trade
+    {
+        $stopLoss = $direction === 'LONG' ? $fillPrice - $riskDistance : $fillPrice + $riskDistance;
+        $targets = ExitPlan::fromConfig()->targets($direction, $fillPrice, $stopLoss);
+        $setup = (string) ($signal['setup'] ?? $signal['setup_type'] ?? 'SIGNAL');
+        $grade = (string) ($signal['grade'] ?? 'B');
+        $score = (int) ($signal['score'] ?? 0);
+        $indicators = (array) ($signal['indicators'] ?? []);
+
         $trade = Trade::create([
             'symbol' => $symbol,
-            'setup_tag' => $setupTag,
-            'btc_trend_1h' => $btcTrend,
-            'side' => $side,
+            'setup_tag' => $setup,
+            'btc_trend_1h' => $indicators['btc_regime'] ?? null,
+            'side' => $direction,
             'mode' => $mode,
             'status' => 'OPEN',
             'stage' => 'ENTRY',
-            'entry_price' => $entryPrice,
-            'quantity' => $quantity,
-            'remaining_quantity' => $quantity,
-            'margin_used' => $margin,
-            'leverage' => $leverage,
-            'initial_sl' => (float) $signal['initial_sl'],
-            'current_sl' => (float) $signal['initial_sl'],
-            'stop_distance' => $stopDistance,
-            'tp1_price' => (float) $signal['tp1'],
-            'tp2_price' => (float) $signal['tp2'],
+            'entry_price' => $fillPrice,
+            'quantity' => (float) $sizing['quantity'],
+            'remaining_quantity' => (float) $sizing['quantity'],
+            'margin_used' => (float) $sizing['margin'],
+            'leverage' => (int) $sizing['leverage'],
+            'initial_sl' => $stopLoss,
+            'current_sl' => $stopLoss,
+            'stop_distance' => $riskDistance,
+            'tp1_price' => $targets['tp1'],
+            'tp2_price' => $targets['tp2'],
             'be_locked' => false,
             'tp1_hit' => false,
             'tp2_hit' => false,
-            'binance_order_id' => $binanceOrderId,
-            'meta' => [
+            'highest_price' => $fillPrice,
+            'lowest_price' => $fillPrice,
+            'binance_order_id' => $orderId,
+            'meta' => array_merge([
+                'setup' => $setup,
+                'setup_label' => $signal['setup_label'] ?? $setup,
+                'interval' => $signal['interval'] ?? config('trading.strategy.base_interval', '1h'),
+                'grade' => $grade,
                 'score' => $score,
-                'grade' => $signal['grade'],
-                'ai_confidence' => $aiResult['confidence'],
-                'ai_regime' => $aiResult['regime'],
-                'ai_reason' => $aiResult['reason'],
-                'atr' => $signal['indicators']['atr'] ?? null,
-                'btc_trend_1h' => $btcTrend,
-                'binance_sl_algo_id' => $slAlgoId ?? null,
-                'binance_tp_algo_id' => $tpAlgoId ?? null,
-            ],
+                'ai_probability' => $signal['ai_probability'] ?? null,
+                'atr' => $indicators['atr'] ?? null,
+                'risk_usd' => $sizing['risk_usd'] ?? null,
+                'risk_pct' => $sizing['risk_pct'] ?? null,
+                'signal_id' => $signal['signal_id'] ?? null,
+                'source' => $isManual ? 'manual' : 'auto',
+            ], $exchangeMeta),
             'opened_at' => Carbon::now(),
         ]);
 
-        // 5. Update or link TradingSignal
         TradingSignal::create([
             'symbol' => $symbol,
-            'direction' => $side,
+            'direction' => $direction,
             'score' => $score,
-            'grade' => $signal['grade'],
-            'price' => $entryPrice,
-            'timeframe' => config('trading.scanner.base_interval', '15m'),
-            'indicators' => $signal['indicators'],
+            'grade' => $grade,
+            'price' => $fillPrice,
+            'timeframe' => (string) ($signal['interval'] ?? config('trading.strategy.base_interval', '1h')),
+            'indicators' => $indicators,
             'ai_status' => 'APPROVED',
-            'ai_confidence' => $aiResult['confidence'],
-            'ai_regime' => $aiResult['regime'],
-            'ai_reason' => $aiResult['reason'],
+            'ai_confidence' => (int) round(((float) ($signal['ai_probability'] ?? 0)) * 100),
+            'ai_regime' => $setup,
+            'ai_reason' => (string) ($signal['setup_label'] ?? $setup),
             'executed' => true,
             'trade_id' => $trade->id,
         ]);
 
-        // 6. Send notification
-        $this->notifier->notifyTradeOpened($trade, $score, $aiResult['reason']);
+        $this->notifier->notifyTradeOpened($trade, $score, (string) ($signal['setup_label'] ?? $setup));
 
-        return [
-            'status' => 'opened',
-            'trade' => $trade,
-            'message' => "{$side} trade on {$symbol} opened successfully. Amount Added: \${$margin} USDT margin ({$leverage}x leverage, \${$sizing['notional']} position size).",
-        ];
+        return $trade;
+    }
+
+    /**
+     * @param  array<string, mixed>  $sizing
+     */
+    protected function openedMessage(Trade $trade, array $sizing): string
+    {
+        return sprintf(
+            '%s %s opened [%s] at %s. Stop %s, TP1 %s. Risk $%s (%s%%), margin $%s at %dx.',
+            $trade->side,
+            $trade->symbol,
+            strtoupper($trade->mode),
+            $this->fmt($trade->entry_price),
+            $this->fmt($trade->initial_sl),
+            $this->fmt($trade->tp1_price),
+            $sizing['risk_usd'],
+            $sizing['risk_pct'],
+            $trade->margin_used,
+            $trade->leverage
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $signal
+     */
+    protected function direction(array $signal): string
+    {
+        $raw = strtoupper((string) ($signal['direction'] ?? $signal['side'] ?? 'LONG'));
+
+        return in_array($raw, ['LONG', 'BUY'], true) ? 'LONG' : 'SHORT';
+    }
+
+    protected function fmt(float $price): string
+    {
+        return rtrim(rtrim(number_format($price, $price >= 1 ? 4 : 8, '.', ''), '0'), '.');
+    }
+
+    /**
+     * @return array{status: string, trade: null, message: string}
+     */
+    protected function rejected(string $message): array
+    {
+        return ['status' => 'rejected', 'trade' => null, 'message' => $message];
     }
 }

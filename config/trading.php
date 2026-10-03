@@ -9,7 +9,7 @@ return [
     | - 'paper': 100% simulated with seed capital and real live Binance price feed.
     | - 'live': Real Binance Futures account (Requires API keys with trading permission).
     */
-    'mode' => env('TRADING_MODE', 'live'),
+    'mode' => env('TRADING_MODE', 'paper'),
 
     /*
     |--------------------------------------------------------------------------
@@ -29,7 +29,7 @@ return [
     */
     'php_binary' => env('PHP_BINARY_PATH', 'php'),
     'daemon_heartbeat_timeout' => (int) env('DAEMON_HEARTBEAT_TIMEOUT', 90),
-    'daemon_auto_spawn' => (bool) env('DAEMON_AUTO_SPAWN', true),
+    'daemon_auto_spawn' => false, // Shared hosting: the cron scheduler is the only process launcher
 
     /*
     |--------------------------------------------------------------------------
@@ -37,7 +37,7 @@ return [
     |--------------------------------------------------------------------------
     | Permits live trading when configured in .env.
     */
-    'allow_live_trading' => (bool) env('ALLOW_LIVE_TRADING', true),
+    'allow_live_trading' => (bool) env('ALLOW_LIVE_TRADING', false),
 
     /*
     |--------------------------------------------------------------------------
@@ -120,9 +120,10 @@ return [
     |--------------------------------------------------------------------------
     */
     'circuit_breakers' => [
-        'max_consecutive_losses' => (int) env('TRADING_MAX_CONSECUTIVE_LOSSES', 4),
-        'loss_cooldown_minutes' => (int) env('TRADING_LOSS_COOLDOWN_MINUTES', 20), // 20 minutes cooldown (reduced from 120m)
-        'max_daily_loss_pct' => (float) env('TRADING_MAX_DAILY_LOSS_PCT', 15.0),    // 15% daily drawdown cap
+        'max_consecutive_losses' => (int) env('TRADING_MAX_CONSECUTIVE_LOSSES', 3),
+        'loss_cooldown_minutes' => (int) env('TRADING_LOSS_COOLDOWN_MINUTES', 720), // 12h pause after a losing streak
+        'max_daily_loss_pct' => (float) env('TRADING_MAX_DAILY_LOSS_PCT', 6.0),     // No new entries after -6% on the UTC day
+        'max_drawdown_pct' => (float) env('TRADING_MAX_DRAWDOWN_PCT', 30.0),        // Kill switch at -30% from peak equity
         'emergency_kill_switch' => (bool) env('TRADING_KILL_SWITCH', false),
     ],
 
@@ -163,6 +164,84 @@ return [
         // Stagnation & Dead-Position Timeout Pruner (0 disables time-based forced closures)
         'stagnation_timeout_minutes' => (int) env('TRADING_STAGNATION_TIMEOUT_MINUTES', 0),
         'max_hold_minutes' => (int) env('TRADING_MAX_HOLD_MINUTES', 0),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cron Engine (shared hosting: `php artisan schedule:run` every minute)
+    |--------------------------------------------------------------------------
+    */
+    'engine' => [
+        'cycle_seconds' => (int) env('TRADING_ENGINE_CYCLE_SECONDS', 50),   // Work window per cron tick
+        'manage_every_seconds' => (int) env('TRADING_ENGINE_MANAGE_SECONDS', 5),
+        'lock_seconds' => 70,
+        'stall_after_seconds' => 180,
+        'http_timeout_seconds' => 10,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Position Sizing (risk is defined by the stop-loss, not by leverage)
+    |--------------------------------------------------------------------------
+    */
+    'sizing' => [
+        'risk_per_trade_pct' => (float) env('TRADING_RISK_PER_TRADE_PCT', 2.0),
+        'small_account_max_risk_pct' => (float) env('TRADING_SMALL_ACCOUNT_MAX_RISK_PCT', 3.0), // Min-notional trades allowed up to this risk
+        'small_account_equity' => 25.0,
+        'max_leverage' => (int) env('TRADING_MAX_LEVERAGE', 10),
+        'max_margin_pct' => 90.0,
+        'max_positions' => [ // equity ceiling => max simultaneous positions
+            25 => 1,
+            100 => 2,
+            PHP_INT_MAX => 3,
+        ],
+        'max_same_side' => 2,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Exit Plan (shared by live management, paper simulation and backtests)
+    |--------------------------------------------------------------------------
+    */
+    'exits' => [
+        'tp1_r' => 1.5,
+        'tp2_r' => 3.0,
+        'tp1_close_ratio' => 0.5,
+        'breakeven_at_r' => 1.0,
+        'after_tp1_lock_r' => 0.5,
+        'trail_atr_mult' => 1.5,
+        'time_stop_hours' => 12,       // Close if not reached +0.5R by then
+        'time_stop_min_r' => 0.5,
+        'max_hold_hours' => 48,
+        'fee_rate' => 0.0005,          // Taker fee per fill
+        'paper_slippage' => 0.0003,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Strategy Engine (one engine for auto-trader, scanner, chart and Telegram)
+    |--------------------------------------------------------------------------
+    */
+    'strategy' => [
+        'base_interval' => '1h',
+        'regime_interval' => '4h',
+        'min_quote_volume_24h' => (float) env('STRATEGY_MIN_VOLUME_24H', 50000000.0),
+        'min_listing_days' => 30,
+        'min_atr_pct' => 0.35,
+        'max_atr_pct' => 4.0,
+        'max_adverse_funding' => 0.0005,
+        'regime_min_adx' => 18.0,
+        'min_sl_pct' => 0.6,
+        'max_sl_pct' => 1.8,
+        'core_setups' => ['TREND_PULLBACK', 'SQUEEZE_BREAKOUT'],
+        'min_setup_expectancy_r' => (float) env('STRATEGY_MIN_SETUP_EXPECTANCY_R', 0.05), // pause setups below this measured edge
+        'shadow_setups' => ['SWING_REVERSAL', 'EMA_CROSS'],
+        'min_ai_lift' => (float) env('STRATEGY_MIN_AI_LIFT', 0.85), // skip signals the AI rates clearly below an average signal
+        'live_requires_proven_setup' => (bool) env('STRATEGY_LIVE_REQUIRES_PROVEN', true),
+        'auto_trade_grades' => ['A', 'B'],
+        'telegram_grades' => ['A', 'B'],
+        'max_universe' => 120,
+        'banned_symbols' => ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BTCDOMUSDT'],
     ],
 
     /*
@@ -211,7 +290,8 @@ return [
         'enabled' => (bool) env('TELEGRAM_NOTIFICATIONS_ENABLED', false),
         'bot_token' => env('TELEGRAM_BOT_TOKEN', ''),
         'chat_id' => env('TELEGRAM_CHAT_ID', ''),
-        'live_only' => (bool) env('TELEGRAM_LIVE_ONLY', false), // Set to false so user receives Telegram alerts during both paper and live trading
+        'live_only' => (bool) env('TELEGRAM_LIVE_ONLY', false), // true = suppress paper trade events (signals, risk and health alerts still sent)
+        'max_messages_per_hour' => 20,
     ],
 
     /*

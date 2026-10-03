@@ -13,12 +13,15 @@ use Illuminate\Database\Eloquent\Model;
  * @property float $balance
  * @property float $equity
  * @property float $peak_equity
+ * @property float|null $day_start_equity
+ * @property Carbon|null $day_start_date
  * @property int $total_trades
  * @property int $winning_trades
  * @property int $losing_trades
  * @property int $consecutive_losses
  * @property int $consecutive_wins
  * @property Carbon|null $paused_until
+ * @property string|null $pause_reason
  * @property bool $kill_switch
  * @property bool $is_running
  */
@@ -35,12 +38,15 @@ class TradingAccount extends Model
         'balance',
         'equity',
         'peak_equity',
+        'day_start_equity',
+        'day_start_date',
         'total_trades',
         'winning_trades',
         'losing_trades',
         'consecutive_losses',
         'consecutive_wins',
         'paused_until',
+        'pause_reason',
         'kill_switch',
         'is_running',
     ];
@@ -53,6 +59,8 @@ class TradingAccount extends Model
         'balance' => 'float',
         'equity' => 'float',
         'peak_equity' => 'float',
+        'day_start_equity' => 'float',
+        'day_start_date' => 'date',
         'total_trades' => 'integer',
         'winning_trades' => 'integer',
         'losing_trades' => 'integer',
