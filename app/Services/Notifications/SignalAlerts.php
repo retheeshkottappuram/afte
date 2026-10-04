@@ -5,6 +5,8 @@ namespace App\Services\Notifications;
 use App\Models\CryptoSignal;
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\Strategy\MarketScanService;
+use App\Services\Strategy\OpportunityScorer;
 use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Strategy\Watchlist;
@@ -19,7 +21,8 @@ class SignalAlerts
 {
     public function __construct(
         protected TelegramGateway $gateway,
-        protected SetupStats $stats
+        protected SetupStats $stats,
+        protected OpportunityScorer $opportunity
     ) {}
 
     /**
@@ -130,7 +133,9 @@ class SignalAlerts
         $confluences = $signal->confluences !== [] ? "\nWhy: ".e(implode(', ', $signal->confluences)) : '';
         $aiReasons = $signal->aiReasons !== [] ? "\nAI factors: ".e(implode(', ', $signal->aiReasons)) : '';
 
+        $score = $this->opportunity->score($signal, $signal->entry);
         $html = "{$icon} <b>{$signal->side} {$signal->symbol}</b> · {$signal->setupLabel} · Grade {$signal->grade} {$stars}{$ai}\n"
+            ."Opportunity: <b>{$score['score']}/100</b> ({$score['label']})\n"
             ."Entry: <code>{$this->fmt($signal->entry)}</code>\n"
             .sprintf("Stop: <code>%s</code> (%.2f%%)\n", $this->fmt($signal->stopLoss), $signal->slPct())
             ."TP1: <code>{$this->fmt($signal->tp1)}</code> (1.5R) · TP2: <code>{$this->fmt($signal->tp2)}</code> (3R)\n"
@@ -161,6 +166,6 @@ class SignalAlerts
 
     protected function fmt(float $price): string
     {
-        return rtrim(rtrim(number_format($price, $price >= 1 ? 4 : 8, '.', ''), '0'), '.');
+        return number_format($price, MarketScanService::priceDecimals($price), '.', '');
     }
 }

@@ -18,7 +18,40 @@
         riskZone: null,
         levelLines: [],
         data: null,
+        toggles: loadToggles(),
     };
+
+    /** Chart display toggles, remembered per browser. */
+    function loadToggles() {
+        const defaults = { results: true, filtered: true, shadow: false, levels: true };
+        try {
+            return Object.assign(defaults, JSON.parse(localStorage.getItem('sap_chart_toggles') || '{}'));
+        } catch (e) {
+            return defaults;
+        }
+    }
+
+    function saveToggles() {
+        try { localStorage.setItem('sap_chart_toggles', JSON.stringify(state.toggles)); } catch (e) { /* storage unavailable */ }
+    }
+
+    /** Put the server markers on the chart, keeping only the kinds the user has switched on. */
+    function applyMarkers() {
+        if (!state.candleSeries || !state.data) return;
+        const t = state.toggles;
+        const markers = (state.data.markers || [])
+            .filter((m) => (m.kind !== 'result' || t.results) && (m.kind !== 'shadow' || t.shadow) && (m.kind !== 'filtered' || t.filtered))
+            .map((m) => ({ time: m.time, position: m.position, shape: m.shape, color: m.color, text: m.text, size: m.size }))
+            .sort((a, b) => a.time - b.time);
+        state.candleSeries.setMarkers(markers);
+    }
+
+    function syncToggleInputs() {
+        Object.entries(state.toggles).forEach(([name, on]) => {
+            const input = document.getElementById(`sapToggle-${name}`);
+            if (input) input.checked = !!on;
+        });
+    }
 
     const fmt = (v) => {
         if (v === null || v === undefined || isNaN(Number(v))) return '--';
@@ -54,9 +87,9 @@
         state.ema50.setData(data.ema50 || []);
         state.cloudFast.setData(data.ema21 || []);
 
-        // Key levels and squeeze box
+        // Key levels and squeeze box (toggle: Levels)
         clearLevels();
-        (data.levels || []).forEach((lvl) => {
+        (state.toggles.levels ? (data.levels || []) : []).forEach((lvl) => {
             state.levelLines.push(state.candleSeries.createPriceLine({
                 price: lvl.price,
                 color: lvl.type === 'resistance' ? 'rgba(244,63,94,0.35)' : 'rgba(34,197,94,0.35)',
@@ -66,7 +99,7 @@
                 title: `${lvl.type === 'resistance' ? 'R' : 'S'} x${lvl.touches}`,
             }));
         });
-        if (data.breakout_box) {
+        if (data.breakout_box && state.toggles.levels) {
             ['high', 'low'].forEach((edge) => state.levelLines.push(state.candleSeries.createPriceLine({
                 price: data.breakout_box[edge], color: 'rgba(250,204,21,0.7)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,
                 title: `Squeeze ${edge}`,
@@ -220,6 +253,34 @@
         el('card-accuracy-sub').textContent = `${n} resolved signals of the setups currently traded, fees included`;
     }
 
+    /**
+     * TradingView's free embedded widget cannot draw our markers, so this panel lists the current
+     * signal and the recent ones (with times) to match against the TradingView candles.
+     */
+    function renderTvPanel(data) {
+        const panel = el('tvSignalPanel');
+        if (!panel) return;
+        const sig = data.signal;
+        const dec = (v) => fmt(v);
+        const time = (t) => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+        const current = sig
+            ? `<div class="font-black ${sig.direction === 'LONG' ? 'text-emerald-300' : 'text-rose-300'}">${sig.direction === 'LONG' ? '▲ BUY' : '▼ SELL'} ${esc(data.symbol)} · ${esc(sig.setup_label)} · Grade ${esc(sig.grade)}</div>
+               <div class="grid grid-cols-2 gap-x-3 mt-1 font-mono tabular-nums">
+                 <span>Entry <b class="text-white">${dec(sig.entry)}</b></span><span>Stop <b class="text-rose-300">${dec(sig.sl)}</b></span>
+                 <span>TP1 <b class="text-emerald-300">${dec(sig.tp1)}</b></span><span>TP2 <b class="text-emerald-300">${dec(sig.tp2)}</b></span>
+               </div>
+               <div class="text-slate-500 mt-0.5">Signal candle: ${time(sig.time)}</div>`
+            : `<div class="text-slate-300">No open signal on ${esc(data.symbol)}. ${esc((data.state && data.state.reason) || '')}</div>`;
+
+        const recent = (data.signal_history || []).filter((h) => !h.is_shadow).slice(-5).reverse()
+            .map((h) => `<div class="flex justify-between gap-2"><span class="${h.side === 'LONG' ? 'text-emerald-300' : 'text-rose-300'}">${h.side === 'LONG' ? '▲' : '▼'} ${time(h.time)}</span><span class="font-mono">${dec(h.entry)}</span><span class="${(h.r_multiple || 0) > 0 ? 'text-emerald-300' : (h.r_multiple === null ? 'text-slate-400' : 'text-rose-300')}">${h.r_multiple === null ? 'open' : (h.r_multiple >= 0 ? '+' : '') + Number(h.r_multiple).toFixed(1) + 'R'}</span></div>`)
+            .join('');
+
+        panel.innerHTML = `${current}${recent ? `<div class="mt-2 pt-1.5 border-t border-slate-700 text-slate-400 font-semibold">Recent signals</div>${recent}` : ''}
+            <div class="mt-1.5 text-[10px] text-slate-500">TradingView's embedded chart can't show our markers; use the Signals chart for drawn signals.</div>`;
+    }
+
     async function postJson(url, body) {
         const token = document.querySelector('meta[name="csrf-token"]')?.content;
         const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': token }, body: JSON.stringify(body) });
@@ -244,10 +305,23 @@
             if (chart && candleSeries) {
                 ensureSeries(chart, candleSeries);
                 drawOverlays(data);
+                applyMarkers();
             }
+            syncToggleInputs();
             renderStrip(data);
             renderInspector(data);
             renderAccuracyCard(data.all_setup_stats);
+            renderTvPanel(data);
+        },
+
+        /** Chart toggle checkbox handler: results / filtered / shadow / levels. */
+        setToggle(name, on) {
+            state.toggles[name] = !!on;
+            saveToggles();
+            if (name === 'levels' && state.data) {
+                drawOverlays(state.data);
+            }
+            applyMarkers();
         },
 
         focusSignal(time) {

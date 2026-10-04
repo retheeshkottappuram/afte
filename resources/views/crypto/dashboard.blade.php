@@ -2,6 +2,14 @@
 
 @section('title', 'Dashboard')
 
+@push('styles')
+<style>
+    .scan-filter-btn { padding: 0.3rem 0.65rem; border-radius: 0.5rem; font-weight: 700; white-space: nowrap; color: rgb(148 163 184); transition: all .15s; }
+    .scan-filter-btn:hover { color: rgb(226 232 240); }
+    .scan-filter-btn.is-active { background: rgb(30 41 59); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
+</style>
+@endpush
+
 @section('content')
 <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-10 overflow-x-hidden">
     <!-- Header banner -->
@@ -264,41 +272,31 @@
                         </h4>
                     </div>
                     <p class="text-[11px] text-slate-400 mt-0.5">
-                        Green = passes every auto-trader filter. Grey = shown for information; the card says which filter failed.
+                        Ranked by Opportunity Score (measured edge, filters, confluence, entry still valid, freshness). A ranking, not a profit guarantee.
                     </p>
                 </div>
 
-                <!-- Controls: Filter Pills & Score Sorting Dropdown -->
-                <div class="flex flex-wrap items-center gap-2">
-                    <!-- Direction / Grade Filter Pills -->
-                    <div class="inline-flex rounded-xl bg-slate-950 p-1 border border-slate-800 text-xs">
-                        <button type="button" onclick="setScanFilter('ALL')" id="filter-btn-ALL"
-                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer bg-slate-800 text-white shadow">
-                            All
-                        </button>
-                        <button type="button" onclick="setScanFilter('BUY')" id="filter-btn-BUY"
-                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-emerald-400">
-                            🟢 Longs
-                        </button>
-                        <button type="button" onclick="setScanFilter('SELL')" id="filter-btn-SELL"
-                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-rose-400">
-                            🔴 Shorts
-                        </button>
-                        <button type="button" onclick="setScanFilter('A_PLUS')" id="filter-btn-A_PLUS"
-                            class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-amber-400">
-                            ✓ Tradable
-                        </button>
+                <!-- Controls: filter, sort and search -->
+                <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 w-full md:w-auto">
+                    <div class="flex overflow-x-auto rounded-xl bg-slate-950 p-1 border border-slate-800 text-xs" role="group" aria-label="Filter setups">
+                        <button type="button" onclick="setScanFilter('ALL')" id="filter-btn-ALL" class="scan-filter-btn is-active">All</button>
+                        <button type="button" onclick="setScanFilter('BUY')" id="filter-btn-BUY" class="scan-filter-btn">🟢 Longs</button>
+                        <button type="button" onclick="setScanFilter('SELL')" id="filter-btn-SELL" class="scan-filter-btn">🔴 Shorts</button>
+                        <button type="button" onclick="setScanFilter('TRADABLE')" id="filter-btn-TRADABLE" class="scan-filter-btn">✓ Tradable</button>
+                        <button type="button" onclick="setScanFilter('ENTER_NOW')" id="filter-btn-ENTER_NOW" class="scan-filter-btn">⚡ Enter now</button>
                     </div>
-
-                    <!-- Sort Dropdown -->
-                    <div class="flex items-center space-x-1.5 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 text-xs">
-                        <span class="text-slate-500 font-semibold text-[11px]">Sort:</span>
-                        <select id="scanSortSelect" onchange="changeScanSort(this.value)"
-                            class="bg-transparent text-slate-200 font-bold focus:outline-none cursor-pointer text-xs pr-1">
-                            <option value="score_desc" selected>Best first (tradable, grade)</option>
-                            <option value="newest">Newest first</option>
-                            <option value="rr_desc">Tightest stop</option>
-                        </select>
+                    <div class="flex gap-2">
+                        <label class="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-xl border border-slate-800 text-xs flex-1 sm:flex-none">
+                            <span class="text-slate-500 font-semibold text-[11px]">Sort</span>
+                            <select id="scanSortSelect" onchange="changeScanSort(this.value)" class="bg-transparent text-slate-200 font-bold focus:outline-none cursor-pointer text-xs flex-1">
+                                <option value="score_desc" selected>Best score</option>
+                                <option value="newest">Newest</option>
+                                <option value="record_desc">Best track record</option>
+                                <option value="stop_asc">Tightest stop</option>
+                            </select>
+                        </label>
+                        <input type="search" id="scanSearchInput" oninput="setScanSearch(this.value)" placeholder="Search coin"
+                            class="w-28 sm:w-32 px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white uppercase placeholder-slate-500 focus:outline-none focus:border-cyan-500">
                     </div>
                 </div>
             </div>
@@ -543,6 +541,14 @@
                 </div>
             </div>
 
+            <!-- Marker toggles -->
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] sm:text-xs text-slate-300">
+                <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-results" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('results', this.checked)"> Results</label>
+                <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-filtered" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('filtered', this.checked)"> Filtered</label>
+                <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-shadow" class="accent-emerald-500" onchange="SignalAlgoPro.setToggle('shadow', this.checked)"> Shadow</label>
+                <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-levels" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('levels', this.checked)"> Levels</label>
+            </div>
+
             <!-- Indicator Color Legend -->
             <div id="algoIndicatorLegend" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] sm:text-xs text-slate-400">
                 <span class="flex items-center space-x-1.5">
@@ -641,6 +647,9 @@
 
             <!-- 2. TradingView Iframe Widget (Alternative mode) -->
             <div id="tradingview_futures_chart" class="hidden w-full h-full relative"></div>
+
+            <!-- Signal panel shown over the TradingView chart (its embedded widget cannot draw our markers) -->
+            <div id="tvSignalPanel" class="hidden absolute top-12 left-2 z-20 max-w-[19rem] p-2.5 rounded-xl bg-slate-950/95 border border-slate-700 text-[11px] text-slate-300 shadow-2xl pointer-events-auto"></div>
         </div>
     </div>
 
@@ -774,7 +783,7 @@
 
 <!-- TradingView & Lightweight Charts Scripts with Fail-Safe Fallback -->
 <script type="text/javascript" src="{{ asset('js/lightweight-charts.standalone.production.js') }}"></script>
-<script type="text/javascript" src="{{ asset('js/signalalgo-chart.js') }}?v=4"></script>
+<script type="text/javascript" src="{{ asset('js/signalalgo-chart.js') }}?v=5"></script>
 <script type="text/javascript">
     if (typeof LightweightCharts === 'undefined') {
         const s = document.createElement('script');
@@ -863,6 +872,7 @@
             tvTab.className = 'px-3 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white flex items-center space-x-1.5';
             algoContainer.classList.remove('hidden');
             tvContainer.classList.add('hidden');
+            document.getElementById('tvSignalPanel')?.classList.add('hidden');
             if (tooltip) tooltip.classList.remove('hidden');
             if (legend) legend.classList.remove('hidden');
 
@@ -875,6 +885,7 @@
             algoTab.className = 'px-3 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white flex items-center space-x-1.5';
             algoContainer.classList.add('hidden');
             tvContainer.classList.remove('hidden');
+            document.getElementById('tvSignalPanel')?.classList.remove('hidden');
             if (tooltip) tooltip.classList.add('hidden');
             if (legend) legend.classList.add('hidden');
 
@@ -944,7 +955,7 @@
             layout: {
                 background: { color: '#090d16' },
                 textColor: '#94a3b8',
-                fontSize: 11,
+                fontSize: 12,
             },
             grid: {
                 vertLines: { color: 'rgba(30, 41, 59, 0.4)' },
@@ -2193,25 +2204,21 @@
             }
 
             // Render signals cards
-            renderMarketScanSignals(data.signals || []);
+            renderMarketScanSignals(data.signals || [], data.account || null);
         })
         .catch(() => {});
     }
 
     let rawMarketScanSignals = [];
+    let scanAccount = null;
     let activeScanFilter = 'ALL';
     let activeScanSort = 'score_desc';
+    let activeScanSearch = '';
 
     function setScanFilter(filter) {
         activeScanFilter = filter;
-        ['ALL', 'BUY', 'SELL', 'A_PLUS'].forEach(f => {
-            const btn = document.getElementById(`filter-btn-${f}`);
-            if (!btn) return;
-            if (f === filter) {
-                btn.className = 'px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer bg-slate-800 text-white shadow';
-            } else {
-                btn.className = 'px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-slate-200';
-            }
+        document.querySelectorAll('.scan-filter-btn').forEach(btn => {
+            btn.classList.toggle('is-active', btn.id === `filter-btn-${filter}`);
         });
         applyScanFilterAndSort();
     }
@@ -2221,247 +2228,242 @@
         applyScanFilterAndSort();
     }
 
-    function renderMarketScanSignals(signals) {
-        rawMarketScanSignals = signals || [];
+    function setScanSearch(text) {
+        activeScanSearch = String(text || '').trim().toUpperCase();
         applyScanFilterAndSort();
+    }
+
+    function renderMarketScanSignals(signals, account = null) {
+        rawMarketScanSignals = Array.isArray(signals) ? signals : [];
+        if (account) scanAccount = account;
+        applyScanFilterAndSort();
+    }
+
+    /** Readable price for its magnitude, e.g. 275.02 / 1.2345 / 0.043341. */
+    function fmtPrice(value, decimals) {
+        if (value === null || value === undefined || isNaN(Number(value))) return '—';
+        const n = Number(value);
+        const d = Number.isInteger(decimals) ? decimals : (Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : Math.abs(n) >= 0.01 ? 5 : 7);
+        return n.toLocaleString('en-US', { minimumFractionDigits: Math.min(d, 2), maximumFractionDigits: d });
+    }
+
+    function fmtAge(minutes) {
+        const m = Number(minutes) || 0;
+        if (m < 60) return `${m}m ago`;
+        const h = Math.floor(m / 60);
+        return `${h}h ${m % 60}m ago`;
+    }
+
+    function escHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function filteredScanSignals() {
+        const list = rawMarketScanSignals.filter(s => {
+            if (activeScanSearch && !String(s.symbol).toUpperCase().includes(activeScanSearch)) return false;
+            if (activeScanFilter === 'BUY') return s.direction === 'LONG';
+            if (activeScanFilter === 'SELL') return s.direction === 'SHORT';
+            if (activeScanFilter === 'TRADABLE') return s.tradable === true;
+            if (activeScanFilter === 'ENTER_NOW') return s.tradable === true && s.entry_status === 'Enter now';
+            return true;
+        });
+
+        const recordScore = (s) => (s.stats && s.stats.expectancy !== null && s.stats.expectancy !== undefined) ? Number(s.stats.expectancy) : -99;
+        list.sort((a, b) => {
+            if (activeScanSort === 'newest') return (a.age_minutes || 0) - (b.age_minutes || 0);
+            if (activeScanSort === 'record_desc') return recordScore(b) - recordScore(a) || (b.score || 0) - (a.score || 0);
+            if (activeScanSort === 'stop_asc') return (Number(a.sl_pct) || 99) - (Number(b.sl_pct) || 99);
+            return (a.rank || 999) - (b.rank || 999);
+        });
+
+        return list;
     }
 
     function applyScanFilterAndSort() {
         const grid = document.getElementById('scanSignalsGrid');
         if (!grid) return;
+        const badgeCount = document.getElementById('signalsBadgeCount');
 
-        if (!rawMarketScanSignals || rawMarketScanSignals.length === 0) {
+        if (rawMarketScanSignals.length === 0) {
             grid.innerHTML = `
                 <div id="scanSignalsEmptyState" class="col-span-full py-8 text-center rounded-xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-500 text-xs">
                     <div class="text-2xl mb-1.5">🔭</div>
-                    No scan yet. Click <strong class="text-slate-400">"Run Whole-Market Scan"</strong> to check every crypto USDT perpetual.
-                </div>
-            `;
-            const badgeCount = document.getElementById('signalsBadgeCount');
+                    No setups in play. Run a scan, or wait for the next one: most hours have no valid entry.
+                </div>`;
             if (badgeCount) badgeCount.textContent = '0 Found';
             return;
         }
 
-        // 1. Filter
-        let filtered = rawMarketScanSignals.filter(s => {
-            if (activeScanFilter === 'BUY') return s.side === 'BUY';
-            if (activeScanFilter === 'SELL') return s.side === 'SELL';
-            if (activeScanFilter === 'A_PLUS') return s.tradable === true;
-            return true;
-        });
+        const list = filteredScanSignals();
+        if (badgeCount) badgeCount.textContent = `${list.length} of ${rawMarketScanSignals.length}`;
 
-        // 2. Sort
-        filtered.sort((a, b) => {
-            if (activeScanSort === 'newest') {
-                return (a.age_minutes || 0) - (b.age_minutes || 0);
-            }
-            if (activeScanSort === 'rr_desc') {
-                return (Number(a.sl_pct) || 99) - (Number(b.sl_pct) || 99);
-            }
-            const rank = (x) => (x.tradable ? 100 : 0) + ({ A: 3, B: 2, C: 1 }[x.grade] || 0) * 10 - (x.age_minutes || 0) / 600;
-            return rank(b) - rank(a);
-        });
-
-        const badgeCount = document.getElementById('signalsBadgeCount');
-        if (badgeCount) {
-            badgeCount.textContent = `${filtered.length} of ${rawMarketScanSignals.length} Setups`;
-        }
-
-        if (filtered.length === 0) {
+        if (list.length === 0) {
             grid.innerHTML = `
                 <div class="col-span-full py-8 text-center rounded-xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-400 text-xs">
-                    No setups match the selected filter (${activeScanFilter}). Click <strong class="text-cyan-400 cursor-pointer" onclick="setScanFilter('ALL')">All</strong> to reset.
-                </div>
-            `;
+                    No setups match this filter. <button type="button" class="text-cyan-400 font-bold underline" onclick="setScanFilter('ALL'); document.getElementById('scanSearchInput').value=''; setScanSearch('');">Show all</button>
+                </div>`;
             return;
         }
 
-        let html = '';
-        filtered.forEach(s => {
-            const isBuy = s.side === 'BUY';
-            const borderCls = isBuy ? 'border-emerald-500/40 hover:border-emerald-500/70 shadow-emerald-950/20' : 'border-rose-500/40 hover:border-rose-500/70 shadow-rose-950/20';
-            const tagCls = isBuy ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
-            const scoreCls = isBuy ? 'text-emerald-400' : 'text-rose-400';
-            const sideIcon = isBuy ? '🟢 LONG (BUY)' : '🔴 SHORT (SELL)';
-            const gradeBadge = (s.grade === 'A+' || s.grade === 'A')
-                ? `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-amber-400/20 text-amber-300 border border-amber-400/40">GRADE ${s.grade}</span>`
-                : `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">GRADE ${s.grade || 'B'}</span>`;
+        grid.innerHTML = list.map(renderScanCard).join('');
+    }
 
-            // High-probability institutional setup badges
-            let setupTypeBadge = '';
-            if (s.setup_type === 'PRE_BREAKOUT_COIL') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/50 animate-pulse flex items-center gap-1">⚡ PRE-BREAKOUT COIL</span>';
-            } else if (s.setup_type === 'BREAKOUT_START') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 flex items-center gap-1">🚀 BREAKOUT DIRECTION START</span>';
-            } else if (s.setup_type === 'BREAKDOWN_START') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/50 flex items-center gap-1">📉 BREAKDOWN DIRECTION START</span>';
-            } else if (s.setup_type === 'SWING_PEAK_REVERSAL') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-orange-500/20 text-orange-300 border border-orange-500/50 flex items-center gap-1">🎯 SWING PEAK REVERSAL</span>';
-            } else if (s.setup_type === 'SWING_TROUGH_REVERSAL') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 flex items-center gap-1">💎 SWING TROUGH REVERSAL</span>';
-            } else if (s.setup_type === 'WYCKOFF_SPRING') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 flex items-center gap-1">💎 WYCKOFF SPRING</span>';
-            } else if (s.setup_type === 'WYCKOFF_UPTHRUST') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-orange-500/20 text-orange-300 border border-orange-500/50 flex items-center gap-1">⚡ WYCKOFF UPTHRUST</span>';
-            } else if (s.setup_type === 'BREAKOUT_CONFIRMED') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 flex items-center gap-1">🔥 MOMENTUM BREAKOUT</span>';
-            } else if (s.setup_type === 'RETEST_ENTRY') {
-                setupTypeBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-black bg-teal-500/20 text-teal-300 border border-teal-500/50 flex items-center gap-1">🔄 BREAKOUT RETEST</span>';
-            } else if (s.setup_type === 'ACTIVE_SETUP' || s.setup_label === 'ACTIVE SETUP') {
-                setupTypeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">ACTIVE SETUP${s.age_minutes ? ` (${s.age_minutes}m ago)` : ''}</span>`;
-            } else {
-                setupTypeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40">${s.setup_label || 'HIGH PROBABILITY'}</span>`;
-            }
+    function renderScanCard(s) {
+        const isLong = s.direction === 'LONG';
+        const d = s.price_decimals;
+        const score = Number(s.score) || 0;
+        const scoreColor = score >= 75 ? 'bg-emerald-500' : score >= 60 ? 'bg-cyan-500' : score >= 45 ? 'bg-amber-500' : 'bg-slate-500';
+        const sideCls = isLong ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/15 text-rose-300 border-rose-500/40';
+        const border = s.top_pick ? 'border-amber-400/70 ring-1 ring-amber-400/30' : (s.tradable ? (isLong ? 'border-emerald-500/40' : 'border-rose-500/40') : 'border-slate-800');
 
-            // Support & Resistance Execution HUD
-            const suppLevel = s.support ? Number(s.support).toPrecision(6) : null;
-            const resLevel = s.resistance ? Number(s.resistance).toPrecision(6) : null;
-            const tradeType = s.trade_type || (isBuy ? 'DAY TRADE' : 'DAY TRADE');
-            const tradeHorizon = s.trade_horizon || 'Intraday (4h – 12h)';
-            const recLeverage = s.recommended_leverage || 'Risk-sized';
-            const isSwing = tradeType === 'SWING TRADE';
-            const tradeTypeCls = isSwing
-                ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
-                : 'bg-amber-500/15 text-amber-300 border-amber-500/40';
-            const tradeTypeIcon = isSwing ? '🌊' : '⚡';
-            const rrRatio = s.risk_reward || '1 : 3.0';
+        // Status line
+        let status;
+        if (!s.tradable) {
+            const reason = s.is_shadow ? 'Tracked setup, not traded' : (s.failed_filters[0] || 'Filter failed');
+            status = `<span class="text-amber-300">⚠️ Info only · ${escHtml(reason)}</span>`;
+        } else if (s.entry_status === 'Enter now') {
+            status = `<span class="text-emerald-300 font-bold">✅ Tradable · Enter now</span>`;
+        } else {
+            status = `<span class="text-slate-300">⏱ ${escHtml(s.entry_status)}</span>`;
+        }
 
-            const slPct = s.sl_pct !== undefined ? s.sl_pct : (s.sl && s.entry ? Math.abs(((s.sl - s.entry) / s.entry) * 100).toFixed(2) : '1.5');
-            const tp1Pct = s.tp1_pct !== undefined ? s.tp1_pct : (s.tp1 && s.entry ? Math.abs(((s.tp1 - s.entry) / s.entry) * 100).toFixed(2) : '2.5');
-            const tp2Pct = s.tp2_pct !== undefined ? s.tp2_pct : (s.tp2 && s.entry ? Math.abs(((s.tp2 - s.entry) / s.entry) * 100).toFixed(2) : '5.0');
-            const tp3Pct = s.tp3_pct !== undefined ? s.tp3_pct : (s.tp3 && s.entry ? Math.abs(((s.tp3 - s.entry) / s.entry) * 100).toFixed(2) : '9.0');
+        // Account projection: risk = balance x risk%, targets in R minus round-trip fees
+        let accountHtml = '';
+        if (scanAccount && scanAccount.balance > 0) {
+            const riskUsd = scanAccount.balance * scanAccount.risk_pct / 100;
+            const feeR = (Number(s.entry) * (scanAccount.fee_rate || 0.0005) * 2) / Math.max(1e-12, Math.abs(Number(s.entry) - Number(s.sl)));
+            const tp1Usd = riskUsd * (1.5 - feeR);
+            const tp2Usd = riskUsd * (3 - feeR);
+            accountHtml = `
+                <div class="text-[11px] text-slate-400 bg-slate-900/70 border border-slate-800 rounded-lg px-2.5 py-1.5">
+                    Your ${escHtml(String(scanAccount.mode).toUpperCase())} $${Number(scanAccount.balance).toFixed(2)}:
+                    risk <b class="text-rose-300">$${riskUsd.toFixed(2)}</b> ·
+                    TP1 <b class="text-emerald-300">+$${tp1Usd.toFixed(2)}</b> ·
+                    TP2 <b class="text-emerald-300">+$${tp2Usd.toFixed(2)}</b>
+                    <span class="text-slate-500">(fees incl.)</span>
+                </div>`;
+        }
 
-            const srHudHtml = `
-                <div class="mb-2.5 rounded-xl bg-slate-900/90 border border-slate-700/60 overflow-hidden shadow-inner">
-                    <!-- Header: S/R Level Badges -->
-                    <div class="flex items-stretch">
-                        <div class="flex-1 flex flex-col items-center justify-center py-1.5 px-2 bg-emerald-500/8 border-b border-r border-slate-800">
-                            <span class="text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-0.5">🛡️ Imm. Support</span>
-                            <span class="font-black text-emerald-400 text-xs font-mono">${suppLevel ? '$' + suppLevel : '—'}</span>
+        const st = s.stats || {};
+        const record = st.n
+            ? `${escHtml(s.setup_label)}: <b class="text-white">${st.win_rate}%</b> win · <b class="${st.expectancy >= 0 ? 'text-emerald-300' : 'text-rose-300'}">${st.expectancy >= 0 ? '+' : ''}${Number(st.expectancy).toFixed(2)}R</b> avg · n=${st.n} <span class="text-slate-500">(${escHtml(st.source)})</span>`
+            : `${escHtml(s.setup_label)}: no track record yet`;
+
+        const bd = s.score_breakdown || {};
+        const breakdownRows = [['Measured edge', bd.edge, 35], ['Filters', bd.filters, 20], ['Confluence', bd.confluence, 20], ['Entry valid', bd.entry, 15], ['Freshness', bd.freshness, 10], ['AI', bd.ai, 10]]
+            .map(([name, val, max]) => `<div class="flex justify-between"><span>${name}</span><span class="font-mono text-slate-200">${Number(val || 0).toFixed(0)} / ${max}</span></div>`).join('');
+        const filterRows = Object.entries(s.filters || {})
+            .map(([name, f]) => `<li><span class="${f.pass ? 'text-emerald-400' : 'text-rose-400'} font-bold">${f.pass ? '✓' : '✗'}</span> <span class="capitalize">${escHtml(name.replace('_', ' '))}</span>: <span class="text-slate-500">${escHtml(f.detail)}</span></li>`).join('');
+        const ind = s.indicators || {};
+        const drift = (s.drift_r !== null && s.drift_r !== undefined) ? `${s.drift_r >= 0 ? '+' : ''}${Number(s.drift_r).toFixed(2)}R` : '';
+
+        const level = (label, value, sub, cls) => `
+            <div class="rounded-lg bg-slate-900/80 border border-slate-800 px-2 py-1.5 min-w-0">
+                <div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">${label}</div>
+                <div class="font-mono font-bold text-[13px] tabular-nums truncate ${cls}" title="${value}">${value}</div>
+                <div class="text-[10px] text-slate-500 tabular-nums">${sub}</div>
+            </div>`;
+
+        const canTrade = s.tradable && s.entry_status === 'Enter now';
+        const tradeLabel = `Place ${isLong ? 'LONG' : 'SHORT'}${scanAccount ? ' · ' + String(scanAccount.mode).toUpperCase() : ''}`;
+
+        return `
+            <div class="p-3.5 sm:p-4 rounded-xl bg-slate-950/80 border ${border} shadow-xl flex flex-col gap-2.5 min-w-0">
+                <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <span class="text-[11px] font-black text-slate-400">#${s.rank}</span>
+                            <span class="text-base font-black text-white">${escHtml(s.symbol.replace('USDT', ''))}<span class="text-slate-500 text-xs">USDT</span></span>
+                            <span class="px-2 py-0.5 rounded-md text-[11px] font-black border ${sideCls}">${isLong ? '▲ LONG' : '▼ SHORT'}</span>
+                            ${s.top_pick ? '<span class="px-2 py-0.5 rounded-md text-[10px] font-black bg-amber-400/20 text-amber-300 border border-amber-400/50">⭐ TOP PICK</span>' : ''}
                         </div>
-                        <div class="flex-1 flex flex-col items-center justify-center py-1.5 px-2 bg-rose-500/8 border-b border-slate-800">
-                            <span class="text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-0.5">🧱 Imm. Resistance</span>
-                            <span class="font-black text-rose-400 text-xs font-mono">${resLevel ? '$' + resLevel : '—'}</span>
-                        </div>
+                        <div class="text-[11px] text-slate-400 mt-0.5">${escHtml(s.setup_label)}${s.is_shadow ? ' (shadow)' : ''} · Grade ${escHtml(s.grade || '-')} · ${fmtAge(s.age_minutes)}</div>
                     </div>
-                    <!-- Trade type + leverage + R:R row -->
-                    <div class="flex items-center justify-between px-2.5 py-1.5 border-b border-slate-800 bg-slate-950/40">
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black border ${tradeTypeCls}">${tradeTypeIcon} ${tradeType}</span>
-                        <span class="text-[10px] text-slate-400 font-mono">${tradeHorizon}</span>
-                        <span class="text-[10px] font-bold text-cyan-300">R:R <strong>${rrRatio}</strong></span>
-                    </div>
-                    <!-- SL / TP1 / TP2 levels -->
-                    <div class="grid grid-cols-3 text-center">
-                        <div class="py-1.5 px-1 border-r border-slate-800">
-                            <div class="text-[9px] text-rose-400 uppercase font-semibold mb-0.5">Stop Loss</div>
-                            <div class="font-black text-rose-400 text-[11px] font-mono">$${s.sl}</div>
-                            <div class="text-[9px] text-rose-400/70">-${slPct}%</div>
-                        </div>
-                        <div class="py-1.5 px-1 border-r border-slate-800">
-                            <div class="text-[9px] text-emerald-400 uppercase font-semibold mb-0.5">TP 1</div>
-                            <div class="font-black text-emerald-400 text-[11px] font-mono">$${s.tp1}</div>
-                            <div class="text-[9px] text-emerald-400/70">+${tp1Pct}%</div>
-                        </div>
-                        <div class="py-1.5 px-1">
-                            <div class="text-[9px] text-emerald-300 uppercase font-semibold mb-0.5">TP 2</div>
-                            <div class="font-black text-emerald-300 text-[11px] font-mono">$${s.tp2}</div>
-                            <div class="text-[9px] text-emerald-300/70">+${tp2Pct}%</div>
-                        </div>
-                    </div>
-                    <!-- Extended TP3 + Suggested Leverage footer -->
-                    <div class="flex items-center justify-between px-2.5 py-1 bg-slate-950/60 border-t border-slate-800">
-                        <span class="text-[10px] text-slate-400 font-mono">TP3: <strong class="text-emerald-300">$${s.tp3 || '—'}</strong> <span class="text-slate-500">(+${tp3Pct}%)</span></span>
-                        <span class="inline-flex items-center gap-1 text-[10px] font-bold text-purple-300">💡 ${recLeverage} Suggested</span>
-                    </div>
+                    <button type="button" onclick="toggleScanAlert('${s.symbol}', ${s.watched ? 'true' : 'false'}, this)" title="${s.watched ? 'Alerts on for this coin' : 'Alert me on this coin'}"
+                        class="shrink-0 w-8 h-8 rounded-lg border text-sm ${s.watched ? 'border-cyan-500/50 bg-cyan-500/10' : 'border-slate-700 bg-slate-900 hover:bg-slate-800'}">${s.watched ? '🔔' : '🔕'}</button>
                 </div>
-            `;
 
-            const reasoning = s.detailed_reasoning || {};
-            const reasoningHtml = `
-                <details class="mb-2.5 text-xs rounded-xl bg-slate-900/60 border border-slate-800 p-2 text-slate-300">
-                    <summary class="font-bold text-[11px] text-cyan-300 cursor-pointer flex items-center justify-between select-none">
-                        <span>🧠 Market Analysis & Reasoning</span>
-                        <span class="text-[10px] text-slate-400">View Edge ▾</span>
+                <details class="rounded-lg bg-slate-900/60 border border-slate-800 px-2.5 py-1.5">
+                    <summary class="cursor-pointer select-none list-none">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="text-slate-400">Opportunity</span>
+                            <span class="font-black text-white">${score}<span class="text-slate-500 font-normal">/100</span> <span class="text-[11px] ${score >= 60 ? 'text-emerald-300' : 'text-slate-400'}">${escHtml(s.score_label)}</span> <span class="text-slate-500">▾</span></span>
+                        </div>
+                        <div class="mt-1 h-1.5 rounded-full bg-slate-800 overflow-hidden"><div class="h-full ${scoreColor}" style="width:${Math.max(3, score)}%"></div></div>
                     </summary>
-                    <div class="mt-2 space-y-1.5 text-[10px] font-mono border-t border-slate-800 pt-2 text-slate-300">
-                        <div><strong class="text-cyan-400">Structure:</strong> ${reasoning.market_structure || 'Identified breakout inception from coiled multi-timeframe consolidation.'}</div>
-                        <div><strong class="text-emerald-400">Volume Ignition:</strong> ${reasoning.volume_ignition || `${s.volume_ratio || '1.5'}x average volume confirming institutional accumulation.`}</div>
-                        <div><strong class="text-purple-400">Momentum Confluence:</strong> ${reasoning.trend_momentum || `RSI at ${s.rsi || '55'} confirming trend inception with room for 24h expansion.`}</div>
-                        <div><strong class="text-amber-400">Execution Rule:</strong> ${reasoning.execution_strategy || 'Enter at breakout, set SL below structure. Move SL to breakeven at TP1. Let runner reach TP2/TP3.'}</div>
-                    </div>
+                    <div class="mt-2 space-y-0.5 text-[11px] text-slate-400">${breakdownRows}</div>
                 </details>
-            `;
 
-            const htfConfluenceHtml = `
-                <div class="mb-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-[10px] font-mono flex items-center justify-between">
-                    <span class="text-slate-400 truncate max-w-[65%]">1H: <strong class="${isBuy ? 'text-emerald-400' : 'text-rose-400'}">${s.htf_summary || (isBuy ? '1H Bullish Expansion' : '1H Bearish Trend')}</strong></span>
-                    <span class="text-slate-400">BTC: <strong class="text-cyan-300 font-bold">${s.btc_macro || 'Aligned'}</strong></span>
+                <div class="text-xs">${status}</div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                    ${level('Entry', fmtPrice(s.entry, d), `${s.interval} close`, 'text-white')}
+                    ${level('Now', fmtPrice(s.now_price, d), drift, 'text-cyan-300')}
+                    ${level('Stop', fmtPrice(s.sl, d), `−${s.sl_pct}%`, 'text-rose-300')}
+                    ${level('TP1 · 1.5R', fmtPrice(s.tp1, d), `+${s.tp1_pct}% · book 50%`, 'text-emerald-300')}
+                    ${level('TP2 · 3R', fmtPrice(s.tp2, d), `+${s.tp2_pct}%`, 'text-emerald-300')}
+                    ${level('Edge', s.edge_r !== null && s.edge_r !== undefined ? `${s.edge_r >= 0 ? '+' : ''}${Number(s.edge_r).toFixed(2)}R` : '—', 'avg per trade', s.edge_r > 0 ? 'text-emerald-300' : 'text-slate-300')}
                 </div>
-            `;
 
-            const breakoutInfoHtml = (s.breakout_level) ? `
-                <div class="mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between text-xs font-mono">
-                    <span class="text-amber-400 font-bold flex items-center gap-1">🎯 Breakout Level: <span class="text-white">${s.breakout_level}</span></span>
-                    <span class="text-amber-300 font-bold bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/30">${s.distance_pct !== undefined ? `${s.distance_pct}% away` : 'Imminent'}</span>
+                ${accountHtml}
+                <div class="text-[11px] text-slate-400">${record}</div>
+
+                <details class="rounded-lg bg-slate-900/60 border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-400">
+                    <summary class="cursor-pointer select-none font-semibold text-cyan-300">Why this signal ▾</summary>
+                    <ul class="mt-1.5 space-y-0.5">${filterRows}</ul>
+                    ${s.confluences && s.confluences.length ? `<div class="mt-1 text-cyan-300">Confluence: ${escHtml(s.confluences.join(', '))}</div>` : ''}
+                    <div class="mt-1 font-mono">RSI ${ind.rsi ?? '—'} · ADX ${ind.adx ?? '—'} · Vol ${ind.volume_ratio ?? '—'}x · ATR ${ind.atr_pct ?? '—'}%</div>
+                    ${s.auto_trade ? `<div class="mt-1 text-indigo-300">Auto-trader: ${escHtml(s.auto_trade)}</div>` : ''}
+                </details>
+
+                <div class="grid grid-cols-3 gap-2 mt-auto">
+                    <button type="button" ${canTrade ? '' : 'disabled'} onclick="executeManualScanTrade('${s.symbol}', '${s.direction}', this)"
+                        class="col-span-2 py-2 px-2 text-xs font-black rounded-lg transition ${canTrade ? (isLong ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-rose-600 hover:bg-rose-500 text-white') : 'bg-slate-800 text-slate-500 cursor-not-allowed'}"
+                        title="${canTrade ? 'Opens the trade with the stop-loss placed on Binance' : 'Only tradable signals with a valid entry can be placed'}">
+                        ${canTrade ? '⚡ ' + tradeLabel : (s.tradable ? 'Entry no longer valid' : 'Not tradable')}
+                    </button>
+                    <button type="button" onclick="openScanChart('${s.symbol}', ${Number(s.time) || 0}, '${s.interval}')"
+                        class="py-2 px-2 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 transition">📈 Chart</button>
                 </div>
-            ` : '';
+            </div>`;
+    }
 
-            html += `
-                <div class="p-4 rounded-xl bg-slate-950/80 border ${borderCls} transition shadow-xl relative flex flex-col justify-between hover:bg-slate-900/60">
-                    <div>
-                        <div class="flex items-center justify-between mb-2">
-                            <div class="flex items-center space-x-1.5 flex-wrap gap-y-1">
-                                <span class="text-base font-black text-white tracking-wide">${s.symbol}</span>
-                                ${gradeBadge}
-                                ${setupTypeBadge}
-                            </div>
-                            <span class="text-[11px] font-mono text-slate-400">${s.time || ''}</span>
-                        </div>
+    /** Open the coin on the SignalAlgo chart with this signal's plan drawn, and scroll to it. */
+    function openScanChart(symbol, signalTime, interval) {
+        if (chartMode !== 'algo') {
+            switchChartMode('algo');
+        }
+        // Set the coin first: loadFuturesChart clears the requested signal when the coin changes.
+        activeSymbol = String(symbol).toUpperCase();
+        requestedSignalTime = Number(signalTime) || 0;
+        if (interval && interval !== activeInterval) {
+            switchTimeframe(interval);
+        } else {
+            loadFuturesChart(activeSymbol, false);
+        }
+        const target = document.getElementById('signalalgo_canvas_chart') || document.getElementById('headerSymbolTitle');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
 
-                        <div class="flex items-center justify-between mb-2">
-                            <span class="text-xs font-bold px-2.5 py-1 rounded-lg border ${tagCls}">
-                                ${sideIcon}
-                            </span>
-                            <span class="text-xs font-mono font-bold text-slate-200">
-                                Score: <strong class="${scoreCls}">${s.score}/100</strong>
-                            </span>
-                        </div>
-
-                        ${htfConfluenceHtml}
-                        ${srHudHtml}
-                        ${reasoningHtml}
-                        ${breakoutInfoHtml}
-
-                        <!-- Technical confluence factors -->
-                        <div class="flex flex-wrap gap-1.5 text-[10px] font-mono text-slate-400 mb-3">
-                            <span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">Entry: <strong class="text-white">$${s.entry}</strong></span>
-                            ${s.rsi ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">RSI: <strong class="text-slate-200">${s.rsi}</strong></span>` : ''}
-                            ${s.adx ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">ADX: <strong class="text-slate-200">${s.adx}</strong></span>` : ''}
-                            ${s.volume_ratio ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">Vol: <strong class="text-slate-200">${s.volume_ratio}x</strong></span>` : ''}
-                            ${s.atr_pct ? `<span class="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">ATR: <strong class="text-slate-200">${s.atr_pct}%</strong></span>` : ''}
-                        </div>
-                    </div>
-
-                    <!-- Action buttons -->
-                    <div class="mt-2 flex items-center gap-2">
-                        <button type="button" onclick="executeManualScanTrade('${s.symbol}', '${isBuy ? 'LONG' : 'SHORT'}', this)"
-                            class="flex-1 py-2 px-3 text-xs font-black rounded-lg ${isBuy ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/50' : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950/50'} shadow-md transition flex items-center justify-center space-x-1.5 cursor-pointer touch-manipulation active:scale-[0.98]">
-                            <span>⚡ Place ${isBuy ? 'LONG' : 'SHORT'} Trade</span>
-                        </button>
-                        <button type="button" onclick="loadFuturesChart('${s.symbol}', true)"
-                            class="py-2 px-3 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white border border-slate-700 transition flex items-center justify-center space-x-1 cursor-pointer touch-manipulation">
-                            <span>📊 Chart</span>
-                        </button>
-                    </div>
-                </div>
-            `;
-        });
-
-        grid.innerHTML = html;
+    /** Toggle Telegram alerts for one coin from its card. */
+    async function toggleScanAlert(symbol, watched, btn) {
+        const url = watched ? '{{ route('daemon.monitored-coins.remove') }}' : '{{ route('daemon.monitored-coins.add') }}';
+        try {
+            const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }, body: JSON.stringify({ symbol }) });
+            const data = await res.json().catch(() => ({}));
+            showToast(data.message || (res.ok ? 'Updated.' : 'Could not update alerts.'), res.ok);
+            if (res.ok) {
+                rawMarketScanSignals.forEach(s => { if (s.symbol === symbol) s.watched = !watched; });
+                applyScanFilterAndSort();
+            }
+        } catch (e) {
+            showToast('Network error.', false);
+        }
     }
 
     async function executeManualScanTrade(symbol, direction, btnEl) {
-        const confirmed = confirm(`⚡ Execute Binance Futures ${direction} trade on ${symbol} with institutional risk management?`);
+        const mode = scanAccount ? String(scanAccount.mode).toUpperCase() : 'ACTIVE';
+        const confirmed = confirm(`Place ${direction} ${symbol} in ${mode} mode?\nRisk is capped at ${scanAccount ? scanAccount.risk_pct : 2}% of the balance and the stop-loss is placed with the order.${mode === 'LIVE' ? '\n\nLIVE: this is a REAL order with REAL money.' : ''}`);
         if (!confirmed) return;
 
         const originalHtml = btnEl ? btnEl.innerHTML : null;

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use App\Services\Strategy\MarketScanService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Mockery\MockInterface;
 use Tests\TestCase;
@@ -23,7 +24,7 @@ class ManualMarketScanTest extends TestCase
         $status = $this->actingAs($admin)->getJson(route('market-scan.status'))->assertOk();
         $this->assertTrue($status->json('is_running'));
         $this->assertTrue(app(MarketScanService::class)->isManualScanQueued());
-        Http::assertNothingSent();
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/klines'));
     }
 
     public function test_a_second_click_does_not_queue_a_duplicate_scan(): void

@@ -3,10 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\Setting;
+use App\Models\TradingAccount;
+use App\Services\Crypto\BinanceClient;
 use App\Services\Strategy\MarketScanService;
+use App\Services\Strategy\OpportunityScorer;
 use App\Services\Strategy\StrategyEngine;
+use App\Services\Strategy\Watchlist;
+use App\Services\Trading\TradingModeManager;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
+use Throwable;
 
 /**
  * Whole-market scan for the chart page. The background engine scans after every candle close;
@@ -14,7 +20,12 @@ use Illuminate\Http\JsonResponse;
  */
 class MarketScanController extends Controller
 {
-    public function __construct(protected MarketScanService $scanner) {}
+    public function __construct(
+        protected MarketScanService $scanner,
+        protected OpportunityScorer $opportunity,
+        protected BinanceClient $market,
+        protected TradingModeManager $modeManager
+    ) {}
 
     public function start(): JsonResponse
     {
@@ -36,7 +47,10 @@ class MarketScanController extends Controller
         $busy = in_array($state['status'] ?? 'IDLE', ['QUEUED', 'RUNNING'], true);
         $results = $this->scanner->latestManualResults();
         $rows = (array) ($results['rows'] ?? []);
-        $signals = array_values(array_map(fn (array $row): array => $this->card($row), array_filter($rows, fn (array $r): bool => ! empty($r['signal']))));
+        $prices = $this->livePrices();
+        $watchlist = Watchlist::symbols();
+        $signals = array_values(array_map(fn (array $row): array => $this->card($row, $prices[$row['symbol']] ?? null, $watchlist), array_filter($rows, fn (array $r): bool => ! empty($r['signal']))));
+        $signals = $this->rankCards($signals);
         $near = array_values(array_filter($rows, fn (array $r): bool => empty($r['signal']) && ! empty($r['near'])));
         $coins = fn (string $bias): array => array_values(array_map(fn (array $r): string => str_replace('USDT', '', $r['symbol']), array_filter($rows, fn (array $r): bool => $r['bias'] === $bias)));
 
@@ -75,6 +89,7 @@ Previous results:
                 : ['current_symbol' => 'Done', 'index' => count($rows), 'total' => count($rows), 'percent' => 100, 'signals_found' => count($signals)],
             'signals' => $signals,
             'total_signals' => count($signals),
+            'account' => $this->accountSummary(),
             'log_tail' => $log,
             'started_at' => isset($results['scanned_at']) ? Carbon::parse($results['scanned_at'])->setTimezone('Asia/Kolkata')->format('H:i:s \I\S\T') : null,
         ]);
@@ -88,54 +103,132 @@ Previous results:
     }
 
     /**
-     * Shape a scanner row for the existing signal cards.
+     * Shape a scanner row for the result cards, refreshed with the live price.
      *
      * @param  array<string, mixed>  $row
+     * @param  array<int, string>  $watchlist
      * @return array<string, mixed>
      */
-    protected function card(array $row): array
+    protected function card(array $row, ?float $livePrice, array $watchlist): array
     {
         $s = $row['signal'];
         $entry = (float) $s['entry'];
+        $risk = abs($entry - (float) $s['sl']);
+        $direction = $s['side'] === 'LONG' ? 1 : -1;
+        $decimals = (int) ($s['price_decimals'] ?? MarketScanService::priceDecimals($entry));
+        $round = fn (float $price): float => round($price, $decimals);
         $pct = fn (float $price): float => $entry > 0 ? round(abs($price - $entry) / $entry * 100, 2) : 0.0;
-        $stats = $s['stats'] ?? [];
-        $filters = collect($s['filters'])->map(fn (array $f, string $name): string => ($f['pass'] ? '✓ ' : '✗ ').str_replace('_', ' ', $name).': '.$f['detail'])->implode(' · ');
-        $record = ($stats['n'] ?? 0) > 0
-            ? sprintf('%s%% win, %+.2fR avg over %d signals (90d, %s).', $stats['win_rate'], $stats['expectancy'], $stats['n'], $stats['source'])
-            : 'No track record yet.';
+
+        // Refresh the entry part of the score with the live price.
+        $now = $livePrice ?? (isset($row['price']) ? (float) $row['price'] : null);
+        $drift = ($now !== null && $risk > 0) ? ($now - $entry) * $direction / $risk : null;
+        $opportunity = (array) ($s['opportunity'] ?? []);
+        $breakdown = (array) ($opportunity['breakdown'] ?? []);
+        $breakdown['entry'] = round($this->opportunity->entryPoints($drift), 1);
+        $score = (int) round(max(0, min(100, array_sum($breakdown))));
+        $stats = (array) ($s['stats'] ?? []);
 
         return [
             'symbol' => $row['symbol'],
+            'interval' => $s['interval'],
             'side' => $s['order_side'],
-            'grade' => $s['grade'],
-            'score' => $s['ai_probability'] !== null ? (int) round($s['ai_probability'] * 100) : null,
+            'direction' => $s['side'],
             'setup_type' => $s['setup'],
             'setup_label' => StrategyEngine::SETUP_LABELS[$s['setup']] ?? $s['setup_label'],
-            'entry' => $entry,
-            'sl' => $s['sl'],
-            'sl_pct' => $s['sl_pct'],
-            'tp1' => $s['tp1'],
+            'is_shadow' => (bool) $s['is_shadow'],
+            'tradable' => (bool) $s['tradable'],
+            'grade' => $s['grade'],
+            'score' => $score,
+            'score_label' => OpportunityScorer::label($score),
+            'score_breakdown' => $breakdown,
+            'edge_r' => $opportunity['edge_r'] ?? ($stats['expectancy'] ?? null),
+            'time' => (int) $s['time'],
+            'age_minutes' => $s['age_minutes'] ?? max(0, (int) round((now()->timestamp - (int) $s['time']) / 60)),
+            'price_decimals' => $decimals,
+            'entry' => $round($entry),
+            'now_price' => $now !== null ? $round($now) : null,
+            'drift_r' => $drift !== null ? round($drift, 2) : null,
+            'entry_status' => $this->opportunity->entryStatus($drift),
+            'sl' => $round((float) $s['sl']),
+            'sl_pct' => $pct((float) $s['sl']),
+            'tp1' => $round((float) $s['tp1']),
             'tp1_pct' => $pct((float) $s['tp1']),
-            'tp2' => $s['tp2'],
+            'tp2' => $round((float) $s['tp2']),
             'tp2_pct' => $pct((float) $s['tp2']),
-            'tp3' => $s['tp3'],
-            'tp3_pct' => $pct((float) $s['tp3']),
-            'risk_reward' => '1 : '.$s['risk_reward'],
-            'tradable' => $s['tradable'],
-            'trade_type' => 'SWING TRADE',
-            'trade_horizon' => 'Up to 48h (time stop 12h)',
-            'recommended_leverage' => 'Risk-sized ('.config('trading.sizing.risk_per_trade_pct', 2.0).'%)',
-            'support' => $s['side'] === 'LONG' ? $s['sl'] : null,
-            'resistance' => $s['side'] === 'SHORT' ? $s['sl'] : null,
-            'volume_ratio' => $s['indicators']['volume_ratio'] ?? null,
-            'rsi' => $s['indicators']['rsi'] ?? null,
-            'age_minutes' => $s['age_minutes'] ?? max(0, (int) round((time() - (int) $s['time']) / 60)),
-            'detailed_reasoning' => [
-                'market_structure' => $filters,
-                'volume_ignition' => 'Volume '.($s['indicators']['volume_ratio'] ?? '?').'x average. '.($s['confluences'] !== [] ? 'Confluence: '.implode(', ', $s['confluences']).'.' : 'No extra confluence.'),
-                'trend_momentum' => 'RSI '.($s['indicators']['rsi'] ?? '?').', ADX '.($s['indicators']['adx'] ?? '?').'. Track record: '.$record,
-                'execution_strategy' => 'Stop at '.$s['sl'].'. Book half at TP1 (1.5R) and move the stop to +0.5R; trail the rest at 1.5x ATR. Breakeven at +1R. Exit if not +0.5R after 12h.'.($s['auto_trade'] ? ' Auto-trader: '.$s['auto_trade'] : ''),
+            'filters' => $s['filters'],
+            'failed_filters' => array_values((array) $s['failed_filters']),
+            'confluences' => $s['confluences'],
+            'stats' => [
+                'win_rate' => $stats['win_rate'] ?? null,
+                'expectancy' => $stats['expectancy'] ?? null,
+                'n' => $stats['n'] ?? 0,
+                'source' => $stats['source'] ?? null,
             ],
+            'indicators' => [
+                'rsi' => $s['indicators']['rsi'] ?? null,
+                'adx' => $s['indicators']['adx'] ?? null,
+                'volume_ratio' => $s['indicators']['volume_ratio'] ?? null,
+                'atr_pct' => $s['indicators']['atr_pct'] ?? null,
+            ],
+            'auto_trade' => $s['auto_trade'] ?? null,
+            'watched' => in_array($row['symbol'], $watchlist, true),
+        ];
+    }
+
+    /**
+     * Order cards by tradable first, then score, and number them 1..n with one top pick.
+     *
+     * @param  array<int, array<string, mixed>>  $cards
+     * @return array<int, array<string, mixed>>
+     */
+    protected function rankCards(array $cards): array
+    {
+        usort($cards, fn (array $a, array $b): int => [$b['tradable'], $b['score']] <=> [$a['tradable'], $a['score']]);
+
+        $topPicked = false;
+        foreach ($cards as $index => $card) {
+            $cards[$index]['rank'] = $index + 1;
+            $isTop = ! $topPicked && $card['tradable'] && $card['entry_status'] === 'Enter now';
+            $cards[$index]['top_pick'] = $isTop;
+            $topPicked = $topPicked || $isTop;
+        }
+
+        return $cards;
+    }
+
+    /**
+     * Last traded prices for all symbols (24h ticker, cached ~20s).
+     *
+     * @return array<string, float>
+     */
+    protected function livePrices(): array
+    {
+        try {
+            $prices = [];
+            foreach ($this->market->get24hrTickers() as $ticker) {
+                $prices[strtoupper((string) ($ticker['symbol'] ?? ''))] = (float) ($ticker['lastPrice'] ?? 0);
+            }
+
+            return array_filter($prices, fn (float $p): bool => $p > 0);
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Active mode, balance and risk per trade, so cards can show $ risk and targets.
+     *
+     * @return array{mode: string, balance: float, risk_pct: float}
+     */
+    protected function accountSummary(): array
+    {
+        $mode = $this->modeManager->activeMode();
+
+        return [
+            'mode' => $mode,
+            'balance' => round((float) TradingAccount::getForMode($mode)->balance, 2),
+            'risk_pct' => (float) config('trading.sizing.risk_per_trade_pct', 2.0),
+            'fee_rate' => (float) config('trading.exits.fee_rate', 0.0005),
         ];
     }
 }

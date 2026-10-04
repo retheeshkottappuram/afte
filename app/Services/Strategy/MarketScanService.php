@@ -28,8 +28,24 @@ class MarketScanService
         protected SignalLedger $ledger,
         protected SetupStats $stats,
         protected SignalScorer $scorer,
-        protected TradeSimulator $simulator
+        protected TradeSimulator $simulator,
+        protected OpportunityScorer $opportunity
     ) {}
+
+    /**
+     * Decimal places that keep a price readable for its magnitude (e.g. 275.02, 1.2345, 0.043341).
+     */
+    public static function priceDecimals(float $price): int
+    {
+        $price = abs($price);
+
+        return match (true) {
+            $price >= 1000 => 2,
+            $price >= 1 => 4,
+            $price >= 0.01 => 5,
+            default => 7,
+        };
+    }
 
     /**
      * On-demand whole-market scan: every crypto perpetual above a small volume floor, showing every
@@ -70,6 +86,7 @@ class MarketScanService
         }
 
         usort($rows, fn (array $a, array $b): int => $this->rank($b) <=> $this->rank($a));
+        $rows = $this->numberRanks($rows);
         $signalCount = count(array_filter($rows, fn (array $r): bool => $r['signal'] !== null));
 
         Setting::putValue(self::MANUAL_RESULTS_KEY, [
@@ -230,6 +247,7 @@ class MarketScanService
         }
 
         usort($rows, fn (array $a, array $b): int => $this->rank($b) <=> $this->rank($a));
+        $rows = $this->numberRanks($rows);
 
         Setting::putValue(self::RESULTS_KEY, [
             'interval' => $interval,
@@ -288,7 +306,11 @@ class MarketScanService
 
         if ($latest !== null) {
             $stats = $this->stats->forSetup($latest->setup, null, 90);
+            $opportunity = $this->opportunity->score($latest, isset($state['price']) ? (float) $state['price'] : null);
             $row['signal'] = array_merge($latest->toArray(), [
+                'opportunity' => $opportunity,
+                'score' => $opportunity['score'],
+                'price_decimals' => self::priceDecimals($latest->entry),
                 'id' => $record?->id,
                 'ai_lift' => $this->scorer->aiLift($latest),
                 'stats' => $stats,
@@ -309,12 +331,33 @@ class MarketScanService
     {
         $signal = $row['signal'];
         if ($signal !== null) {
-            $gradeScore = ['A' => 3, 'B' => 2, 'C' => 1][$signal['grade']] ?? 0;
-
-            return ($signal['tradable'] ? 1000 : 500) + $gradeScore * 10 + (float) ($signal['ai_lift'] ?? 1.0);
+            return ($signal['tradable'] ? 1000 : 500) + (float) ($signal['score'] ?? 0);
         }
 
         return $row['near'] !== null ? 100 : (float) (($row['quote_volume'] ?? 0) / 1e12);
+    }
+
+    /**
+     * Give signal rows a 1..n rank in the sorted order and flag the best tradable one.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return array<int, array<string, mixed>>
+     */
+    protected function numberRanks(array $rows): array
+    {
+        $rank = 0;
+        $topPicked = false;
+        foreach ($rows as $index => $row) {
+            if ($row['signal'] === null) {
+                continue;
+            }
+            $rows[$index]['signal']['rank'] = ++$rank;
+            $isTop = ! $topPicked && $row['signal']['tradable'];
+            $rows[$index]['signal']['top_pick'] = $isTop;
+            $topPicked = $topPicked || $isTop;
+        }
+
+        return $rows;
     }
 
     protected function runningKey(string $interval, int $bar): string

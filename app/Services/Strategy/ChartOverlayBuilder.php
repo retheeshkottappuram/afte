@@ -87,20 +87,25 @@ class ChartOverlayBuilder
                 'time' => $signal->time,
             ], $candles, $barSeconds);
 
-            $ai = $signal->aiProbability !== null ? ' '.round($signal->aiProbability * 100).'%' : '';
-            $stars = str_repeat('★', $signal->stars());
+            // Short, high-contrast labels; the page shows or hides each `kind` with toggles.
+            $word = $signal->isLong() ? 'BUY' : 'SELL';
+            $position = $signal->isLong() ? 'belowBar' : 'aboveBar';
+            $isOpen = ! $result['closed'];
 
             if ($signal->isShadow) {
-                // Shadow setups are tracked, not traded: a small unlabeled dot keeps the chart readable.
-                $markers[] = ['time' => $signal->time, 'position' => $signal->isLong() ? 'belowBar' : 'aboveBar', 'shape' => 'circle', 'color' => 'rgba(100,116,139,0.6)', 'text' => '', 'size' => 0.5];
+                $markers[] = ['time' => $signal->time, 'position' => $position, 'shape' => 'circle', 'color' => '#64748b', 'text' => '', 'size' => 1, 'kind' => 'shadow', 'signal_time' => $signal->time];
+            } elseif (! $signal->isTradable()) {
+                $markers[] = ['time' => $signal->time, 'position' => $position, 'shape' => $signal->isLong() ? 'arrowUp' : 'arrowDown', 'color' => '#94a3b8', 'text' => $word.' (filtered)', 'size' => 1, 'kind' => 'filtered', 'signal_time' => $signal->time];
             } else {
                 $markers[] = [
                     'time' => $signal->time,
-                    'position' => $signal->isLong() ? 'belowBar' : 'aboveBar',
+                    'position' => $position,
                     'shape' => $signal->isLong() ? 'arrowUp' : 'arrowDown',
-                    'color' => $signal->isTradable() ? ($signal->isLong() ? '#10b981' : '#ef4444') : '#64748b',
-                    'text' => ($signal->isLong() ? 'BUY ' : 'SELL ').$stars.$ai.($signal->isTradable() ? '' : ' (filtered)'),
-                    'size' => $signal->isTradable() ? 2 : 1,
+                    'color' => $signal->isLong() ? '#22c55e' : '#f43f5e',
+                    'text' => $isOpen ? "{$word} {$signal->grade} · OPEN" : "{$word} {$signal->grade}",
+                    'size' => $isOpen ? 3 : 2,
+                    'kind' => $isOpen ? 'active' : 'signal',
+                    'signal_time' => $signal->time,
                 ];
             }
 
@@ -110,8 +115,10 @@ class ChartOverlayBuilder
                     'position' => $signal->isLong() ? 'aboveBar' : 'belowBar',
                     'shape' => 'circle',
                     'color' => $result['r_multiple'] > 0 ? '#22c55e' : ($result['r_multiple'] < -0.1 ? '#f43f5e' : '#94a3b8'),
-                    'text' => $this->outcomeLabel($result['outcome']).sprintf(' %+.1fR', $result['r_multiple']),
+                    'text' => sprintf('%+.1fR', $result['r_multiple']),
                     'size' => 1,
+                    'kind' => 'result',
+                    'signal_time' => $signal->time,
                 ];
 
                 if ($signal->isTradable()) {
@@ -291,17 +298,5 @@ class ChartOverlayBuilder
         }
 
         return intdiv((int) end($c['closeTimes']), 1000);
-    }
-
-    protected function outcomeLabel(string $outcome): string
-    {
-        return match ($outcome) {
-            'TP2' => '✅✅ TP2',
-            'TP1' => '✅ TP1',
-            'BE' => '➖ BE',
-            'SL' => '❌ SL',
-            'EXPIRED' => '⏳ Time',
-            default => $outcome,
-        };
     }
 }

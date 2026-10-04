@@ -6,6 +6,7 @@ use App\Models\CryptoSignal;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Crypto\BinanceClient;
+use App\Services\Strategy\OpportunityScorer;
 use App\Services\Strategy\Signal;
 use App\Services\Strategy\SignalScorer;
 use App\Services\Strategy\SymbolAnalyzer;
@@ -32,7 +33,8 @@ class SignalAlgoTrader
         protected DynamicTradeManager $tradeManager,
         protected SignalScorer $scorer,
         protected SymbolAnalyzer $analyzer,
-        protected TradingModeManager $modeManager
+        protected TradingModeManager $modeManager,
+        protected OpportunityScorer $opportunity
     ) {}
 
     /**
@@ -201,9 +203,7 @@ class SignalAlgoTrader
 
     protected function priority(Signal $signal): float
     {
-        $gradeScore = ['A' => 3, 'B' => 2, 'C' => 1][$signal->grade] ?? 0;
-
-        return $gradeScore * 10 + (float) ($this->scorer->aiLift($signal) ?? 1.0) + count($signal->confluences) * 0.1;
+        return (float) $this->opportunity->score($signal, $signal->entry)['score'];
     }
 
     /**

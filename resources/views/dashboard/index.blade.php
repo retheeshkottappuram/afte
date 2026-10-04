@@ -447,7 +447,7 @@
                             <thead class="bg-cyber-800/80 text-slate-400 font-mono uppercase border-b border-cyber-border">
                                 <tr>
                                     <th class="px-4 py-3">Pair / Setup</th>
-                                    <th class="px-3 py-3">Grade / AI</th>
+                                    <th class="px-3 py-3">Rank / Score</th>
                                     <th class="px-3 py-3">Entry</th>
                                     <th class="px-3 py-3">Track Record (90d)</th>
                                     <th class="px-3 py-3">SL / TP1 / TP2</th>
@@ -1230,7 +1230,12 @@
             }
 
             const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-            const fmtP = (p) => { const n = Number(p); return n >= 1 ? n.toFixed(4) : n.toPrecision(5); };
+            const fmtP = (p, d) => {
+                const n = Number(p);
+                if (isNaN(n)) return '—';
+                const dec = Number.isInteger(d) ? d : (Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : Math.abs(n) >= 0.01 ? 5 : 7);
+                return n.toLocaleString('en-US', { minimumFractionDigits: Math.min(dec, 2), maximumFractionDigits: dec });
+            };
 
             if (!opportunities || opportunities.length === 0) {
                 tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400 font-mono text-xs">No signal on the last closed candle. Most of the time the right trade is no trade; the scanner checks again after the next candle.</td></tr>`;
@@ -1240,8 +1245,8 @@
             tbody.innerHTML = opportunities.map(op => {
                 const isLong = op.direction === 'LONG';
                 const dirBadge = isLong ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-rose-400 bg-rose-500/10 border-rose-500/30';
-                const stars = '★'.repeat(op.stars || 1) + '☆'.repeat(5 - (op.stars || 1));
-                const ai = op.ai_probability !== null && op.ai_probability !== undefined ? `${Math.round(op.ai_probability * 100)}%` : '—';
+                const score = Number(op.score) || 0;
+                const scoreCls = score >= 75 ? 'text-emerald-300' : score >= 60 ? 'text-cyan-300' : score >= 45 ? 'text-amber-300' : 'text-slate-400';
                 const st = op.stats || {};
                 const record = st.n
                     ? `<div class="font-bold text-white">${st.win_rate}% win</div><div class="${st.expectancy >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${st.expectancy >= 0 ? '+' : ''}${Number(st.expectancy).toFixed(2)}R avg</div><div class="text-[10px] text-slate-500">n=${st.n} · ${esc(st.source)}</div>`
@@ -1251,7 +1256,8 @@
                     ? `<span class="text-emerald-400">✓ All filters passed</span>`
                     : `<span class="text-rose-300">${failed || (op.is_shadow ? 'Shadow setup (tracked only)' : 'Not tradable')}</span>`;
                 const auto = op.auto_trade ? `<div class="text-[10px] text-cyan-300 mt-1">🤖 ${esc(op.auto_trade)}</div>` : '';
-                const canTrade = op.tradable && !op.is_shadow;
+                const canTrade = op.tradable && !op.is_shadow && (op.entry_status || 'Enter now') === 'Enter now';
+                const d = op.price_decimals;
 
                 return `
                     <tr class="hover:bg-cyber-800/40 transition ${op.tradable ? '' : 'opacity-70'}">
@@ -1264,17 +1270,17 @@
                             ${op.confluences && op.confluences.length ? `<span class="text-[10px] text-slate-500 block">${esc(op.confluences.join(' · '))}</span>` : ''}
                         </td>
                         <td class="px-3 py-3">
-                            <div class="font-bold text-amber-300 text-sm">Grade ${esc(op.grade)}</div>
-                            <div class="text-[10px] text-amber-400">${stars}</div>
-                            <div class="text-[10px] text-indigo-300">AI ${ai}</div>
+                            <div class="text-[10px] text-slate-500">#${op.rank ?? '-'}${op.top_pick ? ' ⭐ top' : ''}</div>
+                            <div class="font-black text-sm ${scoreCls}">${score}<span class="text-slate-500 text-[10px]">/100</span></div>
+                            <div class="text-[10px] text-slate-400">${esc(op.score_label || '')} · Grade ${esc(op.grade)}</div>
                         </td>
-                        <td class="px-3 py-3 text-slate-200">${fmtP(op.price)}<div class="text-[10px] text-slate-500">${op.interval} close</div></td>
+                        <td class="px-3 py-3 text-slate-200 tabular-nums">${fmtP(op.price, d)}<div class="text-[10px] ${op.entry_status === 'Enter now' ? 'text-emerald-400' : 'text-slate-500'}">${esc(op.entry_status || op.interval + ' close')}</div></td>
                         <td class="px-3 py-3 text-[11px]">${record}</td>
                         <td class="px-3 py-3">
                             <div class="space-y-0.5 text-[11px]">
-                                <div class="text-rose-400">SL: <span class="text-white font-bold">${fmtP(op.sl)}</span> <span class="text-rose-400/70">(-${op.sl_pct}%)</span></div>
-                                <div class="text-emerald-400">TP1: <span class="text-white font-bold">${fmtP(op.tp1)}</span> <span class="text-emerald-400/70">(+${op.tp1_pct}%)</span></div>
-                                <div class="text-emerald-300">TP2: <span class="text-white font-bold">${fmtP(op.tp2)}</span> <span class="text-emerald-300/70">(+${op.tp2_pct}%)</span></div>
+                                <div class="text-rose-400">SL: <span class="text-white font-bold tabular-nums">${fmtP(op.sl, d)}</span> <span class="text-rose-400/70">(-${op.sl_pct}%)</span></div>
+                                <div class="text-emerald-400">TP1: <span class="text-white font-bold tabular-nums">${fmtP(op.tp1, d)}</span> <span class="text-emerald-400/70">(+${op.tp1_pct}%)</span></div>
+                                <div class="text-emerald-300">TP2: <span class="text-white font-bold tabular-nums">${fmtP(op.tp2, d)}</span> <span class="text-emerald-300/70">(+${op.tp2_pct}%)</span></div>
                             </div>
                         </td>
                         <td class="px-3 py-3 text-[10px] max-w-[220px]">${filterHtml}${auto}</td>
