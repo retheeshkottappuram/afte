@@ -119,6 +119,65 @@ class DynamicTradeManager
     }
 
     /**
+     * Book part of a trade at market (dashboard "Book 25% / 50%"). The rest keeps its stop and exit plan;
+     * the exchange stop uses closePosition, so it covers whatever remains.
+     *
+     * @return array{status: string, message: string, filled_qty?: float, avg_price?: float, realized_pnl?: float}
+     */
+    public function closePartial(Trade $trade, float $ratio, float $price): array
+    {
+        if ($ratio >= 0.999) {
+            return $this->closeTrade($trade, $price, 'MANUAL_CLOSE');
+        }
+
+        $lock = Cache::lock("trade-manage:{$trade->id}", 30);
+        if (! $lock->block(10)) {
+            return ['status' => 'locked', 'message' => "Trade {$trade->id} is busy, try again."];
+        }
+
+        try {
+            $trade->refresh();
+            if (! $trade->isOpen()) {
+                return ['status' => 'error', 'message' => "Trade {$trade->id} is already closed."];
+            }
+
+            $remaining = (float) $trade->remaining_quantity;
+            $quantity = $this->client->formatQuantity($trade->symbol, $remaining * $ratio);
+            if ($quantity <= 0 || $quantity >= $remaining) {
+                return ['status' => 'error', 'message' => "{$trade->symbol}: position too small to split at this lot size. Close 100% instead."];
+            }
+
+            $fill = $price;
+            if ($trade->mode === 'live') {
+                $order = $this->client->forMode('live')->placeOrder([
+                    'symbol' => $trade->symbol,
+                    'side' => $trade->isLong() ? 'SELL' : 'BUY',
+                    'type' => 'MARKET',
+                    'quantity' => $quantity,
+                    'reduceOnly' => 'true',
+                    'newOrderRespType' => 'RESULT',
+                ]);
+                $fill = (float) ($order['avgPrice'] ?? 0) > 0 ? (float) $order['avgPrice'] : $price;
+            }
+
+            $this->recordPartial($trade, $fill, $quantity, notify: false);
+            $trade->remaining_quantity = round($remaining - $quantity, 8);
+            $trade->save();
+
+            $message = sprintf('%s %s: booked %s of %s at %s (%d%%). Realized so far $%s.', strtoupper($trade->mode), $trade->symbol, $quantity, $remaining, $fill, round($ratio * 100), $trade->realized_pnl);
+            SystemLog::write('trade', $message);
+
+            return ['status' => 'partial', 'message' => $message, 'filled_qty' => $quantity, 'avg_price' => $fill, 'realized_pnl' => (float) $trade->realized_pnl];
+        } catch (Throwable $e) {
+            Log::error("[DynamicTradeManager] Partial close of trade {$trade->id} failed: {$e->getMessage()}");
+
+            return ['status' => 'error', 'message' => "Partial close failed: {$e->getMessage()}"];
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
      * Manually move the stop to breakeven (dashboard action).
      */
     public function lockBreakeven(Trade $trade): bool
@@ -279,7 +338,7 @@ class DynamicTradeManager
         $this->afterTp1($trade);
     }
 
-    protected function recordPartial(Trade $trade, float $price, float $quantity): void
+    protected function recordPartial(Trade $trade, float $price, float $quantity, bool $notify = true): void
     {
         $gross = ($price - $trade->entry_price) * $quantity * ($trade->isLong() ? 1 : -1);
         $fee = $price * $quantity * $this->exitPlan->feeRate();
@@ -291,7 +350,9 @@ class DynamicTradeManager
         $trade->meta = $meta;
         $trade->realized_pnl = round((float) $meta['partial_gross'] - (float) $meta['partial_fee'], 4);
 
-        $this->notifier->notifyTp1Hit($trade, $quantity, round($gross - $fee, 4));
+        if ($notify) {
+            $this->notifier->notifyTp1Hit($trade, $quantity, round($gross - $fee, 4));
+        }
     }
 
     /**

@@ -465,6 +465,31 @@ class BinanceFuturesClient
     }
 
     /**
+     * Create (or return the active) user data stream listen key. Needs the API key only, no signature.
+     * The key lets a websocket receive account and order events; it cannot trade.
+     */
+    public function createListenKey(): string
+    {
+        $response = Http::timeout(10)->withHeaders(['X-MBX-APIKEY' => $this->apiKey])->post("{$this->baseUrl}/fapi/v1/listenKey");
+        $key = (string) ($this->handleResponse($response, '/fapi/v1/listenKey')['listenKey'] ?? '');
+
+        if ($key === '') {
+            throw new RuntimeException('Binance did not return a listen key.');
+        }
+
+        return $key;
+    }
+
+    /**
+     * Extend the user data stream for another 60 minutes.
+     */
+    public function keepAliveListenKey(): void
+    {
+        $response = Http::timeout(10)->withHeaders(['X-MBX-APIKEY' => $this->apiKey])->put("{$this->baseUrl}/fapi/v1/listenKey");
+        $this->handleResponse($response, '/fapi/v1/listenKey');
+    }
+
+    /**
      * Set leverage for a symbol (signed).
      */
     public function setLeverage(string $symbol, int $leverage): array
@@ -547,7 +572,7 @@ class BinanceFuturesClient
     /**
      * Place an exchange-side Stop Loss on Binance Futures.
      */
-    public function placeStopLoss(string $symbol, string $side, float $stopPrice, ?float $quantity = null, bool $closePosition = true): array
+    public function placeStopLoss(string $symbol, string $side, float $stopPrice, ?float $quantity = null, bool $closePosition = true, ?string $positionSide = null): array
     {
         $formattedPrice = (string) $this->formatPrice($symbol, $stopPrice);
 
@@ -560,6 +585,9 @@ class BinanceFuturesClient
                 'triggerPrice' => $formattedPrice,
                 'workingType' => 'MARK_PRICE',
             ];
+            if ($positionSide !== null && $positionSide !== 'BOTH') {
+                $params['positionSide'] = $positionSide;
+            }
 
             if ($closePosition) {
                 $params['closePosition'] = 'true';
@@ -578,6 +606,9 @@ class BinanceFuturesClient
                 'stopPrice' => $formattedPrice,
                 'workingType' => 'MARK_PRICE',
             ];
+            if ($positionSide !== null && $positionSide !== 'BOTH') {
+                $fallbackParams['positionSide'] = $positionSide;
+            }
 
             if ($closePosition) {
                 $fallbackParams['closePosition'] = 'true';
@@ -593,7 +624,7 @@ class BinanceFuturesClient
     /**
      * Place an exchange-side Take Profit on Binance Futures.
      */
-    public function placeTakeProfit(string $symbol, string $side, float $tpPrice, ?float $quantity = null, bool $closePosition = false): array
+    public function placeTakeProfit(string $symbol, string $side, float $tpPrice, ?float $quantity = null, bool $closePosition = false, ?string $positionSide = null): array
     {
         $params = [
             'algoType' => 'CONDITIONAL',
@@ -602,6 +633,9 @@ class BinanceFuturesClient
             'type' => 'TAKE_PROFIT_MARKET',
             'triggerPrice' => (string) $this->formatPrice($symbol, $tpPrice),
         ];
+        if ($positionSide !== null && $positionSide !== 'BOTH') {
+            $params['positionSide'] = $positionSide;
+        }
 
         if ($closePosition) {
             $params['closePosition'] = 'true';

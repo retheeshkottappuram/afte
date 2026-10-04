@@ -325,7 +325,7 @@
                     <!-- Balance & Equity -->
                     <div class="space-y-1">
                         <div class="flex items-center justify-between">
-                            <span class="text-xs uppercase tracking-wider text-slate-400 font-mono">Wallet Equity</span>
+                            <span id="stat-equity-label" class="text-xs uppercase tracking-wider text-slate-400 font-mono">{{ $mode === 'live' ? 'Wallet Equity' : 'Paper Equity' }}</span>
                             <span id="stage-badge" class="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-mono">Stage 1</span>
                         </div>
                         <div class="flex items-baseline space-x-3">
@@ -403,6 +403,27 @@
                         </button>
                         <span class="text-xs text-slate-400 font-mono hidden sm:inline">Autonomous Breakeven & Trailing Enabled</span>
                     </div>
+                </div>
+
+                <!-- Real Binance account positions (bot + manual), streamed live -->
+                <div id="exchange-block" class="hidden border-b border-cyber-border bg-amber-500/[0.03]">
+                    <div class="px-4 sm:px-5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                            <span class="text-[11px] font-mono font-bold text-amber-300 uppercase tracking-wide">Binance account · real money</span>
+                            <span id="exchange-count" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">0</span>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] font-mono">
+                            <span class="text-slate-400">Wallet <b id="exchange-wallet" class="text-slate-100 tabular-nums">—</b></span>
+                            <span class="text-slate-400">Equity <b id="exchange-equity" class="text-white tabular-nums">—</b></span>
+                            <span class="text-slate-400">uPnL <b id="exchange-upnl" class="tabular-nums">—</b></span>
+                        </div>
+                        <span id="exchange-stream-pill" class="inline-flex items-center gap-1.5 text-[10px] font-mono text-slate-400">
+                            <span id="exchange-stream-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+                            <span id="exchange-stream-text">CONNECTING</span>
+                        </span>
+                    </div>
+                    <div id="exchange-error" class="hidden px-5 pb-2 text-[11px] font-mono text-rose-300"></div>
+                    <div id="exchange-positions" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 px-4 sm:px-5 pb-4"></div>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -823,8 +844,9 @@
                 // 3. Update Capital & Margin Utilization Matrix
                 updateMarginMatrixUI(data.stats, data.positions);
 
-                // 4. Update Active Open Positions
+                // 4. Update Active Open Positions (bot/paper table + real Binance account)
                 updatePositionsUI(data.positions);
+                applyExchangeSnapshot(data.exchange);
 
                 // 5. Update Breakout Scanner Radar (if not running a manual fresh scan)
                 if (!isManualScanning && data.opportunities) {
@@ -1220,11 +1242,520 @@
                         </td>
                         <td class="px-5 py-3 text-right space-x-1 font-mono">
                             ${!pos.be_locked ? `<button onclick="lockBreakeven(${pos.id})" class="px-2 py-1 text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded transition">Lock BE</button>` : ''}
+                            ${canManageTrading ? `<button onclick="exchangeAction(this, { trade_id: ${pos.id}, percent: 50 }, 'book 50%')" class="px-2 py-1 text-[10px] bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded transition">Book 50%</button>` : ''}
                             <button onclick="closePosition(${pos.id})" class="px-2 py-1 text-[10px] bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded transition">Close</button>
                         </td>
                     </tr>
                 `;
             }).join('');
+        }
+
+        /* ------------------------------------------------------------------
+         * Real Binance account positions: REST snapshot every live-sync, plus a
+         * websocket (account events + 1s mark prices) for real-time PnL.
+         * ------------------------------------------------------------------ */
+        const exchangeState = { positions: {}, closedAt: {}, wallet: null, editing: {}, ws: null, wsSymbols: null, listenKey: null, wsBase: 'wss://fstream.binance.com', retry: 0, connecting: false, keepAlive: null, closingOnPurpose: false };
+
+        /** Wallet, equity (wallet + every position's live PnL) and total uPnL; in LIVE view also the top equity cards. */
+        function renderExchangeTotals() {
+            const unrealized = Object.values(exchangeState.positions).reduce((sum, p) => sum + (Number(p.unrealized_pnl) || 0), 0);
+            const wallet = exchangeState.wallet;
+            const equity = wallet !== null ? wallet + unrealized : null;
+            const set = (id, text, cls) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.textContent = text;
+                if (cls) el.className = `tabular-nums ${cls}`;
+            };
+            set('exchange-wallet', wallet !== null ? `$${wallet.toFixed(2)}` : '—');
+            set('exchange-equity', equity !== null ? `$${equity.toFixed(2)}` : '—', 'text-white');
+            set('exchange-upnl', `${unrealized >= 0 ? '+' : '−'}$${Math.abs(unrealized).toFixed(2)}`, unrealized >= 0 ? 'text-emerald-400' : 'text-rose-400');
+
+            const label = document.getElementById('stat-equity-label');
+            if (label) label.textContent = currentMode === 'live' ? 'Wallet Equity' : 'Paper Equity';
+            if (currentMode === 'live' && equity !== null) {
+                ['stat-equity', 'alloc-equity'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = `$${equity.toFixed(2)}`;
+                });
+            }
+        }
+
+        function exchangeKey(symbol, side) { return `${symbol}:${side}`; }
+
+        function exchangeDecimals(price) {
+            const p = Math.abs(Number(price) || 0);
+            return p >= 1000 ? 2 : p >= 1 ? 4 : p >= 0.01 ? 5 : 7;
+        }
+
+        function fmtEx(value, decimals) {
+            if (value === null || value === undefined || isNaN(Number(value))) return '—';
+            return Number(value).toLocaleString('en-US', { minimumFractionDigits: Math.min(2, decimals), maximumFractionDigits: decimals });
+        }
+
+        function showToast(message, ok = true) {
+            let box = document.getElementById('afte-toasts');
+            if (!box) {
+                box = document.createElement('div');
+                box.id = 'afte-toasts';
+                box.className = 'fixed bottom-4 right-4 left-4 sm:left-auto z-[60] flex flex-col gap-2 items-end pointer-events-none';
+                document.body.appendChild(box);
+            }
+            const el = document.createElement('div');
+            el.className = `pointer-events-auto max-w-sm w-full sm:w-auto px-3.5 py-2.5 rounded-lg text-xs font-mono shadow-xl border ${ok ? 'bg-emerald-950/95 border-emerald-500/50 text-emerald-200' : 'bg-rose-950/95 border-rose-500/50 text-rose-200'}`;
+            el.textContent = message;
+            box.appendChild(el);
+            setTimeout(() => el.remove(), 7000);
+        }
+
+        /** Recompute live numbers from the mark price (PnL, ROE on initial margin, liquidation distance). */
+        function recalcExchangePosition(p) {
+            const dir = p.side === 'LONG' ? 1 : -1;
+            const mark = Number(p.mark_price) || Number(p.entry_price);
+            p.unrealized_pnl = (mark - Number(p.entry_price)) * Number(p.quantity) * dir;
+            const initialMargin = Number(p.quantity) * Number(p.entry_price) / Math.max(1, Number(p.leverage) || 1);
+            p.roe_pct = initialMargin > 0 ? p.unrealized_pnl / initialMargin * 100 : 0;
+            p.notional = Number(p.quantity) * mark;
+            p.liquidation_distance_pct = p.liquidation_price ? Math.abs(mark - p.liquidation_price) / mark * 100 : null;
+        }
+
+        function applyExchangeSnapshot(ex) {
+            const block = document.getElementById('exchange-block');
+            if (!block || !ex) return; // no exchange data in this response: keep what is shown
+            if (!ex.available) {
+                block.classList.add('hidden');
+                return;
+            }
+            block.classList.remove('hidden');
+
+            const err = document.getElementById('exchange-error');
+            if (err) {
+                err.textContent = ex.error || '';
+                err.classList.toggle('hidden', !ex.error);
+            }
+            if (ex.error) return;
+
+            const next = {};
+            (ex.positions || []).forEach(p => {
+                const key = exchangeKey(p.symbol, p.side);
+                // Ignore a stale snapshot row for a position the stream just reported closed.
+                if (exchangeState.closedAt[p.symbol] && Date.now() - exchangeState.closedAt[p.symbol] < 6000) return;
+                const live = exchangeState.positions[key];
+                next[key] = Object.assign({}, p, live && live.mark_ts && Date.now() - live.mark_ts < 3000 ? { mark_price: live.mark_price, mark_ts: live.mark_ts } : {});
+                recalcExchangePosition(next[key]);
+            });
+
+            const changed = Object.keys(next).sort().join() !== Object.keys(exchangeState.positions).sort().join();
+            exchangeState.positions = next;
+            if (ex.wallet_balance !== null && ex.wallet_balance !== undefined) exchangeState.wallet = Number(ex.wallet_balance);
+            changed ? renderExchangePositions() : Object.keys(next).forEach(updateExchangeFields);
+            renderExchangeTotals();
+            ensureExchangeStream();
+        }
+
+        function renderExchangePositions() {
+            const grid = document.getElementById('exchange-positions');
+            const count = document.getElementById('exchange-count');
+            const keys = Object.keys(exchangeState.positions);
+            if (count) count.textContent = keys.length;
+            if (!grid) return;
+
+            if (keys.length === 0) {
+                grid.innerHTML = `<div class="col-span-full py-3 text-center text-[11px] font-mono text-slate-500">No open positions on your Binance futures account.</div>`;
+                return;
+            }
+
+            grid.innerHTML = keys.map(key => {
+                const p = exchangeState.positions[key];
+                const isLong = p.side === 'LONG';
+                const sideCls = isLong ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' : 'text-rose-300 bg-rose-500/10 border-rose-500/30';
+                const owner = p.managed_by === 'bot'
+                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">BOT</span>'
+                    : '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700 text-slate-200 border border-slate-600" title="Opened outside the bot. The bot never moves its stop.">MANUAL</span>';
+                const target = p.trade_id ? `trade_id: ${p.trade_id}` : `symbol: '${p.symbol}', side: '${p.side}'`;
+                const cell = (label, field, cls = 'text-slate-200') => `
+                    <div class="min-w-0">
+                        <div class="text-[9px] uppercase tracking-wide text-slate-500">${label}</div>
+                        <div data-f="${field}" class="font-mono text-[12px] font-bold tabular-nums truncate ${cls}">—</div>
+                    </div>`;
+                const editButton = canManageTrading && p.managed_by !== 'bot' ? `
+                    <button type="button" onclick="toggleProtectEditor('${key}')" class="w-full mt-1.5 py-1.5 text-[10px] font-bold font-mono rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">✏️ Set / change SL &amp; TP</button>
+                    <div data-editor class="hidden"></div>` : '';
+                const actions = canManageTrading ? `
+                    <div class="grid grid-cols-3 gap-1.5 mt-2.5">
+                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 25 }, 'book 25%')" class="py-1.5 text-[10px] font-bold font-mono rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">Book 25%</button>
+                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 50 }, 'book 50%')" class="py-1.5 text-[10px] font-bold font-mono rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">Book 50%</button>
+                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 100 }, 'close 100%')" class="py-1.5 text-[10px] font-bold font-mono rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40">Close 100%</button>
+                    </div>` : '';
+
+                return `
+                    <div data-k="${key}" class="rounded-xl border border-cyber-border bg-cyber-900/70 p-3 min-w-0">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="flex items-center gap-1.5 min-w-0">
+                                <span class="font-bold text-white font-mono text-sm">${p.symbol}</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold border ${sideCls}">${p.side}</span>
+                                <span class="text-[10px] text-slate-400 font-mono">${p.leverage}x ${String(p.margin_type || '').toLowerCase()}</span>
+                                ${owner}
+                            </div>
+                            <div class="text-right shrink-0">
+                                <div data-f="pnl" class="font-mono font-black text-sm tabular-nums">—</div>
+                                <div data-f="roe" class="font-mono text-[10px] tabular-nums">—</div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-2 gap-y-1.5 mt-2">
+                            ${cell('Size', 'qty')}
+                            ${cell('Entry', 'entry')}
+                            ${cell('Mark', 'mark', 'text-cyan-300')}
+                            ${cell('Liq. price', 'liq', 'text-amber-300')}
+                            ${cell('Stop', 'sl', 'text-rose-300')}
+                            ${cell('Take profit', 'tp', 'text-emerald-300')}
+                        </div>
+                        ${actions}
+                        ${editButton}
+                    </div>`;
+            }).join('');
+
+            keys.forEach(updateExchangeFields);
+            // Re-open editors that were open before the cards were rebuilt, keeping what was typed.
+            Object.keys(exchangeState.editing).forEach(key => exchangeState.positions[key] ? openProtectEditor(key) : delete exchangeState.editing[key]);
+        }
+
+        /* ---------- SL / TP editor for manual positions ---------- */
+        function toggleProtectEditor(key) {
+            if (exchangeState.editing[key]) {
+                delete exchangeState.editing[key];
+                const box = document.querySelector(`#exchange-positions [data-k="${key}"] [data-editor]`);
+                if (box) { box.innerHTML = ''; box.classList.add('hidden'); }
+                return;
+            }
+            const p = exchangeState.positions[key];
+            exchangeState.editing[key] = { sl: p.sl ? String(p.sl) : '', tp: p.tp ? String(p.tp) : '' };
+            openProtectEditor(key);
+        }
+
+        function openProtectEditor(key) {
+            const box = document.querySelector(`#exchange-positions [data-k="${key}"] [data-editor]`);
+            const p = exchangeState.positions[key];
+            const values = exchangeState.editing[key];
+            if (!box || !p || !values) return;
+            const isLong = p.side === 'LONG';
+            const input = (leg, label, cls) => `
+                <label class="block">
+                    <span class="text-[9px] uppercase tracking-wide text-slate-500">${label}</span>
+                    <input type="number" step="any" inputmode="decimal" data-in="${leg}" value="${values[leg]}" placeholder="none"
+                        oninput="exchangeState.editing['${key}'].${leg} = this.value; updateProtectPreview('${key}')"
+                        class="w-full mt-0.5 px-2 py-1.5 rounded bg-cyber-900 border border-cyber-border text-[12px] font-mono ${cls} focus:outline-none focus:border-cyan-500">
+                    <span data-prev="${leg}" class="block text-[10px] font-mono mt-0.5 text-slate-400"></span>
+                </label>`;
+            const quick = (label, leg, pct) => `<button type="button" onclick="quickProtect('${key}', '${leg}', ${pct})" class="px-1.5 py-1 text-[9px] font-mono rounded bg-cyber-800 hover:bg-cyber-700 text-slate-300 border border-cyber-border">${label}</button>`;
+
+            box.className = 'mt-2 rounded-lg border border-cyan-500/30 bg-cyber-800/60 p-2.5 space-y-2';
+            box.innerHTML = `
+                <div class="grid grid-cols-2 gap-2">
+                    ${input('sl', `Stop-loss (${isLong ? 'below' : 'above'} price)`, 'text-rose-300')}
+                    ${input('tp', `Take-profit (${isLong ? 'above' : 'below'} price)`, 'text-emerald-300')}
+                </div>
+                <div class="flex flex-wrap gap-1">
+                    ${quick('SL → breakeven', 'sl', 0)}${quick('SL −1%', 'sl', -1)}${quick('SL −2%', 'sl', -2)}${quick('TP +2%', 'tp', 2)}${quick('TP +4%', 'tp', 4)}
+                </div>
+                <div class="grid grid-cols-3 gap-1.5">
+                    <button type="button" onclick="saveProtect(this, '${key}')" class="col-span-3 py-1.5 text-[10px] font-black font-mono rounded bg-cyan-600 hover:bg-cyan-500 text-white">Save on Binance</button>
+                    <button type="button" onclick="exchangeAction(this, { symbol: '${p.symbol}', side: '${p.side}', sl: null }, 'remove SL', '/api/exchange/protect')" class="py-1 text-[10px] font-mono rounded bg-rose-500/10 text-rose-300 border border-rose-500/30">Remove SL</button>
+                    <button type="button" onclick="exchangeAction(this, { symbol: '${p.symbol}', side: '${p.side}', tp: null }, 'remove TP', '/api/exchange/protect')" class="py-1 text-[10px] font-mono rounded bg-slate-700/50 text-slate-300 border border-slate-600">Remove TP</button>
+                    <button type="button" onclick="toggleProtectEditor('${key}')" class="py-1 text-[10px] font-mono rounded bg-slate-800 text-slate-400 border border-slate-700">Cancel</button>
+                </div>`;
+            updateProtectPreview(key);
+        }
+
+        /** Fill SL/TP from entry: pct 0 = breakeven, negative = stop distance, positive = profit target (mirrored for shorts). */
+        function quickProtect(key, leg, pct) {
+            const p = exchangeState.positions[key];
+            if (!p || !exchangeState.editing[key]) return;
+            const dir = p.side === 'LONG' ? 1 : -1;
+            const price = Number(p.entry_price) * (1 + dir * pct / 100);
+            const value = Number(price.toFixed(exchangeDecimals(p.entry_price)));
+            exchangeState.editing[key][leg] = String(value);
+            const el = document.querySelector(`#exchange-positions [data-k="${key}"] [data-in="${leg}"]`);
+            if (el) el.value = value;
+            updateProtectPreview(key);
+        }
+
+        /** "If hit" PnL for each typed price, and a warning when it is on the wrong side of the mark. */
+        function updateProtectPreview(key) {
+            const p = exchangeState.positions[key];
+            const values = exchangeState.editing[key];
+            const card = document.querySelector(`#exchange-positions [data-k="${key}"]`);
+            if (!p || !values || !card) return;
+            const dir = p.side === 'LONG' ? 1 : -1;
+            const mark = Number(p.mark_price) || Number(p.entry_price);
+            const initialMargin = Number(p.quantity) * Number(p.entry_price) / Math.max(1, Number(p.leverage) || 1);
+
+            ['sl', 'tp'].forEach(leg => {
+                const el = card.querySelector(`[data-prev="${leg}"]`);
+                if (!el) return;
+                const price = Number(values[leg]);
+                if (!values[leg] || !(price > 0)) {
+                    el.textContent = leg === 'sl' ? 'No stop: losses are not limited' : 'No take-profit';
+                    el.className = `block text-[10px] font-mono mt-0.5 ${leg === 'sl' ? 'text-amber-400' : 'text-slate-500'}`;
+                    return;
+                }
+                const mustBeBelow = (leg === 'sl') === (dir === 1);
+                if (mustBeBelow ? price >= mark : price <= mark) {
+                    el.textContent = `Must be ${mustBeBelow ? 'below' : 'above'} the price ${fmtEx(mark, exchangeDecimals(mark))}`;
+                    el.className = 'block text-[10px] font-mono mt-0.5 text-rose-400 font-bold';
+                    return;
+                }
+                const pnl = (price - Number(p.entry_price)) * Number(p.quantity) * dir;
+                const pct = (price - Number(p.entry_price)) / Number(p.entry_price) * 100 * dir;
+                const roe = initialMargin > 0 ? pnl / initialMargin * 100 : 0;
+                el.textContent = `If hit: ${pnl >= 0 ? '+' : '−'}$${Math.abs(pnl).toFixed(2)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% · ROE ${roe >= 0 ? '+' : ''}${roe.toFixed(1)}%)`;
+                el.className = `block text-[10px] font-mono mt-0.5 ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-300'}`;
+            });
+        }
+
+        /** Send only the legs that changed; empty inputs never remove an order (use the Remove buttons). */
+        function saveProtect(btn, key) {
+            const p = exchangeState.positions[key];
+            const values = exchangeState.editing[key];
+            if (!p || !values) return;
+            const payload = { symbol: p.symbol, side: p.side };
+            ['sl', 'tp'].forEach(leg => {
+                const price = Number(values[leg]);
+                if (values[leg] && price > 0 && price !== Number(p[leg] || 0)) payload[leg] = price;
+            });
+            if (!('sl' in payload) && !('tp' in payload)) {
+                showToast('Nothing changed. Type a new stop or take-profit price.', false);
+                return;
+            }
+            exchangeAction(btn, payload, 'save SL/TP', '/api/exchange/protect', () => toggleProtectEditor(key));
+        }
+
+        function updateExchangeFields(key) {
+            const p = exchangeState.positions[key];
+            const card = document.querySelector(`#exchange-positions [data-k="${key}"]`);
+            if (!p || !card) return;
+            const d = exchangeDecimals(p.entry_price);
+            const set = (field, text, cls) => {
+                const el = card.querySelector(`[data-f="${field}"]`);
+                if (!el) return;
+                el.textContent = text;
+                if (cls !== undefined) el.className = el.className.replace(/text-(emerald|rose)-\d+/g, '').trim() + ' ' + cls;
+            };
+            const up = p.unrealized_pnl >= 0;
+            set('pnl', `${up ? '+' : '−'}$${Math.abs(p.unrealized_pnl).toFixed(2)}`, up ? 'text-emerald-400' : 'text-rose-400');
+            set('roe', `ROE ${up ? '+' : ''}${Number(p.roe_pct).toFixed(2)}%`, up ? 'text-emerald-400' : 'text-rose-400');
+            set('qty', `${p.quantity} · $${Number(p.notional).toFixed(2)}`);
+            set('entry', fmtEx(p.entry_price, d));
+            set('mark', fmtEx(p.mark_price, d));
+            set('liq', p.liquidation_price ? `${fmtEx(p.liquidation_price, d)} (${Number(p.liquidation_distance_pct).toFixed(1)}%)` : '—');
+            set('sl', p.sl ? fmtEx(p.sl, d) : 'none ⚠️');
+            set('tp', p.tp ? fmtEx(p.tp, d) : '—');
+            if (exchangeState.editing[key]) updateProtectPreview(key);
+        }
+
+        function setStreamPill(state) {
+            const dot = document.getElementById('exchange-stream-dot');
+            const text = document.getElementById('exchange-stream-text');
+            const styles = { live: ['bg-emerald-400 animate-pulse', 'REAL-TIME'], marks: ['bg-cyan-400 animate-pulse', 'LIVE PRICES · ACCOUNT EVERY 3s'], retry: ['bg-amber-400', 'RECONNECTING'], rest: ['bg-slate-500', 'UPDATING EVERY 3s'] };
+            const [cls, label] = styles[state] || styles.rest;
+            if (dot) dot.className = `w-2 h-2 rounded-full ${cls}`;
+            if (text) text.textContent = label;
+        }
+
+        /** One websocket: the account stream (when allowed) plus 1-second mark prices for each open symbol. */
+        async function ensureExchangeStream() {
+            const symbols = [...new Set(Object.values(exchangeState.positions).map(p => p.symbol))].sort();
+            const wanted = symbols.join(',');
+            const open = exchangeState.ws && exchangeState.ws.readyState <= 1;
+            if ((open && exchangeState.wsSymbols === wanted) || exchangeState.connecting) return;
+
+            exchangeState.connecting = true;
+            try {
+                if (canManageTrading && !exchangeState.listenKey) {
+                    try {
+                        const res = await fetch('/api/stream/listen-key', { method: 'POST', headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' } });
+                        const json = await res.json();
+                        if (json.success) {
+                            exchangeState.listenKey = json.listen_key;
+                            exchangeState.wsBase = json.ws_base || exchangeState.wsBase;
+                            clearInterval(exchangeState.keepAlive);
+                            exchangeState.keepAlive = setInterval(() => {
+                                fetch('/api/stream/listen-key', { method: 'PUT', headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' } }).catch(() => {});
+                            }, (json.keepalive_seconds || 1800) * 1000);
+                        }
+                    } catch (e) { /* stream falls back to mark prices + REST */ }
+                }
+
+                const streams = [...(exchangeState.listenKey ? [exchangeState.listenKey] : []), ...symbols.map(s => `${s.toLowerCase()}@markPrice@1s`)];
+                if (exchangeState.ws) {
+                    exchangeState.closingOnPurpose = true;
+                    try { exchangeState.ws.close(); } catch (_) {}
+                }
+                exchangeState.ws = null;
+                exchangeState.wsSymbols = wanted;
+                if (streams.length === 0) {
+                    setStreamPill('rest');
+                    return;
+                }
+
+                const ws = new WebSocket(`${exchangeState.wsBase}/stream?streams=${streams.join('/')}`);
+                exchangeState.ws = ws;
+                exchangeState.closingOnPurpose = false;
+                ws.onopen = () => {
+                    exchangeState.retry = 0;
+                    setStreamPill(exchangeState.listenKey ? 'live' : 'marks');
+                };
+                ws.onmessage = (event) => {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        handleExchangeEvent(msg.data || msg);
+                    } catch (_) { /* ignore malformed frame */ }
+                };
+                ws.onclose = () => {
+                    if (exchangeState.ws !== ws || exchangeState.closingOnPurpose) return;
+                    exchangeState.ws = null;
+                    exchangeState.wsSymbols = null;
+                    setStreamPill('retry');
+                    const delay = Math.min(30000, 1000 * Math.pow(2, exchangeState.retry++));
+                    setTimeout(ensureExchangeStream, delay);
+                };
+            } finally {
+                exchangeState.connecting = false;
+            }
+        }
+
+        function handleExchangeEvent(d) {
+            if (!d || !d.e) return;
+
+            if (d.e === 'markPriceUpdate') {
+                Object.keys(exchangeState.positions).forEach(key => {
+                    const p = exchangeState.positions[key];
+                    if (p.symbol !== d.s) return;
+                    p.mark_price = Number(d.p);
+                    p.mark_ts = Date.now();
+                    recalcExchangePosition(p);
+                    updateExchangeFields(key);
+                });
+                renderExchangeTotals();
+                return;
+            }
+
+            if (d.e === 'ACCOUNT_UPDATE' && d.a && Array.isArray(d.a.B)) {
+                const usdt = d.a.B.find(b => b.a === 'USDT');
+                if (usdt) exchangeState.wallet = Number(usdt.wb);
+            }
+
+            if (d.e === 'ACCOUNT_UPDATE' && d.a && Array.isArray(d.a.P)) {
+                let structural = false;
+                d.a.P.forEach(row => {
+                    const amount = Number(row.pa);
+                    if (amount === 0) {
+                        Object.keys(exchangeState.positions).forEach(key => {
+                            const p = exchangeState.positions[key];
+                            if (p.symbol === row.s && (row.ps === 'BOTH' || p.position_side === row.ps)) {
+                                delete exchangeState.positions[key];
+                                structural = true;
+                            }
+                        });
+                        exchangeState.closedAt[row.s] = Date.now();
+                        return;
+                    }
+                    const side = row.ps && row.ps !== 'BOTH' ? row.ps : (amount > 0 ? 'LONG' : 'SHORT');
+                    const key = exchangeKey(row.s, side);
+                    const p = exchangeState.positions[key] || { symbol: row.s, side, position_side: row.ps || 'BOTH', leverage: 1, managed_by: 'manual', mark_price: Number(row.ep) };
+                    if (!exchangeState.positions[key]) structural = true;
+                    Object.assign(p, { quantity: Math.abs(amount), entry_price: Number(row.ep), margin_type: String(row.mt || p.margin_type || '').toUpperCase() });
+                    recalcExchangePosition(p);
+                    exchangeState.positions[key] = p;
+                    delete exchangeState.closedAt[row.s];
+                });
+                if (structural) {
+                    renderExchangePositions();
+                    ensureExchangeStream();
+                    liveSync(); // fetch leverage, liquidation and orders for new positions
+                } else {
+                    Object.keys(exchangeState.positions).forEach(updateExchangeFields);
+                }
+                renderExchangeTotals();
+                return;
+            }
+
+            if (d.e === 'ORDER_TRADE_UPDATE' && d.o) {
+                const o = d.o;
+                if (o.x === 'TRADE' && Number(o.l) > 0) {
+                    showToast(`${o.s} ${o.S === 'BUY' ? 'bought' : 'sold'} ${o.l} @ ${o.L}${o.R ? ' (reduce)' : ''}${Number(o.rp) ? ` · realized ${Number(o.rp) >= 0 ? '+' : ''}$${Number(o.rp).toFixed(4)}` : ''}`, Number(o.rp) >= 0);
+                }
+                const kind = String(o.ot || o.o || '');
+                if (/^(STOP|TAKE_PROFIT)/.test(kind)) {
+                    const field = kind.startsWith('STOP') ? 'sl' : 'tp';
+                    Object.keys(exchangeState.positions).forEach(key => {
+                        const p = exchangeState.positions[key];
+                        if (p.symbol !== o.s) return;
+                        if (o.X === 'NEW') p[field] = Number(o.sp) || p[field];
+                        if (['CANCELED', 'EXPIRED', 'FILLED'].includes(o.X) && Number(o.sp) === Number(p[field])) p[field] = null;
+                        updateExchangeFields(key);
+                    });
+                }
+                return;
+            }
+
+            if (d.e === 'listenKeyExpired') {
+                exchangeState.listenKey = null;
+                exchangeState.wsSymbols = null;
+                ensureExchangeStream();
+            }
+        }
+
+        /** Book part of / close a position. First click arms the button, second click sends. */
+        async function exchangeAction(btn, payload, label, url = '/api/exchange/close', onSuccess = null) {
+            if (btn.dataset.armed !== '1') {
+                btn.dataset.armed = '1';
+                btn.dataset.orig = btn.textContent;
+                btn.textContent = `Confirm ${label}?`;
+                btn.classList.add('ring-2', 'ring-amber-400');
+                setTimeout(() => {
+                    if (btn.isConnected && btn.dataset.armed === '1') {
+                        btn.dataset.armed = '';
+                        btn.textContent = btn.dataset.orig;
+                        btn.classList.remove('ring-2', 'ring-amber-400');
+                    }
+                }, 4000);
+                return;
+            }
+
+            btn.dataset.armed = '';
+            btn.disabled = true;
+            btn.textContent = 'Sending...';
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json().catch(() => ({}));
+                showToast(data.message || (res.ok ? 'Done.' : 'Request failed.'), !!data.success);
+                if (data.success) {
+                    // Show the new SL / TP at once; the stream and the next sync confirm it.
+                    if (payload.symbol && ('sl' in payload || 'tp' in payload)) {
+                        Object.values(exchangeState.positions).forEach(p => {
+                            if (p.symbol !== payload.symbol || p.side !== payload.side) return;
+                            if ('sl' in payload) p.sl = data.sl ?? null;
+                            if ('tp' in payload) p.tp = data.tp ?? null;
+                            updateExchangeFields(exchangeKey(p.symbol, p.side));
+                        });
+                    }
+                    if (onSuccess) onSuccess();
+                }
+            } catch (err) {
+                showToast(`Network error: ${err.message}`, false);
+            } finally {
+                if (btn.isConnected) {
+                    btn.disabled = false;
+                    btn.textContent = btn.dataset.orig || label;
+                    btn.classList.remove('ring-2', 'ring-amber-400');
+                }
+                liveSync();
+            }
         }
 
         /**

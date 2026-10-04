@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\EquitySnapshot;
-use App\Models\Setting;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\TradingSignal;
@@ -105,6 +104,14 @@ class DashboardController extends Controller
             }
         }
 
+        // Live: equity follows every position on the Binance account, including ones opened manually.
+        if ($mode === 'live' && $liveSynced) {
+            $exchange = $this->exchangeSync->exchangePositions();
+            if ($exchange['error'] === null) {
+                $totalUnrealizedPnl = (float) $exchange['unrealized_total'];
+            }
+        }
+
         $currentEquity = round($account->balance + $totalUnrealizedPnl, 4);
         $account->equity = $currentEquity;
         $account->save();
@@ -176,7 +183,6 @@ class DashboardController extends Controller
             'pause_reason' => $account->pause_reason,
             'active_mode' => $activeMode,
             'live_readiness' => $this->modeManager->liveReadiness(),
-            'external_positions' => $mode === 'live' ? (array) Setting::getValue(ExchangePositionSync::EXTERNAL_POSITIONS_KEY, []) : [],
             'live_synced' => $liveSynced,
             'daemon' => $daemonStatus,
         ]);
@@ -751,6 +757,7 @@ class DashboardController extends Controller
             'history' => array_slice($historyData, 0, 15),
             'opportunities' => $scannerData['opportunities'] ?? [],
             'daemon' => $statsData['daemon'] ?? null,
+            'exchange' => $this->exchangeSync->exchangePositions(),
         ]);
     }
 

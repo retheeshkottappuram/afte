@@ -8,6 +8,7 @@ use App\Http\Controllers\Auth\RegisteredUserController;
 use App\Http\Controllers\CryptoSignalController;
 use App\Http\Controllers\DaemonController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\ExchangeStreamController;
 use App\Http\Controllers\MarketScanController;
 use App\Http\Controllers\TradeHistoryController;
 use Illuminate\Support\Facades\Route;
@@ -47,6 +48,10 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/lock-breakeven', [DashboardController::class, 'lockBreakeven'])->name('api.lock_breakeven');
             Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');
             Route::post('/close-all-positions', [DashboardController::class, 'closeAllPositions'])->name('api.close_all_positions');
+            Route::post('/exchange/close', [ExchangeStreamController::class, 'close'])->name('api.exchange.close');
+            Route::post('/exchange/protect', [ExchangeStreamController::class, 'protect'])->name('api.exchange.protect');
+            Route::post('/stream/listen-key', [ExchangeStreamController::class, 'listenKey'])->name('api.stream.listen_key');
+            Route::put('/stream/listen-key', [ExchangeStreamController::class, 'keepAlive'])->name('api.stream.keepalive');
             Route::post('/kill-switch', [DashboardController::class, 'toggleKillSwitch'])->name('api.kill_switch');
             Route::post('/toggle-auto-trading', [DashboardController::class, 'toggleAutoTrading'])->name('api.toggle_auto_trading');
             Route::post('/resume-cooldown', [DashboardController::class, 'resumeCooldown'])->name('api.resume_cooldown');
