@@ -59,7 +59,10 @@ class SignalAlgoTrader
             }
 
             $label = $this->statusLabel($mode, $decision);
-            $record->update(['auto_trade_status' => mb_substr($label, 0, 120)]);
+            // A signal the minute watcher already handled keeps its original decision.
+            if ($decision['status'] !== 'duplicate') {
+                $record->update(['auto_trade_status' => mb_substr($label, 0, 120)]);
+            }
             $decisions[] = ['symbol' => $signal->symbol, 'side' => $signal->side, 'status' => $decision['status'], 'message' => $label];
         }
 

@@ -49,7 +49,7 @@ class BacktestingEngine
      * @param  array<int, string>  $symbols
      * @return array<string, mixed>
      */
-    public function runPortfolio(array $symbols, string $interval, int $startMs, int $endMs, float $initialBalance = 5.0, bool $seedStats = false, ?callable $progress = null, ?array $portfolioSetups = null): array
+    public function runPortfolio(array $symbols, string $interval, int $startMs, int $endMs, float $initialBalance = 5.0, bool $seedStats = false, ?callable $progress = null, ?array $portfolioSetups = null, bool $intrabar = false): array
     {
         $regimeInterval = SymbolAnalyzer::regimeInterval($interval);
         $barSeconds = MarketScanService::barSeconds($interval);
@@ -67,7 +67,7 @@ class BacktestingEngine
             try {
                 $base = $this->market->klinesRange($symbol, $interval, $startMs - $warmupMs, $endMs);
                 $regime = $this->market->klinesRange($symbol, $regimeInterval, $startMs - $regimeWarmupMs, $endMs);
-                $symbolTrades = $this->backtestSymbol($symbol, $interval, $base, $regime, $symbol === 'BTCUSDT' ? null : $btcBase, $btcRegime, $startMs, $endMs);
+                $symbolTrades = $this->backtestSymbol($symbol, $interval, $base, $regime, $symbol === 'BTCUSDT' ? null : $btcBase, $btcRegime, $startMs, $endMs, $intrabar);
 
                 if ($seedStats) {
                     $this->seed($symbol, $interval, $symbolTrades);
@@ -114,9 +114,10 @@ class BacktestingEngine
      * @param  array<string, array<int, float|int>>  $regime
      * @param  array<string, array<int, float|int>>|null  $btcBase
      * @param  array<string, array<int, float|int>>|null  $btcRegime
+     * @param  bool  $intrabar  Squeeze breakouts enter when a candle trades through the level (minute watcher) instead of at the close
      * @return array<int, array<string, mixed>>
      */
-    public function backtestSymbol(string $symbol, string $interval, array $base, array $regime, ?array $btcBase, ?array $btcRegime, int $startMs, int $endMs): array
+    public function backtestSymbol(string $symbol, string $interval, array $base, array $regime, ?array $btcBase, ?array $btcRegime, int $startMs, int $endMs, bool $intrabar = false): array
     {
         $bars = count($base['closes']);
         if ($bars < 320) {
@@ -130,10 +131,24 @@ class BacktestingEngine
             'now_ms' => $endMs,
         ]);
 
+        $signals = $analysis['signals'];
+        $entryBar = [];
+        if ($intrabar) {
+            $context = ['symbol' => $symbol, 'interval' => $interval, 'now_ms' => $endMs];
+            $signals = array_merge(
+                array_filter($signals, fn (Signal $s): bool => $s->setup !== 'SQUEEZE_BREAKOUT'),
+                $this->engine->intrabarSignals($base, $regime, $btcBase, $btcRegime, $context)
+            );
+            usort($signals, fn (Signal $a, Signal $b): int => $a->time <=> $b->time);
+            foreach ($base['closeTimes'] as $index => $closeTime) {
+                $entryBar[intdiv((int) $closeTime, 1000)] = $index;
+            }
+        }
+
         $trades = [];
         $busyUntil = 0;
 
-        foreach ($analysis['signals'] as $signal) {
+        foreach ($signals as $signal) {
             /** @var Signal $signal */
             if ($signal->time * 1000 < $startMs) {
                 continue;
@@ -148,6 +163,15 @@ class BacktestingEngine
                 'atr' => $signal->atr,
                 'time' => $signal->time,
             ], $base, MarketScanService::barSeconds($interval), self::SLIPPAGE);
+
+            // Intrabar entry: the rest of the entry candle is unknown, so a stop touch in it counts as a loss.
+            $bar = $entryBar[$signal->time] ?? null;
+            if ($intrabar && $signal->setup === 'SQUEEZE_BREAKOUT' && $bar !== null
+                && ($signal->isLong() ? $base['lows'][$bar] <= $signal->stopLoss : $base['highs'][$bar] >= $signal->stopLoss)) {
+                $risk = abs($signal->entry - $signal->stopLoss);
+                $fees = (float) config('trading.exits.fee_rate', 0.0005) * ($signal->entry + $signal->stopLoss) + 2 * self::SLIPPAGE * $signal->entry;
+                $result = ['closed' => true, 'outcome' => 'SL', 'r_multiple' => round(-1 - $fees / $risk, 3), 'mfe_r' => 0.0, 'mae_r' => -1.0, 'exit_time' => $signal->time];
+            }
 
             if (! $result['closed']) {
                 continue;
@@ -188,6 +212,7 @@ class BacktestingEngine
     protected function portfolio(array $trades, float $initialBalance): array
     {
         $riskPct = (float) config('trading.sizing.risk_per_trade_pct', 2.0) / 100;
+        $smallAccountMaxRisk = (float) config('trading.sizing.small_account_max_risk_pct', 5.0) / 100;
         $equity = $initialBalance;
         $peak = $initialBalance;
         $maxDrawdown = 0.0;
@@ -215,10 +240,10 @@ class BacktestingEngine
                 continue;
             }
 
-            // Small accounts: the exchange minimum order can force more than 2% risk; mirror RiskManager's 3% cap.
+            // Small accounts: the exchange minimum order can force more than 2% risk; mirror RiskManager's cap.
             $minRiskUsd = 5.05 * $trade['sl_pct'] / 100;
             $riskUsd = max($equity * $riskPct, $minRiskUsd);
-            if ($riskUsd > $equity * 0.03 && $riskUsd > $equity * $riskPct) {
+            if ($riskUsd > $equity * $smallAccountMaxRisk && $riskUsd > $equity * $riskPct) {
                 continue;
             }
 

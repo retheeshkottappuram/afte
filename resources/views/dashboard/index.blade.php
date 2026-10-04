@@ -1068,8 +1068,20 @@
             }
 
             if (cycles) {
-                const st = daemon.stats || {};
-                cycles.textContent = st.last_scan_at ? `last scan ${new Date(st.last_scan_at).toLocaleTimeString()}` : 'no scan yet';
+                const hhmm = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const parts = [];
+                if (daemon.last_scan_at) {
+                    parts.push(`last ${hhmm(daemon.last_scan_at)}`);
+                    const m = String(daemon.last_scan_summary || '').match(/Scanned (\d+) symbols, (\d+) fresh signals/);
+                    if (m) parts.push(`${m[1]} coins · ${m[2]} signals`);
+                } else {
+                    parts.push('waiting for first scan');
+                }
+                if (daemon.next_scan_at) parts.push(`next ${hhmm(daemon.next_scan_at)}`);
+                if (daemon.watching) parts.push(`watching ${daemon.watching} for breakout`);
+                cycles.textContent = parts.join(' · ');
+                cycles.title = daemon.last_error ? `Last error ${daemon.last_error_at ? hhmm(daemon.last_error_at) : ''}: ${daemon.last_error}` : '';
+                cycles.className = daemon.last_error ? 'text-amber-300' : 'text-slate-200';
             }
         }
 

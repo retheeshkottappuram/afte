@@ -46,10 +46,31 @@ class StrategyEngine
             'regime_min_adx' => 18.0,
             'min_sl_pct' => 0.6,
             'max_sl_pct' => 1.8,
+            'max_sl_pct_by_setup' => [],
             'core_setups' => ['TREND_PULLBACK', 'SQUEEZE_BREAKOUT'],
         ], (array) config('trading.strategy', []), $config);
 
         $this->exitPlan ??= ExitPlan::fromConfig();
+    }
+
+    /**
+     * Widest allowed stop (in %) for a setup, from the app config (used outside the engine).
+     */
+    public static function configuredMaxSlPct(?string $setup = null): float
+    {
+        $bySetup = (array) config('trading.strategy.max_sl_pct_by_setup', []);
+
+        return (float) ($setup !== null && isset($bySetup[$setup]) ? $bySetup[$setup] : config('trading.strategy.max_sl_pct', 1.8));
+    }
+
+    /**
+     * Widest allowed stop (in %) for a setup with this engine's config.
+     */
+    public function maxSlPct(?string $setup = null): float
+    {
+        $bySetup = (array) ($this->config['max_sl_pct_by_setup'] ?? []);
+
+        return (float) ($setup !== null && isset($bySetup[$setup]) ? $bySetup[$setup] : $this->config['max_sl_pct']);
     }
 
     /**
@@ -113,12 +134,179 @@ class StrategyEngine
             }
         }
 
+        // Coin is coiled for a breakout on the candle now forming (unless a squeeze signal fired recently).
+        $watch = null;
+        $suppressed = false;
+        for ($j = $n - self::REPEAT_SUPPRESS_BARS; $j < $n; $j++) {
+            foreach ($raw[$j] ?? [] as $previous) {
+                $suppressed = $suppressed || $previous['setup'] === 'SQUEEZE_BREAKOUT';
+            }
+        }
+        if (! $suppressed) {
+            $watch = $this->watchCandidate($symbol, $interval, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context);
+        }
+
         return [
             'signals' => $signals,
             'latest' => $latest,
             'state' => $this->currentState($symbol, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context, $latest),
             'series' => $s,
+            'watch' => $watch,
         ];
+    }
+
+    /**
+     * Intrabar squeeze breakouts for backtesting the minute watcher on candle history: the trade fills
+     * at the breakout level as soon as a candle trades through it (no wait for the close).
+     *
+     * @param  array<string, array<int, float|int>>  $base
+     * @param  array<string, array<int, float|int>>|null  $regime
+     * @param  array<string, array<int, float|int>>|null  $btcBase
+     * @param  array<string, array<int, float|int>>|null  $btcRegime
+     * @param  array<string, mixed>  $context
+     * @return array<int, Signal>
+     */
+    public function intrabarSignals(array $base, ?array $regime = null, ?array $btcBase = null, ?array $btcRegime = null, array $context = []): array
+    {
+        $nowMs = (int) ($context['now_ms'] ?? (int) (microtime(true) * 1000));
+        $base = CandleSanitizer::onlyClosedCandles($base, $nowMs);
+        $regime = $regime !== null ? CandleSanitizer::onlyClosedCandles($regime, $nowMs) : null;
+        $btcBase = $btcBase !== null ? CandleSanitizer::onlyClosedCandles($btcBase, $nowMs) : null;
+        $btcRegime = $btcRegime !== null ? CandleSanitizer::onlyClosedCandles($btcRegime, $nowMs) : null;
+
+        $symbol = strtoupper((string) ($context['symbol'] ?? 'UNKNOWN'));
+        $interval = (string) ($context['interval'] ?? '1h');
+        $n = count($base['closes']);
+        if ($n < 120) {
+            return [];
+        }
+
+        $s = $this->computeSeries($base);
+        $regimeAt = $this->regimeMap($base['closeTimes'], $regime);
+        $btc = $this->btcMap($base['closeTimes'], $btcBase, $btcRegime, $symbol);
+        $signals = [];
+        $lastFired = ['LONG' => -100, 'SHORT' => -100];
+
+        for ($i = 105; $i < $n; $i++) {
+            $watch = $this->watchCandidate($symbol, $interval, $i - 1, $base, $s, $regimeAt[$i - 1], $btc[$i - 1], $context);
+            if ($watch === null || $i - $lastFired[$watch['side']] <= self::REPEAT_SUPPRESS_BARS) {
+                continue;
+            }
+
+            $crossed = $watch['side'] === 'LONG' ? $base['highs'][$i] >= $watch['level'] : $base['lows'][$i] <= $watch['level'];
+            if (! $crossed) {
+                continue;
+            }
+
+            // A gap through the level fills at the open, not at the level.
+            $entry = $watch['side'] === 'LONG' ? max($watch['level'], $base['opens'][$i]) : min($watch['level'], $base['opens'][$i]);
+            $signals[] = $this->intrabarSignal($watch, $entry, intdiv((int) $base['closeTimes'][$i], 1000));
+            $lastFired[$watch['side']] = $i;
+        }
+
+        return $signals;
+    }
+
+    /**
+     * Breakout watch entry for the candle after bar k: the coin is in a squeeze, every market filter
+     * passes for the trend side, and price has not broken out yet. Null when there is nothing to watch.
+     *
+     * @param  array<string, array<int, float|int>>  $c
+     * @param  array<string, array<int, float|null>>  $s
+     * @param  array{side: string, adx: ?float, detail: string}  $regime
+     * @param  array{block_long: bool, block_short: bool, state: string, returns_24: ?float}  $btc
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>|null
+     */
+    protected function watchCandidate(string $symbol, string $interval, int $k, array $c, array $s, array $regime, array $btc, array $context): ?array
+    {
+        $side = $regime['side'];
+        $atr = (float) ($s['atr'][$k] ?? 0);
+        $volSma = (float) ($s['vol_sma'][$k] ?? 0);
+        if ($k < 104 || ! in_array($side, ['LONG', 'SHORT'], true) || $atr <= 0 || $volSma <= 0) {
+            return null;
+        }
+
+        $squeezePct = $this->recentSqueezePercentile($k + 1, $s['bbw']);
+        if ($squeezePct === null || $squeezePct > 0.20) {
+            return null;
+        }
+
+        $close = (float) $c['closes'][$k];
+        $level = $side === 'LONG'
+            ? max(array_slice($c['highs'], $k - 19, 20)) * 1.001
+            : min(array_slice($c['lows'], $k - 19, 20)) * 0.999;
+        if (($side === 'LONG' && $close >= $level) || ($side === 'SHORT' && $close <= $level)) {
+            return null;
+        }
+
+        $slPct = max((float) $this->config['min_sl_pct'], 1.2 * $atr / $level * 100);
+        $filters = $this->evaluateFilters($side, $regime, $btc, $atr / $close * 100, $slPct, $context, 'SQUEEZE_BREAKOUT');
+        foreach ($filters as $filter) {
+            if (! $filter['pass']) {
+                return null;
+            }
+        }
+
+        $indicators = $this->indicatorsAt($k, $c, $s, $regime, $btc, $side);
+        $barMs = (int) $c['closeTimes'][$k] - (int) $c['closeTimes'][$k - 1];
+
+        return [
+            'symbol' => $symbol,
+            'interval' => $interval,
+            'side' => $side,
+            'level' => $level,
+            'atr' => $atr,
+            'vol_sma' => $volSma,
+            'bar_open_ms' => (int) $c['closeTimes'][$k] + 1,
+            'bar_close_ms' => (int) $c['closeTimes'][$k] + $barMs,
+            'filters' => $filters,
+            'indicators' => $indicators,
+            'confluences' => $this->confluences($indicators, $side, $context['daily'] ?? null),
+            'features' => $this->features('SQUEEZE_BREAKOUT', $side, $indicators, $slPct, (int) $c['closeTimes'][$k] + $barMs, $context),
+        ];
+    }
+
+    /**
+     * Squeeze Breakout signal entered during the candle at the given price. Its time is the forming
+     * candle's close, so the close-based signal for the same candle is recognised as the same trade.
+     *
+     * @param  array<string, mixed>  $watch  From watchCandidate()
+     */
+    public function intrabarSignal(array $watch, float $entry, int $time): Signal
+    {
+        $side = (string) $watch['side'];
+        $direction = $side === 'LONG' ? 1 : -1;
+        $atr = (float) $watch['atr'];
+        $slPct = max((float) $this->config['min_sl_pct'], 1.2 * $atr / $entry * 100);
+        $sl = $entry - $direction * $entry * $slPct / 100;
+        $targets = $this->exitPlan->targets($side, $entry, $sl);
+
+        $filters = (array) $watch['filters'];
+        $maxSl = $this->maxSlPct('SQUEEZE_BREAKOUT');
+        $filters['stop_width'] = ['pass' => $slPct <= $maxSl + 1e-9, 'detail' => sprintf('Stop %.2f%% (max %.2f%%)', $slPct, $maxSl)];
+        $features = (array) $watch['features'];
+        $features['sl_pct'] = round($slPct, 3);
+
+        return new Signal(
+            symbol: (string) $watch['symbol'],
+            interval: (string) $watch['interval'],
+            side: $side,
+            setup: 'SQUEEZE_BREAKOUT',
+            setupLabel: self::SETUP_LABELS['SQUEEZE_BREAKOUT'],
+            time: $time,
+            entry: $entry,
+            stopLoss: $sl,
+            tp1: $targets['tp1'],
+            tp2: $targets['tp2'],
+            tp3: $targets['tp3'],
+            atr: $atr,
+            isShadow: ! in_array('SQUEEZE_BREAKOUT', (array) $this->config['core_setups'], true),
+            filters: $filters,
+            confluences: (array) $watch['confluences'],
+            features: $features,
+            indicators: (array) $watch['indicators'],
+        );
     }
 
     /**
@@ -446,7 +634,7 @@ class StrategyEngine
         }
         $targets = $this->exitPlan->targets($side, $entry, $sl);
 
-        $filters = $this->evaluateFilters($side, $regime, $btc, $atrPct, $slPct, $context);
+        $filters = $this->evaluateFilters($side, $regime, $btc, $atrPct, $slPct, $context, $trigger['setup']);
         $indicators = $this->indicatorsAt($i, $c, $s, $regime, $btc, $side);
         $confluences = $this->confluences($indicators, $side, $context['daily'] ?? null);
 
@@ -477,18 +665,18 @@ class StrategyEngine
      * @param  array<string, mixed>  $context
      * @return array<string, array{pass: bool, detail: string}>
      */
-    protected function evaluateFilters(string $side, array $regime, array $btc, float $atrPct, float $slPct, array $context): array
+    protected function evaluateFilters(string $side, array $regime, array $btc, float $atrPct, float $slPct, array $context, ?string $setup = null): array
     {
         $minAtr = (float) $this->config['min_atr_pct'];
         $maxAtr = (float) $this->config['max_atr_pct'];
-        $maxSl = (float) $this->config['max_sl_pct'];
+        $maxSl = $this->maxSlPct($setup);
         $btcBlocked = $side === 'LONG' ? $btc['block_long'] : $btc['block_short'];
 
         $filters = [
             'regime' => ['pass' => $regime['side'] === $side, 'detail' => $regime['detail']],
             'btc_macro' => ['pass' => ! $btcBlocked, 'detail' => $btcBlocked ? "{$btc['state']}: against this {$side}" : $btc['state']],
             'volatility' => ['pass' => $atrPct >= $minAtr && $atrPct <= $maxAtr, 'detail' => sprintf('ATR %.2f%% (band %.2f-%.1f%%)', $atrPct, $minAtr, $maxAtr)],
-            'stop_width' => ['pass' => $slPct <= $maxSl + 1e-9, 'detail' => sprintf('Stop %.2f%% (max %.1f%%)', $slPct, $maxSl)],
+            'stop_width' => ['pass' => $slPct <= $maxSl + 1e-9, 'detail' => sprintf('Stop %.2f%% (max %.2f%%)', $slPct, $maxSl)],
         ];
 
         if (array_key_exists('quote_volume_24h', $context) && $context['quote_volume_24h'] !== null) {

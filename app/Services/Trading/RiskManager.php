@@ -7,6 +7,7 @@ use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
+use App\Services\Strategy\StrategyEngine;
 use Carbon\Carbon;
 
 /**
@@ -153,7 +154,7 @@ class RiskManager
      * Fallback stop when a signal carries none, or when it is on the wrong side of entry.
      * Clamps an existing stop into the configured distance band.
      */
-    public function calculateAssetProtectionStopLoss(string $direction, float $entryPrice, ?float $proposedSl = null): float
+    public function calculateAssetProtectionStopLoss(string $direction, float $entryPrice, ?float $proposedSl = null, ?string $setup = null): float
     {
         if ($entryPrice <= 0) {
             return 0.0;
@@ -162,7 +163,7 @@ class RiskManager
         $isLong = in_array(strtoupper($direction), ['LONG', 'BUY'], true);
         $sign = $isLong ? -1 : 1;
         $minPct = (float) config('trading.strategy.min_sl_pct', 0.6);
-        $maxPct = (float) config('trading.strategy.max_sl_pct', 1.8);
+        $maxPct = StrategyEngine::configuredMaxSlPct($setup);
         $defaultPct = (float) config('trading.risk.default_sl_distance_pct', 1.25);
 
         $atPct = fn (float $pct): float => $entryPrice * (1.0 + $sign * $pct / 100.0);
@@ -199,7 +200,7 @@ class RiskManager
 
         $equity = max(0.0, (float) $account->balance);
         $riskPct = (float) config('trading.sizing.risk_per_trade_pct', 2.0);
-        $smallAccountMaxRiskPct = (float) config('trading.sizing.small_account_max_risk_pct', 3.0);
+        $smallAccountMaxRiskPct = (float) config('trading.sizing.small_account_max_risk_pct', 5.0);
         $maxLeverage = (int) config('trading.sizing.max_leverage', 10);
         $maxMarginPct = (float) config('trading.sizing.max_margin_pct', 90.0) / 100.0;
 
@@ -238,7 +239,7 @@ class RiskManager
             return $reject('No free margin available.');
         }
 
-        // Use at least 5x so margin is left for other positions; liquidation stays far beyond a <=1.8% stop.
+        // Use at least 5x so margin is left for other positions; liquidation (~9% at 10x) stays beyond the widest stop.
         $leverage = (int) max(min(5, $maxLeverage), ceil($notional / $usableMargin));
         if ($leverage > $maxLeverage) {
             return $reject("Free margin \${$availMargin} cannot fund a \$".round($notional, 2)." position at {$maxLeverage}x.");

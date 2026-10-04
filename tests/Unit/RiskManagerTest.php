@@ -71,6 +71,18 @@ class RiskManagerTest extends TestCase
         $this->assertLessThan(5.0, $sizing['margin']);
     }
 
+    public function test_small_account_may_risk_up_to_five_percent_for_a_wide_breakout_stop(): void
+    {
+        // $3.95 balance, 2.5% stop: the $5 minimum order risks ~3.8%, inside the 5% small-account cap.
+        $allowed = app(RiskManager::class)->calculatePositionSize($this->account(3.95), 'SOLUSDT', 150.0, 146.25);
+        $this->assertTrue($allowed['allowed']);
+        $this->assertGreaterThan(3.0, $allowed['risk_pct']);
+        $this->assertLessThanOrEqual(5.0, $allowed['risk_pct']);
+
+        // 4% stop: the minimum order would risk ~6%, above the cap.
+        $this->assertFalse(app(RiskManager::class)->calculatePositionSize($this->account(3.95, ['mode' => 'live']), 'SOLUSDT', 150.0, 144.0)['allowed']);
+    }
+
     public function test_rejects_when_the_minimum_order_would_risk_too_much(): void
     {
         $sizing = app(RiskManager::class)->calculatePositionSize($this->account(5.0), 'BTCUSDT', 60000.0, 59400.0);

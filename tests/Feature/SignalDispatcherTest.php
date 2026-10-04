@@ -10,6 +10,7 @@ use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\Signal;
 use App\Services\Strategy\SignalLedger;
 use App\Services\Strategy\Watchlist;
+use App\Services\Trading\TradingDaemonManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -120,6 +121,7 @@ class SignalDispatcherTest extends TestCase
 
         $this->mock(MarketScanService::class, function (MockInterface $mock) use ($signal, $record): void {
             $mock->shouldReceive('isScanDue')->andReturn(true);
+            $mock->shouldReceive('latestResults')->andReturn([]);
             $mock->shouldReceive('runScan')->once()->andReturn(['scanned' => true, 'message' => 'Scanned 60 symbols, 1 fresh signals.', 'fresh' => [['signal' => $signal, 'record' => $record]], 'rows' => []]);
             $mock->shouldReceive('markAutoTrade')->once();
         });
@@ -130,6 +132,7 @@ class SignalDispatcherTest extends TestCase
         $texts = implode("\n---\n", array_column($this->telegramMessages(), 'text'));
         $this->assertStringContainsString('[PAPER] LONG AVAXUSDT</b> opened', $texts, 'The auto-trader took the signal');
         $this->assertStringContainsString('Auto-trader: [PAPER] taken', $texts, 'The signal alert reports the auto-trader decision');
+        $this->assertStringContainsString('[PAPER] AVAXUSDT LONG', implode("\n", app(TradingDaemonManager::class)->getRecentLogs()), 'Every decision is written to the live log');
     }
 
     public function test_dispatcher_status_and_test_alert_endpoints(): void

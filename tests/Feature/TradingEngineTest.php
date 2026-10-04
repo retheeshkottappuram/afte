@@ -67,6 +67,7 @@ class TradingEngineTest extends TestCase
     {
         $this->mock(MarketScanService::class, function (MockInterface $mock): void {
             $mock->shouldReceive('isScanDue')->andReturn(false);
+            $mock->shouldReceive('latestResults')->andReturn([]);
         });
         TradingAccount::getForMode('paper')->update(['balance' => 100.0, 'peak_equity' => 100.0, 'is_running' => true]);
         $trade = Trade::create([
@@ -99,6 +100,7 @@ class TradingEngineTest extends TestCase
     {
         $this->mock(MarketScanService::class, function (MockInterface $mock): void {
             $mock->shouldReceive('isScanDue')->andReturn(false);
+            $mock->shouldReceive('latestResults')->andReturn([]);
         });
         config(['trading.allow_live_trading' => false]);
         Setting::putValue(TradingModeManager::MODE_KEY, 'live');

@@ -9,6 +9,7 @@ use App\Models\TradingSignal;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
 use App\Services\Strategy\ExitPlan;
+use App\Services\Strategy\StrategyEngine;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -47,12 +48,12 @@ class OrderExecutor
 
         $slPct = abs($referencePrice - $structuralSl) / $referencePrice * 100;
         $minSlPct = (float) config('trading.strategy.min_sl_pct', 0.6);
-        $maxSlPct = (float) config('trading.strategy.max_sl_pct', 1.8);
+        $maxSlPct = StrategyEngine::configuredMaxSlPct(isset($signal['setup']) ? (string) $signal['setup'] : null);
         if ($slPct > $maxSlPct + 0.0001) {
-            return $this->rejected(sprintf('Stop-loss %.2f%% is wider than the %.1f%% limit. Trade skipped instead of widening risk.', $slPct, $maxSlPct));
+            return $this->rejected(sprintf('Stop-loss %.2f%% is wider than the %.2f%% limit. Trade skipped instead of widening risk.', $slPct, $maxSlPct));
         }
         if ($slPct < $minSlPct) {
-            $structuralSl = $this->riskManager->calculateAssetProtectionStopLoss($direction, $referencePrice, $structuralSl);
+            $structuralSl = $this->riskManager->calculateAssetProtectionStopLoss($direction, $referencePrice, $structuralSl, isset($signal['setup']) ? (string) $signal['setup'] : null);
         }
 
         $lock = Cache::lock("trade-entry:{$mode}:{$symbol}", 30);

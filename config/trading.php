@@ -186,7 +186,7 @@ return [
     */
     'sizing' => [
         'risk_per_trade_pct' => (float) env('TRADING_RISK_PER_TRADE_PCT', 2.0),
-        'small_account_max_risk_pct' => (float) env('TRADING_SMALL_ACCOUNT_MAX_RISK_PCT', 3.0), // Min-notional trades allowed up to this risk
+        'small_account_max_risk_pct' => (float) env('TRADING_SMALL_ACCOUNT_MAX_RISK_PCT', 5.0), // Min-notional trades allowed up to this risk
         'small_account_equity' => 25.0,
         'max_leverage' => (int) env('TRADING_MAX_LEVERAGE', 10),
         'max_margin_pct' => 90.0,
@@ -233,6 +233,12 @@ return [
         'regime_min_adx' => 18.0,
         'min_sl_pct' => 0.6,
         'max_sl_pct' => 1.8,
+        'max_sl_pct_by_setup' => [ // breakouts often need a wider stop; risk stays sized by the stop distance
+            'SQUEEZE_BREAKOUT' => (float) env('STRATEGY_BREAKOUT_MAX_SL_PCT', 4.0),
+        ],
+        // Enter squeeze breakouts during the candle (checked every minute). Off: the 12-month backtest lost
+        // (PF 0.45-0.88, -0.07R to -0.40R per trade); the candle-close confirmation is where the edge comes from.
+        'intrabar_breakouts' => (bool) env('STRATEGY_INTRABAR_BREAKOUTS', false),
         'core_setups' => ['TREND_PULLBACK', 'SQUEEZE_BREAKOUT'],
         'min_setup_expectancy_r' => (float) env('STRATEGY_MIN_SETUP_EXPECTANCY_R', 0.05), // pause setups below this measured edge
         'shadow_setups' => ['SWING_REVERSAL', 'EMA_CROSS'],

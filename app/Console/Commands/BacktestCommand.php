@@ -19,7 +19,8 @@ class BacktestCommand extends Command
                             {--top=20 : Number of top-volume symbols when none are given}
                             {--balance=5.0 : Starting capital for the portfolio simulation}
                             {--seed : Store results as backtest signals so setup stats and the AI model have data from day one}
-                            {--setups= : Comma-separated setups included in the portfolio simulation (default: core setups)}';
+                            {--setups= : Comma-separated setups included in the portfolio simulation (default: core setups)}
+                            {--intrabar : Squeeze breakouts enter when price trades through the level (minute watcher) instead of at the candle close}';
 
     /**
      * @var string
@@ -55,7 +56,8 @@ class BacktestCommand extends Command
             (float) $this->option('balance'),
             (bool) $this->option('seed'),
             fn (string $symbol, int $count) => $this->line("  {$symbol}: {$count} signals"),
-            $this->option('setups') ? array_map('trim', explode(',', strtoupper((string) $this->option('setups')))) : null
+            $this->option('setups') ? array_map('trim', explode(',', strtoupper((string) $this->option('setups')))) : null,
+            (bool) $this->option('intrabar')
         );
 
         $this->newLine();
@@ -69,7 +71,7 @@ class BacktestCommand extends Command
             $s['profit_factor'] ?? '-',
         ], $result['setups']));
 
-        $this->info("Portfolio simulation from \${$result['initial_balance']} (2% risk per trade, live position limits) using: ".implode(', ', $result['portfolio_setups']));
+        $this->info("Portfolio simulation from \${$result['initial_balance']} (live risk and position limits) using: ".implode(', ', $result['portfolio_setups']));
         $this->table(['Metric', 'Value'], [
             ['Trades taken', $result['total_trades']],
             ['Win rate', $result['win_rate'].'%'],

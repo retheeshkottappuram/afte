@@ -29,7 +29,8 @@ class MarketScanService
         protected SetupStats $stats,
         protected SignalScorer $scorer,
         protected TradeSimulator $simulator,
-        protected OpportunityScorer $opportunity
+        protected OpportunityScorer $opportunity,
+        protected BreakoutWatcher $watcher
     ) {}
 
     /**
@@ -228,11 +229,16 @@ class MarketScanService
         $results = $this->analyzer->analyzeMany($symbols, $interval, $universe, lookback: 3);
         $rows = [];
         $fresh = [];
+        $watches = [];
 
         foreach ($results as $symbol => $result) {
             /** @var Signal|null $latest */
             $latest = $result['latest'] ?? null;
             $record = null;
+
+            if (! empty($result['watch'])) {
+                $watches[$symbol] = $result['watch'];
+            }
 
             if ($latest !== null) {
                 try {
@@ -248,6 +254,7 @@ class MarketScanService
 
         usort($rows, fn (array $a, array $b): int => $this->rank($b) <=> $this->rank($a));
         $rows = $this->numberRanks($rows);
+        $this->watcher->store($interval, $watches);
 
         Setting::putValue(self::RESULTS_KEY, [
             'interval' => $interval,
@@ -255,10 +262,13 @@ class MarketScanService
             'scanned_at' => now()->toIso8601String(),
             'duration_s' => round(microtime(true) - $started, 1),
             'universe_size' => count($universe),
+            'symbols_scanned' => count($results),
+            'fresh_signals' => count($fresh),
+            'watching' => count($watches),
             'rows' => $rows,
         ]);
 
-        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals.', count($results), count($fresh)), 'fresh' => $fresh, 'rows' => $rows];
+        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), count($watches)), 'fresh' => $fresh, 'rows' => $rows];
     }
 
     /**
@@ -358,6 +368,24 @@ class MarketScanService
         }
 
         return $rows;
+    }
+
+    /**
+     * Let the current candle's scan run again after a crash (at most 3 tries per candle).
+     */
+    public function releaseScan(string $interval = '1h'): bool
+    {
+        $currentBar = intdiv(now()->timestamp, self::barSeconds($interval));
+        $attempts = (int) Cache::get("market-scan-attempts:{$interval}:{$currentBar}", 0) + 1;
+        Cache::put("market-scan-attempts:{$interval}:{$currentBar}", $attempts, self::barSeconds($interval));
+
+        if ($attempts >= 3) {
+            return false;
+        }
+
+        Cache::forget($this->runningKey($interval, $currentBar));
+
+        return true;
     }
 
     protected function runningKey(string $interval, int $bar): string
