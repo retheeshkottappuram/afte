@@ -5,6 +5,7 @@ namespace App\Services\Strategy;
 use App\Models\CryptoSignal;
 use App\Models\Setting;
 use App\Models\Trade;
+use App\Services\Crypto\CandleSanitizer;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -18,12 +19,145 @@ class MarketScanService
 {
     public const RESULTS_KEY = 'scanner_results';
 
+    public const MANUAL_RESULTS_KEY = 'manual_scanner_results';
+
+    public const MANUAL_STATE_KEY = 'manual_scan_state';
+
     public function __construct(
         protected SymbolAnalyzer $analyzer,
         protected SignalLedger $ledger,
         protected SetupStats $stats,
-        protected SignalScorer $scorer
+        protected SignalScorer $scorer,
+        protected TradeSimulator $simulator
     ) {}
+
+    /**
+     * On-demand whole-market scan: every crypto perpetual above a small volume floor, showing every
+     * setup from the last few candles that is still in play (has not hit its stop or targets yet).
+     * Read-only: it never records signals, never trades and never touches the engine's hourly scan.
+     *
+     * @return array{message: string, rows: array<int, array<string, mixed>>}
+     */
+    public function runManualScan(string $interval = '1h'): array
+    {
+        $started = microtime(true);
+        $this->setManualState(['status' => 'RUNNING', 'started_at' => now()->toIso8601String(), 'index' => 0, 'total' => 0, 'current_symbol' => 'Loading market list...']);
+        $lookbackBars = (int) config('trading.strategy.manual_scan_lookback_bars', 6);
+        $universe = $this->analyzer->universe(
+            (int) config('trading.strategy.manual_scan_max_symbols', 200),
+            (float) config('trading.strategy.manual_scan_min_volume_24h', 5000000.0)
+        );
+        $symbols = array_keys($universe);
+
+        foreach (Trade::where('status', 'OPEN')->pluck('symbol')->merge(Watchlist::symbols())->unique() as $extraSymbol) {
+            if (! in_array($extraSymbol, $symbols, true)) {
+                $symbols[] = $extraSymbol;
+            }
+        }
+
+        $results = $this->analyzer->analyzeMany($symbols, $interval, $universe, lookback: $lookbackBars, progress: function (int $done, int $total, string $symbol): void {
+            $this->setManualState(['status' => 'RUNNING', 'index' => $done, 'total' => $total, 'current_symbol' => $symbol]);
+        });
+        $rows = [];
+
+        foreach ($results as $symbol => $result) {
+            $active = $this->activeSignal($result, $interval);
+            $row = $this->row($symbol, $result, $universe[$symbol] ?? null, $active, null);
+            if ($row['signal'] !== null) {
+                $row['signal']['age_minutes'] = max(0, (int) round((now()->timestamp - $active->time) / 60));
+            }
+            $rows[] = $row;
+        }
+
+        usort($rows, fn (array $a, array $b): int => $this->rank($b) <=> $this->rank($a));
+        $signalCount = count(array_filter($rows, fn (array $r): bool => $r['signal'] !== null));
+
+        Setting::putValue(self::MANUAL_RESULTS_KEY, [
+            'interval' => $interval,
+            'scanned_at' => now()->toIso8601String(),
+            'duration_s' => round(microtime(true) - $started, 1),
+            'universe_size' => count($symbols),
+            'lookback_bars' => $lookbackBars,
+            'min_volume' => (float) config('trading.strategy.manual_scan_min_volume_24h', 5000000.0),
+            'rows' => $rows,
+        ]);
+
+        $this->setManualState(['status' => 'COMPLETED', 'index' => count($symbols), 'total' => count($symbols), 'current_symbol' => 'Done', 'finished_at' => now()->toIso8601String()]);
+
+        return ['message' => sprintf('Scanned %d coins, %d active setups from the last %d candles.', count($symbols), $signalCount, $lookbackBars), 'rows' => $rows];
+    }
+
+    /**
+     * Queue an on-demand scan for the cron-run `crypto:scan --manual` (a web request would time out).
+     * Returns false when a scan is already queued or running.
+     */
+    public function requestManualScan(): bool
+    {
+        $state = $this->manualState();
+        $busySince = strtotime((string) ($state['updated_at'] ?? '')) ?: 0;
+
+        if (in_array($state['status'] ?? 'IDLE', ['QUEUED', 'RUNNING'], true) && now()->timestamp - $busySince < 300) {
+            return false;
+        }
+
+        $this->setManualState(['status' => 'QUEUED', 'requested_at' => now()->toIso8601String(), 'index' => 0, 'total' => 0, 'current_symbol' => 'Waiting for the background worker (up to 1 minute)...'], replace: true);
+
+        return true;
+    }
+
+    public function isManualScanQueued(): bool
+    {
+        return ($this->manualState()['status'] ?? 'IDLE') === 'QUEUED';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function manualState(): array
+    {
+        return (array) Setting::getValue(self::MANUAL_STATE_KEY, ['status' => 'IDLE']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     */
+    public function setManualState(array $values, bool $replace = false): void
+    {
+        $state = $replace ? [] : $this->manualState();
+        Setting::putValue(self::MANUAL_STATE_KEY, array_merge($state, $values, ['updated_at' => now()->toIso8601String()]));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function latestManualResults(): array
+    {
+        return (array) Setting::getValue(self::MANUAL_RESULTS_KEY, []);
+    }
+
+    /**
+     * Newest signal in the scanned window whose trade would still be open (no stop or target hit yet).
+     *
+     * @param  array<string, mixed>  $result
+     */
+    protected function activeSignal(array $result, string $interval): ?Signal
+    {
+        $closed = CandleSanitizer::onlyClosedCandles((array) ($result['candles'] ?? []));
+
+        foreach (array_reverse((array) ($result['signals'] ?? [])) as $signal) {
+            /** @var Signal $signal */
+            $outcome = $this->simulator->run([
+                'side' => $signal->side, 'entry' => $signal->entry, 'sl' => $signal->stopLoss,
+                'tp1' => $signal->tp1, 'tp2' => $signal->tp2, 'atr' => $signal->atr, 'time' => $signal->time,
+            ], $closed, self::barSeconds($interval));
+
+            if (! $outcome['closed']) {
+                return $signal;
+            }
+        }
+
+        return null;
+    }
 
     public static function barSeconds(string $interval): int
     {
@@ -39,11 +173,11 @@ class MarketScanService
      */
     public function isScanDue(string $interval = '1h'): bool
     {
-        $currentBar = intdiv(time(), self::barSeconds($interval));
+        $currentBar = intdiv(now()->timestamp, self::barSeconds($interval));
         $results = (array) Setting::getValue(self::RESULTS_KEY, []);
 
         // Wait 30s into the new candle so short-lived kline caches cannot hold the pre-close candle.
-        if (time() % self::barSeconds($interval) < 30) {
+        if (now()->timestamp % self::barSeconds($interval) < 30) {
             return false;
         }
 
@@ -57,7 +191,7 @@ class MarketScanService
      */
     public function runScan(string $interval = '1h', bool $force = false): array
     {
-        $currentBar = intdiv(time(), self::barSeconds($interval));
+        $currentBar = intdiv(now()->timestamp, self::barSeconds($interval));
 
         if (! $force && ! Cache::add($this->runningKey($interval, $currentBar), true, self::barSeconds($interval))) {
             return ['scanned' => false, 'message' => 'Scan for this candle already ran.', 'fresh' => [], 'rows' => []];

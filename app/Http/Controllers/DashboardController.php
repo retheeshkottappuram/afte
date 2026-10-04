@@ -322,10 +322,13 @@ class DashboardController extends Controller
     public function scanMarket(Request $request): JsonResponse
     {
         if ($request->boolean('fresh') && ($request->user()?->isAdmin() || $request->user()?->hasPermission('trigger_scans'))) {
-            $this->scanner->runScan((string) config('trading.strategy.base_interval', '1h'), force: true);
+            $this->scanner->requestManualScan();
         }
 
-        $results = $this->scanner->latestResults();
+        // Show whichever is newer: the engine's hourly scan or the last on-demand scan.
+        $engine = $this->scanner->latestResults();
+        $manual = $this->scanner->latestManualResults();
+        $results = ($manual['scanned_at'] ?? '') > ($engine['scanned_at'] ?? '') ? $manual : $engine;
         $rows = (array) ($results['rows'] ?? []);
 
         $opportunities = [];

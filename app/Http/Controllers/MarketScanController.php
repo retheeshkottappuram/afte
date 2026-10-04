@@ -7,7 +7,6 @@ use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\StrategyEngine;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
-use Throwable;
 
 /**
  * Whole-market scan for the chart page. The background engine scans after every candle close;
@@ -19,15 +18,11 @@ class MarketScanController extends Controller
 
     public function start(): JsonResponse
     {
-        @set_time_limit(180);
-
-        try {
-            $result = $this->scanner->runScan((string) config('trading.strategy.base_interval', '1h'), force: true);
-        } catch (Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Scan failed: '.$e->getMessage()], 500);
+        if (! $this->scanner->requestManualScan()) {
+            return response()->json(['success' => true, 'message' => 'A scan is already in progress. Results will appear here.', 'status' => 'RUNNING']);
         }
 
-        return response()->json(['success' => true, 'message' => $result['message'], 'status' => 'COMPLETED']);
+        return response()->json(['success' => true, 'message' => 'Whole-market scan queued. It starts within a minute and takes about a minute; progress shows below.', 'status' => 'RUNNING']);
     }
 
     public function stop(): JsonResponse
@@ -37,25 +32,47 @@ class MarketScanController extends Controller
 
     public function status(): JsonResponse
     {
-        $results = $this->scanner->latestResults();
+        $state = $this->scanner->manualState();
+        $busy = in_array($state['status'] ?? 'IDLE', ['QUEUED', 'RUNNING'], true);
+        $results = $this->scanner->latestManualResults();
         $rows = (array) ($results['rows'] ?? []);
         $signals = array_values(array_map(fn (array $row): array => $this->card($row), array_filter($rows, fn (array $r): bool => ! empty($r['signal']))));
-        $total = (int) ($results['universe_size'] ?? count($rows));
+        $near = array_values(array_filter($rows, fn (array $r): bool => empty($r['signal']) && ! empty($r['near'])));
+        $coins = fn (string $bias): array => array_values(array_map(fn (array $r): string => str_replace('USDT', '', $r['symbol']), array_filter($rows, fn (array $r): bool => $r['bias'] === $bias)));
 
-        $log = $results === [] ? 'No scan yet. The engine scans after each candle close, or press Run Scan.' : implode("\n", [
-            'Scanned '.count($rows)." symbols ({$total} liquid USDT perpetuals + watchlist/open trades) on ".($results['interval'] ?? '1h').'.',
-            'Signals on the last closed candle: '.count($signals).'.',
-            'Uptrend: '.count(array_filter($rows, fn (array $r): bool => $r['bias'] === 'LONG')).
-            ' · Downtrend: '.count(array_filter($rows, fn (array $r): bool => $r['bias'] === 'SHORT')).
-            ' · No trend: '.count(array_filter($rows, fn (array $r): bool => $r['bias'] === 'NONE')),
-            'Duration: '.($results['duration_s'] ?? '?').'s. [COMPLETED]',
-        ]);
+        $log = $results === [] ? 'No on-demand scan yet. Press "Run Whole-Market Scan".' : implode("\n", array_filter([
+            'Scanned '.count($rows).' crypto USDT perpetuals (24h volume >= $'.number_format(($results['min_volume'] ?? 5e6) / 1e6).'M) on '.($results['interval'] ?? '1h').' in '.($results['duration_s'] ?? '?').'s.',
+            'Active setups from the last '.($results['lookback_bars'] ?? 6).' closed candles (stop/targets not hit yet): '.count($signals).'.',
+            $signals === [] ? 'No setup is in play right now. That is normal: most hours have no valid entry, and no trade beats a bad trade.' : null,
+            'Near a setup (watch these): '.($near === [] ? 'none' : implode(', ', array_map(fn (array $r): string => str_replace('USDT', '', $r['symbol']).' ('.$r['near']['detail'].')', array_slice($near, 0, 12)))),
+            'Uptrend ('.count($coins('LONG')).'): '.implode(', ', array_slice($coins('LONG'), 0, 30)),
+            'Downtrend ('.count($coins('SHORT')).'): '.implode(', ', array_slice($coins('SHORT'), 0, 30)),
+            'No clear trend: '.count($coins('NONE')).' coins.',
+            'Coins below $50M daily volume are shown but flagged not tradable for the auto-trader. [COMPLETED]',
+        ]));
+
+        if ($busy) {
+            $log = ($state['status'] === 'QUEUED' ? 'Scan queued. Waiting for the background worker (runs every minute via cron)...' : 'Scanning the whole market...')
+                .'
+
+Previous results:
+'.$log;
+        } elseif (($state['status'] ?? '') === 'FAILED') {
+            $log = 'Last scan failed: '.($state['error'] ?? 'unknown error').'
+
+'.$log;
+        }
+
+        $total = (int) ($state['total'] ?? 0);
+        $index = (int) ($state['index'] ?? 0);
 
         return response()->json([
             'success' => true,
-            'status' => $results === [] ? 'IDLE' : 'COMPLETED',
-            'is_running' => false,
-            'progress' => ['current_symbol' => 'Done', 'index' => count($rows), 'total' => count($rows), 'percent' => 100, 'signals_found' => count($signals)],
+            'status' => $busy ? 'RUNNING' : ($results === [] ? 'IDLE' : 'COMPLETED'),
+            'is_running' => $busy,
+            'progress' => $busy
+                ? ['current_symbol' => $state['current_symbol'] ?? '...', 'index' => $index, 'total' => $total, 'percent' => $total > 0 ? (int) round($index / $total * 100) : 0, 'signals_found' => count($signals)]
+                : ['current_symbol' => 'Done', 'index' => count($rows), 'total' => count($rows), 'percent' => 100, 'signals_found' => count($signals)],
             'signals' => $signals,
             'total_signals' => count($signals),
             'log_tail' => $log,
@@ -65,7 +82,7 @@ class MarketScanController extends Controller
 
     public function clear(): JsonResponse
     {
-        Setting::putValue(MarketScanService::RESULTS_KEY, []);
+        Setting::putValue(MarketScanService::MANUAL_RESULTS_KEY, []);
 
         return response()->json(['success' => true, 'message' => 'Scan results cleared.', 'status' => 'IDLE']);
     }
@@ -112,7 +129,7 @@ class MarketScanController extends Controller
             'resistance' => $s['side'] === 'SHORT' ? $s['sl'] : null,
             'volume_ratio' => $s['indicators']['volume_ratio'] ?? null,
             'rsi' => $s['indicators']['rsi'] ?? null,
-            'age_minutes' => max(0, (int) round((time() - (int) $s['time']) / 60)),
+            'age_minutes' => $s['age_minutes'] ?? max(0, (int) round((time() - (int) $s['time']) / 60)),
             'detailed_reasoning' => [
                 'market_structure' => $filters,
                 'volume_ignition' => 'Volume '.($s['indicators']['volume_ratio'] ?? '?').'x average. '.($s['confluences'] !== [] ? 'Confluence: '.implode(', ', $s['confluences']).'.' : 'No extra confluence.'),

@@ -241,6 +241,9 @@ return [
         'auto_trade_grades' => ['A', 'B'],
         'telegram_grades' => ['A', 'B'],
         'max_universe' => 120,
+        'manual_scan_min_volume_24h' => (float) env('STRATEGY_MANUAL_SCAN_MIN_VOLUME', 5000000.0), // on-demand scanner covers smaller coins too (shown, flagged if below the trading floor)
+        'manual_scan_max_symbols' => 200,
+        'manual_scan_lookback_bars' => 6,
         'banned_symbols' => ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BTCDOMUSDT'],
     ],
 

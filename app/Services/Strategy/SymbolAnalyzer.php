@@ -40,9 +40,9 @@ class SymbolAnalyzer
      *
      * @return array<string, array{symbol: string, quote_volume: float, listing_days: ?int, funding_rate: ?float}>
      */
-    public function universe(?int $limit = null): array
+    public function universe(?int $limit = null, ?float $minVolume = null): array
     {
-        $minVolume = (float) config('trading.strategy.min_quote_volume_24h', 50000000.0);
+        $minVolume ??= (float) config('trading.strategy.min_quote_volume_24h', 50000000.0);
         $minListingDays = (int) config('trading.strategy.min_listing_days', 30);
         $banned = (array) config('trading.strategy.banned_symbols', []);
         $limit ??= (int) config('trading.strategy.max_universe', 120);
@@ -100,13 +100,19 @@ class SymbolAnalyzer
      * @param  array<string, array<string, mixed>>  $universe  Optional universe rows keyed by symbol
      * @return array<string, array<string, mixed>>
      */
-    public function analyzeMany(array $symbols, string $interval = '1h', array $universe = [], int $lookback = 3): array
+    public function analyzeMany(array $symbols, string $interval = '1h', array $universe = [], int $lookback = 3, ?callable $progress = null): array
     {
         $regimeInterval = self::regimeInterval($interval);
         [$btcBase, $btcRegime] = $this->btcCandles($interval, $regimeInterval, 'ANY');
         $results = [];
+        $done = 0;
 
-        foreach (array_chunk($symbols, 10) as $chunk) {
+        foreach (array_chunk($symbols, 20) as $chunk) {
+            if ($progress !== null) {
+                $progress($done, count($symbols), $chunk[0]);
+            }
+            $done += count($chunk);
+
             $bases = $this->market->fetchBatchKlines($chunk, $interval, self::BASE_LIMIT);
             $regimes = $this->market->fetchBatchKlines($chunk, $regimeInterval, self::REGIME_LIMIT);
 

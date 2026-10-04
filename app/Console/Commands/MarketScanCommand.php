@@ -14,7 +14,7 @@ class MarketScanCommand extends Command
     /**
      * @var string
      */
-    protected $signature = 'crypto:scan {--interval=1h} {--force : Scan even if this candle was already scanned}';
+    protected $signature = 'crypto:scan {--interval=1h} {--force : Scan even if this candle was already scanned} {--manual : Run a queued on-demand whole-market scan (from the dashboard button)}';
 
     /**
      * @var string
@@ -24,6 +24,24 @@ class MarketScanCommand extends Command
     public function handle(MarketScanService $scanner): int
     {
         $interval = (string) $this->option('interval');
+
+        if ($this->option('manual')) {
+            if (! $scanner->isManualScanQueued() && ! $this->option('force')) {
+                return self::SUCCESS;
+            }
+
+            @set_time_limit(300);
+            try {
+                $this->info($scanner->runManualScan($interval)['message']);
+            } catch (\Throwable $e) {
+                $scanner->setManualState(['status' => 'FAILED', 'error' => $e->getMessage(), 'current_symbol' => 'Failed']);
+                $this->error($e->getMessage());
+
+                return self::FAILURE;
+            }
+
+            return self::SUCCESS;
+        }
 
         if (! $this->option('force') && ! $scanner->isScanDue($interval)) {
             $this->line('Scan for the current candle already done. Use --force to rescan.');

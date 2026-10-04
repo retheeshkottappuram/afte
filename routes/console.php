@@ -23,6 +23,12 @@ Schedule::command('trade:engine')
     ->everyMinute()
     ->runInBackground();
 
+// 1b. On-demand whole-market scan requested from the dashboard (does nothing unless queued)
+Schedule::command('crypto:scan --manual')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->runInBackground();
+
 // 2. Signal outcome tracking (feeds the measured win rates and the AI model)
 Schedule::command('crypto:resolve-signals')
     ->everyFiveMinutes()

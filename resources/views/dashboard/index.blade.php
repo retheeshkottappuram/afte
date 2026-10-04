@@ -1382,6 +1382,10 @@
                 const res = await fetch(url);
                 const data = await res.json();
                 renderScannerTable(data.opportunities, data.total_scanned, data.cached_at);
+                if (fresh) {
+                    const updateEl = document.getElementById('scanner-last-update');
+                    if (updateEl) updateEl.textContent = 'Whole-market scan queued: results appear here within ~2 minutes';
+                }
             } catch (err) {
                 console.error("Scan error:", err);
             } finally {
