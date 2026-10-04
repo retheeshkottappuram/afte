@@ -2,8 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CryptoSignal;
+use App\Services\Notifications\TelegramGateway;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\Watchlist;
+use App\Services\Trading\PhpCliResolver;
 use App\Services\Trading\TradingModeManager;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -38,7 +41,11 @@ class DaemonController extends Controller
             'last_scan_at' => $results['scanned_at'] ?? null,
             'universe_size' => $results['universe_size'] ?? 0,
             'signals_last_scan' => count(array_filter((array) ($results['rows'] ?? []), fn (array $r): bool => ! empty($r['signal']))),
-            'cron_command' => '* * * * * cd '.base_path().' && php artisan schedule:run >> /dev/null 2>&1',
+            'telegram_configured' => app(TelegramGateway::class)->isEnabled(),
+            'alerts_sent_24h' => CryptoSignal::where('telegram_sent', true)->where('sent_at', '>=', now()->subDay())->count(),
+            'last_alert_at' => CryptoSignal::where('telegram_sent', true)->max('sent_at'),
+            'watchlist_count' => count(Watchlist::symbols()),
+            'cron_command' => PhpCliResolver::resolve().' '.base_path('artisan').' schedule:run >> /dev/null 2>&1',
         ];
 
         return response()->json(['success' => true, 'is_running' => $isRunning, 'sentinel_enabled' => $alertsOn, 'stats' => $stats]);
@@ -49,6 +56,23 @@ class DaemonController extends Controller
         Watchlist::setAlertsEnabled(true);
 
         return response()->json(['success' => true, 'message' => 'Telegram signal alerts ON. The background engine scans after every candle close.', 'is_running' => true]);
+    }
+
+    /**
+     * Send a test message to confirm the Telegram bot token and chat id work.
+     */
+    public function testAlert(TelegramGateway $gateway): JsonResponse
+    {
+        if (! $gateway->isEnabled()) {
+            return response()->json(['success' => false, 'message' => 'Telegram is not configured: set TELEGRAM_NOTIFICATIONS_ENABLED=true, TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env, then run php artisan config:cache.'], 422);
+        }
+
+        $sent = $gateway->send("✅ <b>AFTE test alert</b>\nTelegram delivery works. Signal alerts are ".(Watchlist::alertsEnabled() ? 'ON' : 'OFF').'.', null, priority: true);
+
+        return response()->json([
+            'success' => $sent !== null,
+            'message' => $sent !== null ? 'Test alert delivered to Telegram.' : 'Telegram rejected the message. Check the bot token, the chat id, and that the bot was added to the chat.',
+        ], $sent !== null ? 200 : 502);
     }
 
     public function stop(): JsonResponse

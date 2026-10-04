@@ -224,7 +224,7 @@ class DashboardTest extends TestCase
         $response->assertStatus(200);
         $response->assertSee('id="daemon-banner"', false);
         $response->assertSee('id="daemon-status-badge"', false);
-        $response->assertSee('Portfolio Capital & Margin Allocation Matrix', false);
+        $response->assertSee('Capital &amp; Risk', false);
         $response->assertSee('id="stat-margin-util-badge"', false);
         $response->assertSee('id="strategy-info-modal"', false);
         $response->assertSee('id="daemon-logs-modal"', false);

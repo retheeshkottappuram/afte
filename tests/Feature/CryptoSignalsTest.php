@@ -26,9 +26,10 @@ class CryptoSignalsTest extends TestCase
 
         $response = $this->actingAs($admin)->get('/signals');
         $response->assertStatus(200);
-        $response->assertSee('Signal Monitoring Dashboard');
-        $response->assertSee('{{ticker}}', false);
-        $response->assertSee('{{close}}', false);
+        $response->assertSee('SignalAlgo Pro: Signals & Charts');
+        $response->assertSee('Automated Candle Close Signal Dispatcher');
+        $response->assertSee('id="sap-inspector"', false);
+        $response->assertDontSee('pineScriptModal', false);
     }
 
     public function test_admin_can_view_telegram_alert_history(): void

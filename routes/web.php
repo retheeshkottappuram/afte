@@ -95,6 +95,9 @@ Route::middleware('auth')->group(function (): void {
         Route::post('/stop', [DaemonController::class, 'stop'])
             ->middleware('permission:manage_sentinel')
             ->name('daemon.stop');
+        Route::post('/test-alert', [DaemonController::class, 'testAlert'])
+            ->middleware('permission:manage_sentinel')
+            ->name('daemon.test-alert');
         Route::get('/monitored-coins', [DaemonController::class, 'getMonitoredCoins'])->name('daemon.monitored-coins');
         Route::post('/monitored-coins/add', [DaemonController::class, 'addMonitoredCoin'])
             ->middleware('permission:manage_sentinel')

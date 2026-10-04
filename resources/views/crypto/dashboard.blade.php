@@ -3,12 +3,12 @@
 @section('title', 'Dashboard')
 
 @section('content')
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+<div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-10 overflow-x-hidden">
     <!-- Header banner -->
-    <div class="p-8 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border border-slate-800 shadow-xl mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-            <div class="flex items-center space-x-3">
-                <h1 class="text-3xl font-extrabold text-white tracking-tight">Signal Monitoring Dashboard</h1>
+    <div class="p-4 sm:p-8 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border border-slate-800 shadow-xl mb-6 sm:mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+                <h1 class="text-xl sm:text-3xl font-extrabold text-white tracking-tight">SignalAlgo Pro: Signals &amp; Charts</h1>
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                     Live Engine
                 </span>
@@ -21,12 +21,12 @@
                     </span>
                 @endif
             </div>
-            <p class="mt-2 text-slate-400 text-sm">
-                Welcome back, <strong class="text-white">{{ $user->name }}</strong> ({{ $user->email }}). Polling live candlestick data from <strong>{{ $cryptoConfig['market_label'] }}</strong>.
+            <p class="mt-2 text-slate-400 text-xs sm:text-sm break-words">
+                Welcome back, <strong class="text-white">{{ $user->name }}</strong>. Live candles from <strong>{{ $cryptoConfig['market_label'] }}</strong>. Charts are read-only: trades are placed only by the background engine or your explicit Place Trade click.
             </p>
         </div>
 
-        <div class="flex items-center space-x-3">
+        <div class="flex flex-wrap items-center gap-2 sm:gap-3">
             <a href="{{ route('alerts.index') }}" class="px-4 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 shadow transition flex items-center space-x-1.5">
                 <span>📡 Alert History</span>
             </a>
@@ -39,10 +39,10 @@
     </div>
 
     <!-- Overview Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6 mb-6 sm:mb-8">
         <!-- Card 1: Timeframes -->
-        <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Strategy Timeframe</div>
+        <div class="p-4 sm:p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow min-w-0">
+            <div class="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Strategy Timeframe</div>
             <div class="text-2xl font-bold text-white flex items-baseline space-x-2">
                 <span>{{ $cryptoConfig['interval'] }}</span>
                 <span class="text-sm font-normal text-slate-400">/ trend filter {{ \App\Services\Strategy\SymbolAnalyzer::regimeInterval($cryptoConfig['interval']) }}</span>
@@ -51,22 +51,22 @@
         </div>
 
         <!-- Card 2: Measured Accuracy -->
-        <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Measured Accuracy (90d)</div>
+        <div class="p-4 sm:p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow min-w-0">
+            <div class="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Measured Accuracy (90d)</div>
             <div id="card-accuracy" class="text-2xl font-bold text-emerald-400">--</div>
             <p id="card-accuracy-sub" class="text-xs text-slate-500 mt-2">Win rate of core setups, fees included</p>
         </div>
 
         <!-- Card 3: Trading Mode -->
-        <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Engine Trading Mode</div>
+        <div class="p-4 sm:p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow min-w-0">
+            <div class="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Engine Trading Mode</div>
             <div class="text-2xl font-bold {{ $tradingMode === 'live' ? 'text-rose-400' : 'text-amber-300' }}">{{ strtoupper($tradingMode) }}</div>
             <p class="text-xs text-slate-500 mt-2">Change it from the trading terminal. Viewing charts never places orders.</p>
         </div>
 
         <!-- Card 4: Telegram Channel -->
-        <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Telegram Alerts</div>
+        <div class="p-4 sm:p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow min-w-0">
+            <div class="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Telegram Alerts</div>
             <div class="flex items-center space-x-2 mt-1">
                 @if ($cryptoConfig['telegram_ready'])
                     <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -82,75 +82,63 @@
         </div>
     </div>
 
-    <!-- 24/7 Automated Background Watcher Sentinel -->
-    <div class="p-5 sm:p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/30 shadow-2xl mb-8 relative overflow-hidden">
+    <!-- Automated Candle Close Signal Dispatcher (Telegram alerts from the cron engine) -->
+    <div class="p-4 sm:p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/30 shadow-2xl mb-6 sm:mb-8 relative overflow-hidden">
         <div class="absolute -right-16 -top-16 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
-        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-            <div class="w-full lg:w-auto">
+        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 relative">
+            <div class="w-full lg:w-auto min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex items-center px-3 py-1 rounded-lg text-xs font-black tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 uppercase shadow-sm">
-                        🤖 24/7 Sentinel Watcher
+                        📡 Telegram Signal Alerts
                     </span>
                     <span id="daemonBadge" class="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700">
                         <span id="daemonDot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
-                        <span id="daemonStatusText">Checking Sentinel...</span>
+                        <span id="daemonStatusText">Checking...</span>
                     </span>
                 </div>
-                <h3 class="text-lg font-bold text-white mt-2">
+                <h3 class="text-base sm:text-lg font-bold text-white mt-2">
                     Automated Candle Close Signal Dispatcher
                 </h3>
                 <p class="text-xs text-slate-400 max-w-2xl mt-1">
-                    Continuously scans your chosen monitored coins and whole-market breakouts in the background. As soon as a candle closes with a verified SignalAlgo PRO BUY or SELL condition, it automatically records it and dispatches an instant Telegram alert—<strong>without needing your browser open</strong>.
+                    After every 1h candle closes, the background engine scans the liquid market with the same strategy as the auto-trader and sends <strong>Grade A/B tradable signals</strong> to Telegram, plus every signal on your <strong>alert coins</strong>. Each alert's result (TP / SL) is posted as a reply. It runs from the server cron, so no browser is needed.
                 </p>
-                <div class="flex flex-wrap items-center gap-2 sm:gap-3 mt-3 text-xs font-mono text-slate-400" id="daemonStatsRow">
-                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">
-                        Cycles: <strong id="daemonCycles" class="text-indigo-300">--</strong>
-                    </span>
-                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">
-                        Monitored: <strong id="daemonMonitoredCount" class="text-emerald-400">10 Coins</strong>
-                    </span>
-                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">
-                        Mode: <strong id="daemonScanModeLabel" class="text-cyan-300">Monitored + Breakouts</strong>
-                    </span>
-                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">
-                        Last Scan: <strong id="daemonLastScan" class="text-slate-200">--</strong>
-                    </span>
-                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">
-                        Heartbeat: <strong id="daemonHeartbeat" class="text-cyan-400">--</strong>
-                    </span>
+                <div class="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 mt-3 text-[11px] sm:text-xs font-mono text-slate-400" id="daemonStatsRow">
+                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">Engine: <strong id="daemonEngine" class="text-slate-200">--</strong></span>
+                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">Heartbeat: <strong id="daemonHeartbeat" class="text-cyan-400">--</strong></span>
+                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">Last scan: <strong id="daemonLastScan" class="text-slate-200">--</strong></span>
+                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">Coins scanned: <strong id="daemonUniverse" class="text-emerald-400">--</strong></span>
+                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">Signals last scan: <strong id="daemonSignals" class="text-emerald-400">--</strong></span>
+                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">Alerts sent 24h: <strong id="daemonAlerts24h" class="text-indigo-300">--</strong></span>
+                    <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800 col-span-2 sm:col-span-1">Telegram: <strong id="daemonTelegram" class="text-slate-200">--</strong></span>
+                </div>
+                <div id="daemonCronHint" class="hidden mt-3 p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/60 text-[11px] text-rose-200">
+                    The engine is not running. Add this to your hosting panel's cron jobs (every minute):
+                    <code id="daemonCronCommand" class="block mt-1 p-2 rounded bg-slate-950 text-slate-200 font-mono break-all select-all"></code>
                 </div>
             </div>
 
-            <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full lg:w-auto justify-start sm:justify-end">
+            <div class="grid grid-cols-2 sm:flex sm:flex-wrap items-stretch sm:items-center gap-2 w-full lg:w-auto">
                 <button type="button" id="btnStartDaemon" onclick="startDaemon()"
-                    class="w-full sm:w-auto px-5 py-2.5 text-xs sm:text-sm font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white shadow-lg shadow-emerald-900/30 border border-emerald-500 transition flex items-center justify-center space-x-2 touch-manipulation cursor-pointer">
-                    <span>▶</span>
-                    <span id="btnStartDaemonText">Start Sentinel Watcher</span>
+                    class="col-span-2 sm:col-span-1 px-4 py-2.5 text-xs sm:text-sm font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 transition flex items-center justify-center space-x-2 touch-manipulation">
+                    <span>🔔</span><span id="btnStartDaemonText">Turn Alerts ON</span>
                 </button>
                 <button type="button" id="btnStopDaemon" onclick="stopDaemon()"
-                    class="hidden w-full sm:w-auto px-5 py-2.5 text-xs sm:text-sm font-bold rounded-xl bg-rose-600/80 hover:bg-rose-600 active:bg-rose-700 text-white shadow-lg shadow-rose-900/30 border border-rose-500 transition flex items-center justify-center space-x-2 touch-manipulation cursor-pointer">
-                    <span>⏹</span>
-                    <span id="btnStopDaemonText">Stop Sentinel</span>
+                    class="hidden col-span-2 sm:col-span-1 px-4 py-2.5 text-xs sm:text-sm font-bold rounded-xl bg-rose-600/80 hover:bg-rose-600 text-white border border-rose-500 transition flex items-center justify-center space-x-2 touch-manipulation">
+                    <span>🔕</span><span id="btnStopDaemonText">Turn Alerts OFF</span>
                 </button>
-                <div class="flex items-center space-x-2 justify-end">
-                    <button type="button" onclick="toggleCoinManager()" title="Manage Monitored Coins"
-                        class="px-3 py-2.5 text-xs font-semibold text-emerald-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-emerald-500/40 hover:border-emerald-400 transition flex items-center space-x-1.5 touch-manipulation cursor-pointer">
-                        <span>🪙</span>
-                        <span>Manage Coins</span>
-                        <span id="daemonCoinCountBadge" class="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-[10px] text-emerald-300 font-mono">10</span>
-                    </button>
-                    <button type="button" onclick="toggleServerInstructions()" title="Server Setup (Cron / Terminal)"
-                        class="px-3 py-2.5 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition flex items-center space-x-1.5 touch-manipulation">
-                        <span>📋</span>
-                        <span>Server CLI / Cron</span>
-                    </button>
-                    <button type="button" onclick="pollDaemonStatus()" title="Refresh Status"
-                        class="p-2.5 text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition touch-manipulation">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                        </svg>
-                    </button>
-                </div>
+                <button type="button" onclick="toggleCoinManager()" title="Coins that always alert"
+                    class="px-3 py-2.5 text-xs font-semibold text-emerald-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-emerald-500/40 transition flex items-center justify-center space-x-1.5 touch-manipulation">
+                    <span>🪙</span><span>Alert Coins</span>
+                    <span id="daemonCoinCountBadge" class="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-[10px] text-emerald-300 font-mono">0</span>
+                </button>
+                <button type="button" onclick="sendTestAlert()" id="btnTestAlert" title="Send a test message to Telegram"
+                    class="px-3 py-2.5 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition flex items-center justify-center space-x-1.5 touch-manipulation">
+                    <span>✉️</span><span>Test Alert</span>
+                </button>
+                <button type="button" onclick="pollDaemonStatus()" title="Refresh"
+                    class="col-span-2 sm:col-span-1 p-2.5 text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition touch-manipulation flex items-center justify-center">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                </button>
             </div>
         </div>
 
@@ -160,142 +148,57 @@
             <button type="button" onclick="document.getElementById('daemonInlineFeedback').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-sm ml-2">&times;</button>
         </div>
 
-        <!-- Collapsible Server Setup & Cron Commands Panel -->
-        <div id="serverInstructionsPanel" class="hidden mt-4 p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs">
-            <div class="flex justify-between items-center mb-3">
-                <div class="font-bold text-slate-200 flex items-center space-x-1.5">
-                    <span>⚡ Production Server 24/7 Setup Guide</span>
-                    <span class="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-mono">Linux / VPS / cPanel / Windows</span>
-                </div>
-                <button type="button" onclick="toggleServerInstructions()" class="text-slate-400 hover:text-white">&times;</button>
-            </div>
-            <p class="text-slate-400 mb-3">
-                In production (cPanel, Ubuntu, VPS, AWS, Docker), web servers often restrict long-running processes spawned via browser clicks. Use either of these standard server methods to ensure 100% 24/7 uptime without needing a browser open:
-            </p>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <!-- Option A: Standard Cron -->
-                <div class="p-3 rounded-lg bg-slate-900 border border-slate-800">
-                    <div class="font-semibold text-emerald-400 mb-1 flex items-center justify-between">
-                        <span>Option 1: Server Crontab (Recommended)</span>
-                        <button type="button" onclick="copyToClipboard('* * * * * cd {{ base_path() }} && php artisan schedule:run >> /dev/null 2>&1', 'Cron command copied!')" class="text-[10px] text-slate-400 hover:text-emerald-300">Copy</button>
-                    </div>
-                    <p class="text-[11px] text-slate-400 mb-2">Runs every minute via Laravel Scheduler. Scans all 10 coins automatically:</p>
-                    <code class="block p-2 rounded bg-slate-950 text-slate-300 font-mono text-[11px] select-all break-all border border-slate-800">
-                        * * * * * cd {{ base_path() }} && php artisan schedule:run >> /dev/null 2>&1
-                    </code>
-                </div>
-
-                <!-- Option B: Continuous Background CLI -->
-                <div class="p-3 rounded-lg bg-slate-900 border border-slate-800">
-                    <div class="font-semibold text-cyan-400 mb-1 flex items-center justify-between">
-                        <span>Option 2: Terminal / SSH Daemon</span>
-                        <button type="button" onclick="copyToClipboard('nohup php artisan crypto:watch-signals --sleep=25 > storage/logs/watcher.log 2>&1 &', 'CLI command copied!')" class="text-[10px] text-slate-400 hover:text-cyan-300">Copy</button>
-                    </div>
-                    <p class="text-[11px] text-slate-400 mb-2">Continuous 25s loop running in background:</p>
-                    <code class="block p-2 rounded bg-slate-950 text-slate-300 font-mono text-[11px] select-all break-all border border-slate-800">
-                        nohup php artisan crypto:watch-signals --sleep=25 > storage/logs/watcher.log 2>&1 &
-                    </code>
-                </div>
-            </div>
-        </div>
-
-        <!-- Collapsible Monitored Coins Management Panel -->
-        <div id="coinManagerPanel" class="hidden mt-4 p-5 rounded-xl bg-slate-950/95 border border-emerald-500/30 text-xs shadow-xl">
-            <div class="flex flex-wrap justify-between items-center gap-2 mb-4 pb-3 border-b border-slate-800">
-                <div class="font-bold text-white flex items-center space-x-2 text-sm">
-                    <span>🪙 24/7 Monitored Coins Management</span>
-                    <span id="coinManagerCountBadge" class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono">10 Coins Active</span>
+        <!-- Alert coins (watchlist) manager -->
+        <div id="coinManagerPanel" class="hidden mt-4 p-4 sm:p-5 rounded-xl bg-slate-950/95 border border-emerald-500/30 text-xs shadow-xl">
+            <div class="flex flex-wrap justify-between items-center gap-2 mb-3 pb-3 border-b border-slate-800">
+                <div class="font-bold text-white flex flex-wrap items-center gap-2 text-sm">
+                    <span>🪙 Alert Coins</span>
+                    <span id="coinManagerCountBadge" class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono">0 coins</span>
                 </div>
                 <div class="flex items-center space-x-2">
-                    <button type="button" onclick="resetMonitoredCoins()"
-                        class="px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-rose-300 bg-slate-900 hover:bg-rose-950/40 border border-slate-700 hover:border-rose-700/50 rounded-lg transition flex items-center space-x-1 cursor-pointer">
-                        <span>↺</span>
-                        <span>Reset to Core 10</span>
-                    </button>
-                    <button type="button" onclick="toggleCoinManager()" class="text-slate-400 hover:text-white font-bold text-base p-1 cursor-pointer">&times;</button>
+                    <button type="button" onclick="resetMonitoredCoins()" class="px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-rose-300 bg-slate-900 border border-slate-700 rounded-lg transition">↺ Reset</button>
+                    <button type="button" onclick="toggleCoinManager()" class="text-slate-400 hover:text-white font-bold text-base p-1">&times;</button>
                 </div>
             </div>
-
-            <!-- Scan Mode Selector -->
-            <div class="p-3 mb-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
-                <div>
-                    <div class="font-semibold text-slate-200 text-xs">Sentinel Operational Mode:</div>
-                    <div class="text-[11px] text-slate-400">Choose whether to scan only your chosen coins or also detect breakouts market-wide.</div>
-                </div>
-                <div class="flex items-center space-x-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
-                    <button type="button" id="btnModeBoth" onclick="changeScanMode('both')" class="px-2.5 py-1 rounded font-semibold transition text-emerald-300 bg-emerald-950/60 border border-emerald-800/60 cursor-pointer">
-                        ⚡ Monitored + Breakouts
-                    </button>
-                    <button type="button" id="btnModeMonitored" onclick="changeScanMode('monitored_only')" class="px-2.5 py-1 rounded font-semibold transition text-slate-400 hover:text-white cursor-pointer">
-                        🎯 Monitored Only
-                    </button>
-                </div>
-            </div>
-
-            <!-- Add Coin Input Form -->
-            <div class="mb-4">
-                <form onsubmit="event.preventDefault(); addMonitoredCoin();" class="flex flex-col sm:flex-row gap-2">
-                    <div class="relative flex-1">
-                        <input type="text" id="newCoinInput" placeholder="Enter coin symbol (e.g. ADAUSDT, LINK, DOT, PEPE)"
-                            class="w-full uppercase px-3.5 py-2 text-xs rounded-xl bg-slate-900 text-white placeholder-slate-500 border border-slate-700 focus:outline-none focus:border-emerald-500 font-mono tracking-wider">
-                    </div>
-                    <button type="button" onclick="addMonitoredCoin()"
-                        class="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white shadow-md shadow-emerald-950/40 border border-emerald-500 transition flex items-center justify-center space-x-1.5 cursor-pointer">
-                        <span>+</span>
-                        <span>Add Coin</span>
-                    </button>
-                </form>
-                <div class="flex flex-wrap items-center gap-1.5 mt-2 text-[11px] text-slate-400">
-                    <span class="text-slate-500">Quick add:</span>
-                    <button type="button" onclick="quickAddCoin('ADAUSDT')" class="px-2 py-0.5 rounded bg-slate-900 hover:bg-emerald-950/50 hover:text-emerald-300 border border-slate-800 text-slate-300 font-mono text-[10px] transition cursor-pointer">+ ADA</button>
-                    <button type="button" onclick="quickAddCoin('LINKUSDT')" class="px-2 py-0.5 rounded bg-slate-900 hover:bg-emerald-950/50 hover:text-emerald-300 border border-slate-800 text-slate-300 font-mono text-[10px] transition cursor-pointer">+ LINK</button>
-                    <button type="button" onclick="quickAddCoin('DOTUSDT')" class="px-2 py-0.5 rounded bg-slate-900 hover:bg-emerald-950/50 hover:text-emerald-300 border border-slate-800 text-slate-300 font-mono text-[10px] transition cursor-pointer">+ DOT</button>
-                    <button type="button" onclick="quickAddCoin('UNIUSDT')" class="px-2 py-0.5 rounded bg-slate-900 hover:bg-emerald-950/50 hover:text-emerald-300 border border-slate-800 text-slate-300 font-mono text-[10px] transition cursor-pointer">+ UNI</button>
-                    <button type="button" onclick="quickAddCoin('PEPEUSDT')" class="px-2 py-0.5 rounded bg-slate-900 hover:bg-emerald-950/50 hover:text-emerald-300 border border-slate-800 text-slate-300 font-mono text-[10px] transition cursor-pointer">+ PEPE</button>
-                    <button type="button" onclick="quickAddCoin('XLMUSDT')" class="px-2 py-0.5 rounded bg-slate-900 hover:bg-emerald-950/50 hover:text-emerald-300 border border-slate-800 text-slate-300 font-mono text-[10px] transition cursor-pointer">+ XLM</button>
-                </div>
-            </div>
-
-            <!-- Active Monitored Coins Grid / Pills -->
-            <div>
-                <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-                    <span>Currently Monitored Coins:</span>
-                    <span class="text-slate-500 font-normal">Click ✕ to remove any coin</span>
-                </div>
-                <div id="monitoredCoinsPillContainer" class="flex flex-wrap gap-2 min-h-[48px] p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                    <span class="text-slate-500 text-xs italic">Loading coins...</span>
-                </div>
+            <p class="text-[11px] text-slate-400 mb-3">These coins are always scanned, and <strong>every</strong> signal on them is sent to Telegram (flagged if it is not tradable). Other coins only alert on Grade A/B tradable signals.</p>
+            <form onsubmit="event.preventDefault(); addMonitoredCoin();" class="flex flex-col sm:flex-row gap-2 mb-3">
+                <input type="text" id="newCoinInput" placeholder="Coin symbol, e.g. ADA, LINK, DOGEUSDT"
+                    class="flex-1 min-w-0 uppercase px-3.5 py-2 text-xs rounded-xl bg-slate-900 text-white placeholder-slate-500 border border-slate-700 focus:outline-none focus:border-emerald-500 font-mono">
+                <button type="button" onclick="addMonitoredCoin()" class="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 transition">+ Add Coin</button>
+            </form>
+            <div id="monitoredCoinsPillContainer" class="flex flex-wrap gap-2 min-h-[48px] p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                <span class="text-slate-500 text-xs italic">Loading coins...</span>
             </div>
         </div>
     </div>
 
-    <!-- On-Demand Whole-Market Scanner (php artisan crypto:check-signals --all --dry-run) -->
-    <div class="p-5 sm:p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/40 border border-slate-800 hover:border-indigo-500/30 shadow-2xl mb-8 relative overflow-hidden transition">
+    <!-- On-Demand Whole-Market Scanner (queued, runs via cron: crypto:scan --manual) -->
+    <div class="p-4 sm:p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/40 border border-slate-800 hover:border-indigo-500/30 shadow-2xl mb-6 sm:mb-8 relative overflow-hidden transition">
         <div class="absolute -right-16 -top-16 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none"></div>
 
         <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
             <div class="w-full lg:w-auto">
                 <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex items-center px-3 py-1 rounded-lg text-xs font-black tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 uppercase shadow-sm">
-                        ⚡ Institutional Setup Scanner
+                        ⚡ Whole-Market Scanner
                     </span>
                     <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                        🛡️ BTC Macro & Wick Filtered
+                        Same engine as the auto-trader
                     </span>
                     <span id="marketScanStatusBadge" class="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700">
                         <span id="marketScanStatusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
                         <span id="marketScanStatusText">IDLE</span>
                     </span>
                 </div>
-                <h3 class="text-lg font-bold text-white mt-2">
-                    On-Demand Institutional Setup Scanner
+                <h3 class="text-base sm:text-lg font-bold text-white mt-2">
+                    On-Demand Setup Scanner
                 </h3>
                 <p class="text-xs text-slate-400 max-w-2xl mt-1">
-                    Scan active Binance USDT Perpetual contracts in real-time. Enforces strict <strong>Bitcoin Macro Direction Alignment</strong> (no counter-trend shorts/longs), <strong>Donchian Structure Breakouts</strong>, <strong>&ge; 1.30x Volume Surge</strong>, <strong>ADX Trend Momentum (&ge; 20)</strong>, and <strong>Rejection Wick Filtration</strong>.
+                    Scans every crypto USDT perpetual on Binance (24h volume &ge; $5M) and lists every setup from the last 6 hours that is still in play. Each card shows whether it passes the auto-trader's filters (4h trend, BTC direction, volatility, stop width, liquidity) and the setup's measured track record. The scan runs in the background and takes about a minute.
                 </p>
 
                 <!-- Scan Metrics Bar -->
-                <div class="flex flex-wrap items-center gap-2 sm:gap-3 mt-3 text-xs font-mono text-slate-400">
+                <div class="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:gap-3 mt-3 text-[11px] sm:text-xs font-mono text-slate-400">
                     <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">
                         Scanned: <strong id="scanProgressCount" class="text-cyan-400">0 / 0</strong>
                     </span>
@@ -312,7 +215,7 @@
             </div>
 
             <!-- Controls -->
-            <div class="flex flex-wrap items-center gap-2.5 w-full lg:w-auto justify-start sm:justify-end">
+            <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-start sm:justify-end">
                 <button type="button" id="btnStartMarketScan" onclick="startMarketScan()"
                     class="px-5 py-2.5 text-xs sm:text-sm font-bold rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 active:from-cyan-700 active:to-indigo-700 text-white shadow-lg shadow-cyan-900/30 border border-cyan-400/40 transition flex items-center justify-center space-x-2 touch-manipulation cursor-pointer">
                     <span>▶</span>
@@ -356,12 +259,12 @@
                 <div>
                     <div class="flex items-center space-x-2.5">
                         <h4 class="text-sm sm:text-base font-black text-slate-100 flex items-center space-x-2">
-                            <span>🎯 Institutional Setups</span>
+                            <span>🎯 Setups In Play</span>
                             <span id="signalsBadgeCount" class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">0 Found</span>
                         </h4>
                     </div>
                     <p class="text-[11px] text-slate-400 mt-0.5">
-                        Strictly filtered with <strong class="text-slate-300">&ge; 10% Profit Target Gating</strong>, <strong class="text-slate-300">&gt; 1H Strategy Alignment</strong>, and <strong class="text-slate-300">BTC Macro Direction</strong>.
+                        Green = passes every auto-trader filter. Grey = shown for information; the card says which filter failed.
                     </p>
                 </div>
 
@@ -383,7 +286,7 @@
                         </button>
                         <button type="button" onclick="setScanFilter('A_PLUS')" id="filter-btn-A_PLUS"
                             class="px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer text-slate-400 hover:text-amber-400">
-                            ⭐ Grade A+
+                            ✓ Tradable
                         </button>
                     </div>
 
@@ -392,10 +295,9 @@
                         <span class="text-slate-500 font-semibold text-[11px]">Sort:</span>
                         <select id="scanSortSelect" onchange="changeScanSort(this.value)"
                             class="bg-transparent text-slate-200 font-bold focus:outline-none cursor-pointer text-xs pr-1">
-                            <option value="score_desc" selected>🔥 Highest Score (Default)</option>
-                            <option value="profit_desc">💰 Highest Profit (ROE %)</option>
-                            <option value="rr_desc">⚖️ Best Risk/Reward</option>
-                            <option value="newest">⏱️ Newest First</option>
+                            <option value="score_desc" selected>Best first (tradable, grade)</option>
+                            <option value="newest">Newest first</option>
+                            <option value="rr_desc">Tightest stop</option>
                         </select>
                     </div>
                 </div>
@@ -405,7 +307,7 @@
                 <!-- Empty state shown by default -->
                 <div id="scanSignalsEmptyState" class="col-span-full py-8 text-center rounded-xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-500 text-xs">
                     <div class="text-2xl mb-1.5">🔭</div>
-                    No setups detected yet. Click <strong class="text-slate-400">"Run Whole-Market Scan"</strong> to evaluate all ~350 USDT Perpetual contracts.
+                    No scan yet. Click <strong class="text-slate-400">"Run Whole-Market Scan"</strong> to check every crypto USDT perpetual.
                 </div>
             </div>
         </div>
@@ -415,7 +317,7 @@
             <div class="flex justify-between items-center mb-2">
                 <div class="flex items-center space-x-2 font-mono text-xs text-slate-300">
                     <span class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
-                    <span class="font-semibold">CLI Output Stream (storage/logs/manual_scan.log)</span>
+                    <span class="font-semibold">Scan summary</span>
                 </div>
                 <div class="flex items-center space-x-2">
                     <button type="button" onclick="copyMarketScanLog()" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
@@ -429,28 +331,28 @@
     </div>
 
     <!-- Real-Time SignalAlgo PRO Command Center & Binance Futures Chart -->
-    <div class="p-6 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-2xl mb-8">
+    <div class="p-3 sm:p-6 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-2xl mb-6 sm:mb-8">
         <!-- SignalAlgo PRO Header -->
         <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-5 pb-5 border-b border-slate-800/80">
             <div>
-                <div class="flex items-center space-x-2.5">
+                <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex items-center px-3 py-1 rounded-lg text-xs font-black tracking-wider bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 text-emerald-400 border border-emerald-500/30 uppercase shadow-sm">
-                        ⚡ SignalAlgo PRO™ v3.2
+                        ⚡ SignalAlgo Pro v4
                     </span>
                     <span class="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700">
                         <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
                         <span>Perpetual Engine Live</span>
                     </span>
-                    <span class="hidden sm:inline text-xs text-slate-400">• Multi-Factor Futures Confluence</span>
+                    <span class="hidden sm:inline text-xs text-slate-400">• Signals print on closed candles only</span>
                 </div>
-                <h2 class="text-xl sm:text-2xl font-black text-white mt-1.5 tracking-tight flex items-center space-x-2">
+                <h2 class="text-xl sm:text-2xl font-black text-white mt-1.5 tracking-tight flex flex-wrap items-baseline gap-x-2">
                     <span id="headerSymbolTitle">BTCUSDT</span>
-                    <span class="text-sm font-medium text-slate-400">USDⓈ-M Perpetual Contract</span>
+                    <span class="text-xs sm:text-sm font-medium text-slate-400">USDⓈ-M Perpetual</span>
                 </h2>
             </div>
 
             <!-- Quick Switcher & Custom Coin Search -->
-            <div class="flex flex-wrap items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto min-w-0">
                 <div class="flex items-center bg-slate-950/80 p-1 rounded-xl border border-slate-800 text-xs shadow-inner overflow-x-auto max-w-full touch-pan-x select-none">
                     @foreach (['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'NEARUSDT', 'AVAXUSDT', 'SUIUSDT', '1000PEPEUSDT'] as $quickSymbol)
                         <button type="button" onclick="loadFuturesChart('{{ $quickSymbol }}', true)"
@@ -462,10 +364,10 @@
                 </div>
 
                 <!-- Custom Coin Search/Input -->
-                <div class="flex items-center space-x-1">
+                <div class="flex items-center space-x-1 w-full sm:w-auto">
                     <input type="text" id="customSymbolInput" placeholder="e.g. WIF, APT"
                         onkeydown="if (event.key === 'Enter') loadCustomFuturesChart();"
-                        class="px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white uppercase placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 w-28">
+                        class="px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white uppercase placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 flex-1 sm:flex-none sm:w-28 min-w-0">
                     <button type="button" onclick="loadCustomFuturesChart()"
                         class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow transition">
                         Load
@@ -494,7 +396,7 @@
                     </div>
                     <div class="text-[11px] text-slate-400 mt-1.5 flex items-center justify-between">
                         <span>Contract: <strong id="hud-contract" class="text-slate-200">SOLUSDT.P</strong></span>
-                        <span id="hud-score-label" class="text-emerald-400 font-bold">Score: --/100</span>
+                        <span id="hud-score-label" class="text-emerald-400 font-bold">--</span>
                     </div>
                     <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
                         <span id="hud-btc-macro" class="text-slate-400 font-mono">BTC Macro: <strong class="text-slate-300">Checking...</strong></span>
@@ -505,17 +407,17 @@
                 <!-- 2. Perpetual Trade Options -->
                 <div class="p-3 rounded-xl bg-slate-900/80 border border-slate-800">
                     <div class="text-xs font-semibold text-slate-400 mb-1 flex items-center justify-between">
-                        <span>Perpetual Trade Options</span>
-                        <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Isolated Margin</span>
+                        <span>Trade Plan</span>
+                        <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Isolated · risk-sized</span>
                     </div>
                     <div class="grid grid-cols-2 gap-2 text-xs">
                         <div>
-                            <span class="text-slate-500 block text-[10px]">Rec. Leverage</span>
-                            <span id="hud-leverage" class="font-bold text-amber-400 text-xs">5x - 10x</span>
+                            <span class="text-slate-500 block text-[10px]">Your size</span>
+                            <span id="hud-leverage" class="font-bold text-amber-400 text-xs">--</span>
                         </div>
                         <div>
                             <span class="text-slate-500 block text-[10px]">Risk / Reward</span>
-                            <span id="hud-rr" class="font-bold text-emerald-400 text-xs">1 : 2.5</span>
+                            <span id="hud-rr" class="font-bold text-emerald-400 text-xs">--</span>
                         </div>
                         <div class="col-span-2 pt-1 border-t border-slate-800 flex justify-between text-[11px]">
                             <span class="text-slate-400">Entry: <code id="hud-entry" class="text-white font-mono">--</code></span>
@@ -527,21 +429,21 @@
                 <!-- 3. Take Profit Targets -->
                 <div class="p-3 rounded-xl bg-slate-900/80 border border-slate-800">
                     <div class="text-xs font-semibold text-slate-400 mb-1 flex items-center justify-between">
-                        <span>Execution Targets</span>
-                        <span class="text-[10px] text-slate-400">Multi-TP Plan</span>
+                        <span>Exit Plan</span>
+                        <span class="text-[10px] text-slate-400">Breakeven at +1R</span>
                     </div>
                     <div class="space-y-1 text-xs">
                         <div class="flex justify-between items-center text-[11px]">
                             <span class="text-emerald-400 font-medium">TP1: <code id="hud-tp1" class="text-slate-200 font-mono">--</code></span>
-                            <span class="text-slate-500 text-[10px]">(Close 40% &amp; BE)</span>
+                            <span class="text-slate-500 text-[10px]">(book 50%, stop +0.5R)</span>
                         </div>
                         <div class="flex justify-between items-center text-[11px]">
                             <span class="text-emerald-400 font-medium">TP2: <code id="hud-tp2" class="text-slate-200 font-mono">--</code></span>
-                            <span class="text-slate-500 text-[10px]">(Close 35%)</span>
+                            <span class="text-slate-500 text-[10px]">(stop locks at TP1)</span>
                         </div>
                         <div class="flex justify-between items-center text-[11px]">
                             <span class="text-emerald-400 font-medium">TP3: <code id="hud-tp3" class="text-slate-200 font-mono">--</code></span>
-                            <span class="text-slate-500 text-[10px]">(Runner 25%)</span>
+                            <span class="text-slate-500 text-[10px]">(runner trails 1.5×ATR)</span>
                         </div>
                     </div>
                 </div>
@@ -569,16 +471,11 @@
 
             <!-- Indicator Confluence Ticker Strip -->
             <div class="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
-                <div class="flex flex-wrap items-center gap-3">
-                    <span>Algorithm: <strong class="text-emerald-400">SignalAlgo PRO™</strong></span>
-                    <span>•</span>
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
                     <span>RSI(14): <strong id="hud-rsi" class="text-slate-200">--</strong></span>
-                    <span>•</span>
-                    <span>ADX(14) Trend Power: <strong id="hud-adx" class="text-slate-200">--</strong></span>
-                    <span>•</span>
-                    <span>Vol vs SMA(20): <strong id="hud-vol" class="text-slate-200">--</strong></span>
-                    <span>•</span>
-                    <span>ATR Volatility: <strong id="hud-atr" class="text-slate-200">--</strong></span>
+                    <span>ADX(14): <strong id="hud-adx" class="text-slate-200">--</strong></span>
+                    <span>Volume: <strong id="hud-vol" class="text-slate-200">--</strong></span>
+                    <span>ATR: <strong id="hud-atr" class="text-slate-200">--</strong></span>
                 </div>
                 <div class="text-slate-500 text-[10px]">
                     Analysis Timeframe: <span id="hud-active-tf" class="text-emerald-400 font-bold uppercase">{{ $cryptoConfig['interval'] }}</span> | Trend Filter: <span id="hud-active-htf" class="text-slate-300 font-medium uppercase">{{ \App\Services\Strategy\SymbolAnalyzer::regimeInterval($cryptoConfig['interval']) }}</span>
@@ -588,25 +485,19 @@
 
         <!-- Chart Controls Toolbar: Mode Switcher, Timeframe Selector & Indicator Legend -->
         <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 mb-3 px-1">
-            <div class="flex flex-wrap items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto min-w-0">
                 <!-- Mode Switcher -->
                 <div class="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs shadow-inner">
                     <button type="button" id="tabAlgoChart" onclick="switchChartMode('algo')"
                         class="px-3 py-1.5 rounded-lg font-bold transition flex items-center space-x-1.5 bg-emerald-600 text-white shadow">
                         <span>⚡</span>
-                        <span>SignalAlgo PRO Signals Chart</span>
+                        <span>Signals<span class="hidden sm:inline"> Chart</span></span>
                         <span id="markersCountBadge" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-slate-900 text-emerald-300 font-mono border border-emerald-500/30">0</span>
                     </button>
                     <button type="button" id="tabTvChart" onclick="switchChartMode('tv')"
                         class="px-3 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white flex items-center space-x-1.5">
                         <span>📊</span>
-                        <span>TradingView Studio</span>
-                    </button>
-                    <button type="button" onclick="openPineScriptModal()"
-                        class="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-indigo-300 hover:text-white hover:bg-indigo-600/30 border border-indigo-500/30 transition flex items-center space-x-1"
-                        title="Pine Script (v5) Indicator Guide & Exporter for TradingView">
-                        <span>📋</span>
-                        <span>Pine Script (v5)</span>
+                        <span>TradingView</span>
                     </button>
                 </div>
 
@@ -653,7 +544,7 @@
             </div>
 
             <!-- Indicator Color Legend -->
-            <div id="algoIndicatorLegend" class="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+            <div id="algoIndicatorLegend" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] sm:text-xs text-slate-400">
                 <span class="flex items-center space-x-1.5">
                     <span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>
                     <span>EMA 9</span>
@@ -663,8 +554,16 @@
                     <span>EMA 21</span>
                 </span>
                 <span class="flex items-center space-x-1.5">
-                    <span class="w-2.5 h-2.5 rounded-full bg-purple-500"></span>
-                    <span>EMA 200</span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-orange-400"></span>
+                    <span>EMA 50</span>
+                </span>
+                <span class="flex items-center space-x-1.5">
+                    <span class="w-4 h-1 rounded bg-gradient-to-r from-emerald-500 to-rose-500"></span>
+                    <span>Trend ribbon</span>
+                </span>
+                <span class="flex items-center space-x-1.5">
+                    <span class="w-4 h-0.5 bg-yellow-400"></span>
+                    <span>Squeeze box</span>
                 </span>
                 <span class="flex items-center space-x-1.5">
                     <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -778,171 +677,15 @@
         </div>
     </div>
 
-    <!-- Security & Hosting Status -->
-    <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow mb-8">
-        <h2 class="text-lg font-bold text-white mb-4 flex items-center space-x-2">
-            <svg class="w-5 h-5 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-                <path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-            </svg>
-            <span>Production Security &amp; Protection Status</span>
-        </h2>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
-            <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                <div class="text-slate-400 font-semibold mb-0.5">Registration Access</div>
-                <div class="text-emerald-400 font-bold">Admin-Only Protected</div>
-                <div class="text-slate-500 mt-1">Public sign-up is disabled</div>
-            </div>
-
-            <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                <div class="text-slate-400 font-semibold mb-0.5">Security Headers</div>
-                <div class="text-emerald-400 font-bold">Active Middleware</div>
-                <div class="text-slate-500 mt-1">CSP, X-Frame, XSS, HSTS</div>
-            </div>
-
-            <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                <div class="text-slate-400 font-semibold mb-0.5">Brute-Force Shield</div>
-                <div class="text-emerald-400 font-bold">Rate Limiting Active</div>
-                <div class="text-slate-500 mt-1">Max 5 attempts / min / IP</div>
-            </div>
-
-            <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                <div class="text-slate-400 font-semibold mb-0.5">Session Defense</div>
-                <div class="text-emerald-400 font-bold">Fixation Protected</div>
-                <div class="text-slate-500 mt-1">Session ID regenerated on auth</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Middle Section: User Management (Admin Only) -->
-    @if ($user->isAdmin())
-        <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow mb-8">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-bold text-white flex items-center space-x-2">
-                    <span>Authorized Users</span>
-                    <span class="text-xs font-normal text-slate-400">({{ count($allUsers) }} registered)</span>
-                </h2>
-                <a href="{{ route('register') }}" class="text-xs text-emerald-400 hover:text-emerald-300 font-semibold transition">
-                    + Add Another User →
-                </a>
-            </div>
-
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-slate-800 text-xs">
-                    <thead>
-                        <tr class="text-left text-slate-400 uppercase tracking-wider font-semibold">
-                            <th class="py-2.5 px-3">Name</th>
-                            <th class="py-2.5 px-3">Email</th>
-                            <th class="py-2.5 px-3">Role</th>
-                            <th class="py-2.5 px-3">Created</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-800/60">
-                        @foreach ($allUsers as $u)
-                            <tr class="hover:bg-slate-800/30 transition">
-                                <td class="py-2.5 px-3 font-medium text-white flex items-center space-x-2">
-                                    <span>{{ $u->name }}</span>
-                                    @if ($u->id === $user->id)
-                                        <span class="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">You</span>
-                                    @endif
-                                </td>
-                                <td class="py-2.5 px-3 text-slate-300 font-mono">{{ $u->email }}</td>
-                                <td class="py-2.5 px-3">
-                                    @if ($u->isAdmin())
-                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-950 text-emerald-300 border border-emerald-800/60">Administrator</span>
-                                    @else
-                                        <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300">Authorized User</span>
-                                    @endif
-                                </td>
-                                <td class="py-2.5 px-3 text-slate-400">
-                                    {{ $u->created_at ? $u->created_at->format('M d, Y H:i') : '-' }}
-                                </td>
-                            </tr>
-                        @endforeach
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    @endif
-
-    <!-- Lower Section: Monitored Symbols & Manual Check -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- Monitored Pairs -->
-        <div class="lg:col-span-2 p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow">
-            <h2 class="text-lg font-bold text-white mb-4 flex items-center space-x-2">
-                <span>Active Monitored Pairs</span>
-                <span class="text-xs font-normal text-slate-400">({{ count($cryptoConfig['symbols']) }} symbols — click any coin to view chart)</span>
-            </h2>
-
-            <div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                @foreach ($cryptoConfig['symbols'] as $sym)
-                    <div onclick="loadFuturesChart('{{ $sym }}')"
-                        class="p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-emerald-500/60 cursor-pointer transition flex items-center justify-between group">
-                        <div>
-                            <div class="font-bold text-white group-hover:text-emerald-400 transition">{{ $sym }}</div>
-                            <div class="text-xs text-cyan-400/80 font-mono">{{ $cryptoConfig['market_label'] }}</div>
-                        </div>
-                        <span class="px-2 py-1 text-xs font-medium bg-emerald-950 text-emerald-400 rounded-md border border-emerald-900/50 group-hover:bg-emerald-900/60 transition">
-                            Chart ↗
-                        </span>
-                    </div>
-                @endforeach
-            </div>
-
-            <div class="mt-6 p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-slate-400 space-y-1">
-                <div class="font-semibold text-slate-300">Evaluating Indicator Confluence on {{ $cryptoConfig['market_label'] }}:</div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-slate-400">
-                    <div>• Fast EMA (9) vs Slow EMA (21)</div>
-                    <div>• HTF Trend Filter (1h 200 EMA)</div>
-                    <div>• ADX/DMI (14) $\ge$ 18 Directional Agreement</div>
-                    <div>• RSI (14) Overbought/Oversold &amp; Momentum</div>
-                    <div>• Volume Spike &gt; SMA(20) &times; 1.15</div>
-                    <div>• Candle Body Ratio $\ge$ 60% OR Engulfing</div>
-                    <div>• Structure Breakout $\ge$ 0.15% OR HH+HL / LL+LH</div>
-                    <div>• Dynamic ATR Stop-Loss &amp; Target Multiples</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- System Commands & CLI -->
-        <div class="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 shadow flex flex-col justify-between">
-            <div>
-                <h2 class="text-lg font-bold text-white mb-2">Artisan CLI Commands</h2>
-                <p class="text-xs text-slate-400 mb-4">Run these commands from the terminal or scheduler to verify signals:</p>
-
-                <div class="space-y-3">
-                    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                        <div class="text-xs text-slate-400 mb-1 font-semibold">Send instant test alert:</div>
-                        <code class="text-xs text-emerald-400 font-mono select-all">php artisan crypto:check-signals --test-alert</code>
-                    </div>
-
-                    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                        <div class="text-xs text-slate-400 mb-1 font-semibold">Live evaluation with diagnostics:</div>
-                        <code class="text-xs text-emerald-400 font-mono select-all">php artisan crypto:check-signals --dry-run</code>
-                    </div>
-
-                    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                        <div class="text-xs text-slate-400 mb-1 font-semibold">Check specific symbol:</div>
-                        <code class="text-xs text-emerald-400 font-mono select-all">php artisan crypto:check-signals --symbol=SOLUSDT --dry-run</code>
-                    </div>
-                </div>
-            </div>
-
-            <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-slate-500">
-                User registered on {{ $user->created_at ? $user->created_at->format('M d, Y') : 'today' }}
-            </div>
-        </div>
-    </div>
-
     <!-- Recent Telegram Alerts Section -->
-    <div class="p-6 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-2xl mb-8">
+    <div class="p-4 sm:p-6 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-2xl mb-6 sm:mb-8">
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-5 pb-4 border-b border-slate-800">
             <div>
                 <div class="flex items-center space-x-2">
                     <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
                     <h3 class="text-lg font-bold text-white tracking-tight">Recent Telegram Alerts</h3>
                 </div>
-                <p class="text-xs text-slate-400 mt-1">Latest trading opportunities dispatched to your Telegram channel.</p>
+                <p class="text-xs text-slate-400 mt-1">Signals actually delivered to your Telegram chat, with their tracked result.</p>
             </div>
             <a href="{{ route('alerts.index') }}" class="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-950 text-emerald-300 hover:bg-emerald-900/60 border border-emerald-800 rounded-lg transition">
                 <span>View Full Alert History</span>
@@ -961,6 +704,7 @@
                             <th class="py-3 px-4">Direction</th>
                             <th class="py-3 px-4">Setup</th>
                             <th class="py-3 px-4">Grade</th>
+                            <th class="py-3 px-4">Result</th>
                             <th class="py-3 px-4">Entry</th>
                             <th class="py-3 px-4">Stop Loss</th>
                             <th class="py-3 px-4">TP1</th>
@@ -989,14 +733,17 @@
                                     @endif
                                 </td>
                                 <td class="py-2.5 px-4 whitespace-nowrap font-sans">
-                                    @if($alert->isReversal())
-                                        <span class="text-[10px] text-amber-400 font-bold uppercase">Reversal</span>
-                                    @else
-                                        <span class="text-[10px] text-cyan-400 font-bold uppercase">Trend</span>
-                                    @endif
+                                    <span class="text-[10px] text-cyan-400 font-bold uppercase">{{ \App\Services\Strategy\StrategyEngine::SETUP_LABELS[$alert->setup] ?? $alert->setup_type }}</span>
                                 </td>
                                 <td class="py-2.5 px-4 whitespace-nowrap font-sans font-bold {{ $alert->grade === 'A' ? 'text-emerald-400' : ($alert->grade === 'B' ? 'text-cyan-400' : 'text-slate-300') }}">
-                                    Grade {{ $alert->grade }} <span class="text-[10px] text-slate-400">({{ $alert->score }})</span>
+                                    Grade {{ $alert->grade }}@if($alert->ai_probability !== null) <span class="text-[10px] text-slate-400">AI {{ round($alert->ai_probability * 100) }}%</span>@endif
+                                </td>
+                                <td class="py-2.5 px-4 whitespace-nowrap font-sans">
+                                    @if($alert->outcome === 'OPEN' || $alert->outcome === null)
+                                        <span class="text-slate-400">open</span>
+                                    @else
+                                        <span class="{{ (float) $alert->r_multiple > 0 ? 'text-emerald-400' : 'text-rose-400' }} font-bold">{{ $alert->outcome }} {{ sprintf('%+.2fR', $alert->r_multiple) }}</span>
+                                    @endif
                                 </td>
                                 <td class="py-2.5 px-4 text-white font-bold whitespace-nowrap">
                                     ${{ $alert->entry_price < 1 ? number_format($alert->entry_price, 6) : number_format($alert->entry_price, 4) }}
@@ -1019,126 +766,9 @@
             </div>
         @else
             <div class="py-8 text-center text-slate-500 text-xs font-sans">
-                No Telegram alerts logged yet. When alerts are dispatched, they will appear here automatically.
+                No Telegram alerts sent yet. Alerts are sent after a 1h candle closes with a Grade A/B tradable signal (or any signal on your alert coins).
             </div>
         @endif
-    </div>
-</div>
-
-<!-- Pine Script (v5) TradingView Guide & Export Modal -->
-<div id="pineScriptModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm hidden" onclick="if(event.target === this) closePineScriptModal()">
-    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-        <!-- Modal Header -->
-        <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/70">
-            <div class="flex items-center space-x-3">
-                <div class="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 font-bold text-lg">
-                    🌲
-                </div>
-                <div>
-                    <h3 class="text-base font-bold text-white flex items-center space-x-2">
-                        <span>TradingView Pine Script (v5)</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">v5 Script</span>
-                    </h3>
-                    <p class="text-xs text-slate-400">Run SignalAlgo PRO institutional buy/sell indicator on TradingView.com</p>
-                </div>
-            </div>
-            <button type="button" onclick="closePineScriptModal()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 flex items-center justify-center transition text-lg">
-                ✕
-            </button>
-        </div>
-
-        <!-- Modal Body / Explanations -->
-        <div class="p-6 overflow-y-auto space-y-4 text-xs text-slate-300">
-            <!-- Context Callout -->
-            <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex items-start space-x-3">
-                <span class="text-base leading-none">💡</span>
-                <div class="space-y-1">
-                    <p class="font-bold text-amber-100">What is Pine Script & why is this code here?</p>
-                    <p class="text-[11px] text-amber-200/90 leading-relaxed">
-                        Pine Script is TradingView's programming language for custom indicators. Due to TradingView cross-origin browser security, public embedded web widgets cannot run external custom scripts directly inside another website.
-                        Our native <strong>SignalAlgo PRO Signals Chart</strong> tab already plots all signals live. This Pine Script code is exported so you can run the exact same SignalAlgo PRO strategy directly inside your official <strong>TradingView.com</strong> account or TradingView Desktop app!
-                    </p>
-                </div>
-            </div>
-
-            <!-- How to Use in 3 Steps -->
-            <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-4 space-y-2.5">
-                <p class="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-2">
-                    <span>🚀</span>
-                    <span>How to use in TradingView (3 Steps):</span>
-                </p>
-                <ol class="space-y-2 text-slate-300 pl-4 list-decimal text-xs leading-relaxed">
-                    <li>Click the <strong class="text-indigo-300">"Copy Pine Script Code"</strong> button below.</li>
-                    <li>Open <a href="https://www.tradingview.com/chart/" target="_blank" class="text-emerald-400 underline font-semibold hover:text-emerald-300">TradingView.com/chart ↗</a> in your browser.</li>
-                    <li>At the bottom panel, click on the <strong class="text-white">"Pine Editor"</strong> tab, click <em>New indicator</em>, paste this script, and click <strong class="text-emerald-400">"Add to chart"</strong>.</li>
-                </ol>
-            </div>
-
-            <!-- Script Code Preview -->
-            <div class="space-y-1.5">
-                <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                    <span>SignalAlgo_PRO_v5.pine</span>
-                    <span>Pine Script v5 (Overlay Mode)</span>
-                </div>
-                <div class="relative bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-[11px] text-emerald-400/90 max-h-44 overflow-y-auto leading-relaxed select-all">
-<pre id="pineScriptPreviewText">//@version=5
-indicator("SignalAlgo PRO™ Institutional Signals", overlay=true)
-
-// --- Moving Averages ---
-ema9 = ta.ema(close, 9)
-ema21 = ta.ema(close, 21)
-ema200 = ta.ema(close, 200)
-
-plot(ema9, color=color.cyan, title="EMA 9", linewidth=2)
-plot(ema21, color=color.orange, title="EMA 21", linewidth=2)
-plot(ema200, color=color.purple, title="EMA 200", linewidth=3)
-
-// --- Trend Alignment ---
-bullTrend = close > ema200 and ema9 > ema21
-bearTrend = close < ema200 and ema9 < ema21
-
-// --- High-Confluence Conditions ---
-rsi14 = ta.rsi(close, 14)
-volSma = ta.sma(volume, 20)
-volRatio = volume / volSma
-
-buyPullback = bullTrend and low <= ema21 and close > ema9 and rsi14 >= 46 and rsi14 <= 68 and volRatio >= 1.05
-buyBreakout = bullTrend and close > ta.highest(high[1], 10) and rsi14 >= 55 and rsi14 <= 72 and volRatio >= 1.3
-
-sellPullback = bearTrend and high >= ema21 and close < ema9 and rsi14 >= 22 and rsi14 <= 54 and volRatio >= 1.05
-sellBreakout = bearTrend and close < ta.lowest(low[1], 10) and rsi14 <= 45 and rsi14 >= 20 and volRatio >= 1.3
-
-buySignal = (buyPullback or buyBreakout) and not (buyPullback[1] or buyBreakout[1])
-sellSignal = (sellPullback or sellBreakout) and not (sellPullback[1] or sellBreakout[1])
-
-// --- Plot Shapes on Chart ---
-plotshape(buySignal, title="SignalAlgo BUY", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.normal, text="BUY [Score: 92]")
-plotshape(sellSignal, title="SignalAlgo SELL", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.normal, text="SELL [Score: 92]")
-
-// --- Alerts ---
-alertcondition(buySignal, title="SignalAlgo BUY Alert", message="⚡ SignalAlgo PRO BUY Signal on @{{ticker}} at @{{close}}")
-alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlgo PRO SELL Signal on @{{ticker}} at @{{close}}")
-</pre>
-                </div>
-            </div>
-        </div>
-
-        <!-- Modal Footer -->
-        <div class="px-6 py-3.5 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
-            <a href="https://www.tradingview.com/chart/" target="_blank" class="text-xs text-slate-400 hover:text-white flex items-center space-x-1 transition font-medium">
-                <span>Open TradingView.com</span>
-                <span>↗</span>
-            </a>
-            <div class="flex items-center space-x-2">
-                <button type="button" onclick="closePineScriptModal()" class="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition">
-                    Close
-                </button>
-                <button type="button" id="btnCopyPineModal" onclick="copyPineScriptFromModal()" class="px-5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 shadow-lg shadow-indigo-600/30 transition flex items-center space-x-1.5">
-                    <span>📋</span>
-                    <span id="btnCopyPineModalText">Copy Pine Script Code</span>
-                </button>
-            </div>
-        </div>
     </div>
 </div>
 
@@ -1530,7 +1160,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
             signalBox.classList.remove('hidden');
             const isBuy = marker.side === 'BUY';
             signalTitle.className = isBuy ? 'font-black text-emerald-400' : 'font-black text-rose-400';
-            signalTitle.textContent = `${isBuy ? '🟢' : '🔴'} SignalAlgo ${marker.side} [Score: ${marker.score}/100]`;
+            signalTitle.textContent = `${isBuy ? '🟢' : '🔴'} ${marker.side} · ${marker.setup_label || 'Signal'} · Grade ${marker.grade || '-'}${marker.outcome ? ' · ' + marker.outcome + (marker.r_multiple !== null && marker.r_multiple !== undefined ? ' ' + Number(marker.r_multiple).toFixed(2) + 'R' : '') : ''}`;
             signalTargets.innerHTML = `Entry: ${fmt(marker.entry)} | SL: ${fmt(marker.sl)}<br>TP1: ${fmt(marker.tp1)} | TP2: ${fmt(marker.tp2)}`;
         } else if (signalBox) {
             signalBox.classList.add('hidden');
@@ -1686,7 +1316,8 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
 
                 const sig = data.signal;
                 const diag = data.diagnostics || {};
-                const perp = data.perpetual_options || {};
+                const perp = (data.signal && data.signal.perpetual_options) || {};
+                const sizeText = (data.sizing && data.sizing.allowed) ? `${data.sizing.leverage}x · risk $${data.sizing.risk_usd}` : (data.sizing ? 'too small / too wide' : '--');
                 const btcMacro = data.btc_macro || {};
                 const activeTrade = data.active_trade;
 
@@ -1736,12 +1367,12 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
 
                     if (scoreLabel) {
                         const trScore = activeTrade.meta?.score || 94;
-                        scoreLabel.textContent = `Score: ${trScore}/100 [SignalAlgo PRO Executed]`;
+                        scoreLabel.textContent = `Open ${String(activeTrade.mode || '').toUpperCase()} position · ${activeTrade.stage || ''}`;
                         scoreLabel.className = 'text-emerald-400 font-bold';
                     }
 
                     if (hudLeverage) hudLeverage.textContent = `${activeTrade.leverage || 10}x Isolated`;
-                    if (hudRr) hudRr.textContent = '1 : 2.8';
+                    if (hudRr) hudRr.textContent = 'TP1 1.5R · TP2 3R';
 
                     document.getElementById('hud-entry').textContent = fmt(activeTrade.entry_price);
                     document.getElementById('hud-sl').textContent = fmt(activeTrade.current_sl);
@@ -1754,12 +1385,12 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                     badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span><span>🟢 STRONG BUY / LONG${activeTag} (SCORE ${sig.score})</span>`;
 
                     if (scoreLabel) {
-                        scoreLabel.textContent = `Score: ${sig.score}/100 [Grade ${sig.grade || 'A'}]`;
+                        scoreLabel.textContent = `Grade ${sig.grade || '-'}`;
                         scoreLabel.className = 'text-emerald-400 font-bold';
                     }
 
-                    if (hudLeverage) hudLeverage.textContent = perp.recommended_leverage || '5x - 10x';
-                    if (hudRr) hudRr.textContent = perp.risk_reward || '1 : 2.8';
+                    if (hudLeverage) hudLeverage.textContent = sizeText;
+                    if (hudRr) hudRr.textContent = perp.risk_reward || '--';
 
                     const entryVal = sig.entry;
                     document.getElementById('hud-entry').textContent = fmt(entryVal);
@@ -1781,12 +1412,12 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                     badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span><span>🔴 STRONG SELL / SHORT${activeTag} (SCORE ${sig.score})</span>`;
 
                     if (scoreLabel) {
-                        scoreLabel.textContent = `Score: ${sig.score}/100 [Grade ${sig.grade || 'A'}]`;
+                        scoreLabel.textContent = `Grade ${sig.grade || '-'}`;
                         scoreLabel.className = 'text-emerald-400 font-bold';
                     }
 
-                    if (hudLeverage) hudLeverage.textContent = perp.recommended_leverage || '5x - 10x';
-                    if (hudRr) hudRr.textContent = perp.risk_reward || '1 : 2.8';
+                    if (hudLeverage) hudLeverage.textContent = sizeText;
+                    if (hudRr) hudRr.textContent = perp.risk_reward || '--';
 
                     const entryVal = sig.entry;
                     document.getElementById('hud-entry').textContent = fmt(entryVal);
@@ -1812,12 +1443,12 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                         badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400"></span><span>🛡️ BLOCKED (COUNTER BTC ${btcMacro.trend || 'MACRO'})</span>`;
                     } else {
                         badge.className = 'px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide bg-slate-800 text-slate-300 border border-slate-700 flex items-center space-x-1.5';
-                        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span><span>⚪ STANDBY (MONITORING 15m/1h CHARTS - NO TRADE)</span>`;
+                        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span><span>⚪ WAIT · ${(data.state && data.state.reason) ? data.state.reason : 'no valid setup right now'}</span>`;
                     }
 
                     if (scoreLabel) {
                         const rawScore = Math.max(diag.buy_score || 0, diag.sell_score || 0);
-                        scoreLabel.textContent = `Score: ${rawScore}/100 (Threshold: 80)`;
+                        scoreLabel.textContent = 'No active signal';
                         scoreLabel.className = rawScore >= 80 ? 'text-amber-400 font-bold' : 'text-slate-400 font-bold';
                     }
 
@@ -1858,7 +1489,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                     badge.innerHTML = `<span class="w-2 h-2 rounded-full ${sig.direction === 'LONG' ? 'bg-emerald-400' : 'bg-rose-400'} animate-ping"></span><span>${sig.direction === 'LONG' ? '🟢 BUY' : '🔴 SELL'} · ${sig.setup_label} · ${sig.grade} ${stars}${ai}${tradable}</span>`;
                 }
                 if (scoreLabel) {
-                    scoreLabel.textContent = sig ? `Grade ${sig.grade}${sig.ai_probability !== null && sig.ai_probability !== undefined ? ' · AI ' + Math.round(sig.ai_probability * 100) + '%' : ''}` : 'No active signal';
+                    if (!activeTrade) scoreLabel.textContent = sig ? `Grade ${sig.grade}${sig.ai_probability !== null && sig.ai_probability !== undefined ? ' · AI ' + Math.round(sig.ai_probability * 100) + '%' : ''}` : 'No active signal';
                 }
             })
             .catch(err => {
@@ -2045,134 +1676,67 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         });
     }
 
-    function openPineScriptModal() {
-        const modal = document.getElementById('pineScriptModal');
-        if (modal) modal.classList.remove('hidden');
-    }
-
-    function closePineScriptModal() {
-        const modal = document.getElementById('pineScriptModal');
-        if (modal) modal.classList.add('hidden');
-    }
-
-    function getPineScriptCode() {
-        const el = document.getElementById('pineScriptPreviewText');
-        if (el && el.textContent.trim().length > 0) {
-            return el.textContent.trim();
-        }
-        return `//@version=5
-indicator("SignalAlgo PRO™ Institutional Signals", overlay=true)
-
-// --- Moving Averages ---
-ema9 = ta.ema(close, 9)
-ema21 = ta.ema(close, 21)
-ema200 = ta.ema(close, 200)
-
-plot(ema9, color=color.cyan, title="EMA 9", linewidth=2)
-plot(ema21, color=color.orange, title="EMA 21", linewidth=2)
-plot(ema200, color=color.purple, title="EMA 200", linewidth=3)
-
-// --- Trend Alignment ---
-bullTrend = close > ema200 and ema9 > ema21
-bearTrend = close < ema200 and ema9 < ema21
-
-// --- High-Confluence Conditions ---
-rsi14 = ta.rsi(close, 14)
-volSma = ta.sma(volume, 20)
-volRatio = volume / volSma
-
-buyPullback = bullTrend and low <= ema21 and close > ema9 and rsi14 >= 46 and rsi14 <= 68 and volRatio >= 1.05
-buyBreakout = bullTrend and close > ta.highest(high[1], 10) and rsi14 >= 55 and rsi14 <= 72 and volRatio >= 1.3
-
-sellPullback = bearTrend and high >= ema21 and close < ema9 and rsi14 >= 22 and rsi14 <= 54 and volRatio >= 1.05
-sellBreakout = bearTrend and close < ta.lowest(low[1], 10) and rsi14 <= 45 and rsi14 >= 20 and volRatio >= 1.3
-
-buySignal = (buyPullback or buyBreakout) and not (buyPullback[1] or buyBreakout[1])
-sellSignal = (sellPullback or sellBreakout) and not (sellPullback[1] or sellBreakout[1])
-
-// --- Plot Shapes on Chart ---
-plotshape(buySignal, title="SignalAlgo BUY", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.normal, text="BUY [Score: 92]")
-plotshape(sellSignal, title="SignalAlgo SELL", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.normal, text="SELL [Score: 92]")
-
-// --- Alerts ---
-alertcondition(buySignal, title="SignalAlgo BUY Alert", message="⚡ SignalAlgo PRO BUY Signal on @{{ticker}} at @{{close}}")
-alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlgo PRO SELL Signal on @{{ticker}} at @{{close}}")
-`;
-    }
-
-    function copyPineScriptFromModal() {
-        const pineCode = getPineScriptCode();
-        copyToClipboard(pineCode, 'SignalAlgo PRO Pine Script v5 copied! Paste into TradingView Pine Editor.');
-        const btnText = document.getElementById('btnCopyPineModalText');
-        if (btnText) {
-            const old = btnText.textContent;
-            btnText.textContent = '✓ Copied to Clipboard!';
-            setTimeout(() => { btnText.textContent = old; }, 2500);
-        }
-    }
-
-    function copyPineScript() {
-        openPineScriptModal();
-    }
-
     // ==========================================
     // 24/7 Sentinel Background Watcher Functions
     // ==========================================
     function pollDaemonStatus() {
-        fetch('{{ route('daemon.status') }}', {
-            headers: {
-                'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        })
+        fetch('{{ route('daemon.status') }}', { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
         .then(res => res.json())
         .then(data => {
-            const badge = document.getElementById('daemonBadge');
-            const dot = document.getElementById('daemonDot');
-            const text = document.getElementById('daemonStatusText');
-            const btnStart = document.getElementById('btnStartDaemon');
-            const btnStop = document.getElementById('btnStopDaemon');
-            const cycles = document.getElementById('daemonCycles');
-            const lastScan = document.getElementById('daemonLastScan');
-            const heartbeat = document.getElementById('daemonHeartbeat');
+            const st = data.stats || {};
+            const set = (id, text, cls) => { const el = document.getElementById(id); if (el) { el.textContent = text; if (cls) el.className = cls; } };
+            const engineOk = data.is_running;
+            const alertsOn = data.sentinel_enabled;
 
-            if (data.is_running) {
-                if (badge) badge.className = 'inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
-                if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
-                const statusLabel = (data.stats && data.stats.status && data.stats.status !== 'STOPPED') 
-                    ? data.stats.status 
-                    : 'ACTIVE';
-                if (text) text.textContent = `${statusLabel} (MONITORING 24/7)`;
-                if (btnStart) btnStart.classList.add('hidden');
-                if (btnStop) btnStop.classList.remove('hidden');
+            // Badge: alerts only really go out when the engine runs AND alerts are on AND Telegram is configured
+            let label; let badgeCls; let dotCls;
+            if (!engineOk) {
+                label = 'ENGINE NOT RUNNING'; badgeCls = 'bg-rose-500/20 text-rose-300 border-rose-500/30'; dotCls = 'bg-rose-400';
+            } else if (!alertsOn) {
+                label = 'ALERTS OFF'; badgeCls = 'bg-slate-800 text-slate-300 border-slate-700'; dotCls = 'bg-slate-400';
+            } else if (!st.telegram_configured) {
+                label = 'TELEGRAM NOT CONFIGURED'; badgeCls = 'bg-amber-500/20 text-amber-300 border-amber-500/30'; dotCls = 'bg-amber-400';
             } else {
-                if (badge) badge.className = 'inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
-                if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-rose-400';
-                if (text) text.textContent = 'STOPPED (CLICK START TO MONITOR)';
-                if (btnStart) btnStart.classList.remove('hidden');
-                if (btnStop) btnStop.classList.add('hidden');
+                label = 'ACTIVE · ALERTS ON'; badgeCls = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'; dotCls = 'bg-emerald-400 animate-pulse';
             }
+            set('daemonStatusText', label);
+            const badge = document.getElementById('daemonBadge');
+            if (badge) badge.className = `inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold border ${badgeCls}`;
+            const dot = document.getElementById('daemonDot');
+            if (dot) dot.className = `w-2.5 h-2.5 rounded-full ${dotCls}`;
 
-            if (data.stats) {
-                if (cycles) cycles.textContent = data.stats.total_cycles !== undefined ? data.stats.total_cycles : 0;
-                if (lastScan) lastScan.textContent = data.stats.last_cycle_time || '--';
-                if (heartbeat) {
-                    const age = data.stats.heartbeat_age_seconds;
-                    heartbeat.textContent = (age !== undefined && age < 999) ? `${age}s ago` : 'Offline';
-                }
-                if (data.stats.monitored_coins !== undefined) {
-                    const countStat = document.getElementById('daemonMonitoredCount');
-                    const countBadge = document.getElementById('daemonCoinCountBadge');
-                    if (countStat) countStat.textContent = `${data.stats.monitored_coins} Coins`;
-                    if (countBadge) countBadge.textContent = data.stats.monitored_coins;
-                }
-                if (data.stats.scan_mode_label) {
-                    const modeLabel = document.getElementById('daemonScanModeLabel');
-                    if (modeLabel) modeLabel.textContent = data.stats.scan_mode_label;
-                }
-            }
+            document.getElementById('btnStartDaemon')?.classList.toggle('hidden', !!alertsOn);
+            document.getElementById('btnStopDaemon')?.classList.toggle('hidden', !alertsOn);
+
+            set('daemonEngine', String(st.engine_state || 'unknown').toUpperCase(), engineOk ? 'text-emerald-400' : 'text-rose-400');
+            const age = st.heartbeat_age_seconds;
+            set('daemonHeartbeat', (age !== undefined && age < 9999) ? `${age}s ago` : 'never', (age !== undefined && age <= 90) ? 'text-cyan-400' : 'text-rose-400');
+            set('daemonLastScan', st.last_scan_at ? new Date(st.last_scan_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'not yet');
+            set('daemonUniverse', st.universe_size ?? '--');
+            set('daemonSignals', st.signals_last_scan ?? '--');
+            set('daemonAlerts24h', st.alerts_sent_24h ?? 0);
+            set('daemonTelegram', st.telegram_configured ? 'connected' : 'not configured', st.telegram_configured ? 'text-emerald-400' : 'text-amber-300');
+            set('daemonCoinCountBadge', st.watchlist_count ?? 0);
+
+            const hint = document.getElementById('daemonCronHint');
+            if (hint) hint.classList.toggle('hidden', !!engineOk);
+            set('daemonCronCommand', '* * * * * ' + (st.cron_command || 'php artisan schedule:run'));
         })
         .catch(() => {});
+    }
+
+    function sendTestAlert() {
+        const btn = document.getElementById('btnTestAlert');
+        if (btn) btn.disabled = true;
+        fetch('{{ route('daemon.test-alert') }}', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' } })
+            .then(async res => {
+                const data = await res.json().catch(() => ({}));
+                const ok = res.ok && data.success;
+                showToast(data.message || (ok ? 'Test alert sent.' : 'Test alert failed.'), ok);
+                showDaemonFeedback(data.message || (ok ? 'Test alert sent.' : 'Test alert failed.'), ok);
+            })
+            .catch(() => showToast('Network error sending test alert.', false))
+            .finally(() => { if (btn) btn.disabled = false; });
     }
 
     function showDaemonFeedback(msg, isSuccess = true) {
@@ -2191,13 +1755,6 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         box.classList.remove('hidden');
     }
 
-    function toggleServerInstructions() {
-        const panel = document.getElementById('serverInstructionsPanel');
-        if (panel) {
-            panel.classList.toggle('hidden');
-        }
-    }
-
     function copyToClipboard(text, successMsg = 'Copied to clipboard!') {
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(() => {
@@ -2214,10 +1771,9 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         const btn = document.getElementById('btnStartDaemon');
         const textSpan = document.getElementById('btnStartDaemonText');
         if (btn) btn.disabled = true;
-        if (textSpan) textSpan.innerHTML = 'Starting Sentinel...';
+        if (textSpan) textSpan.innerHTML = 'Turning on...';
 
-        showToast('Initiating background sentinel watcher...', true);
-
+        
         fetch('{{ route('daemon.start') }}', {
             method: 'POST',
             headers: {
@@ -2234,19 +1790,16 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
                 pollDaemonStatus();
                 setTimeout(pollDaemonStatus, 2000);
             } else {
-                showToast(data.message || 'Failed to start watcher daemon on server.', false);
-                showDaemonFeedback(data.message || 'Failed to start background process.', false);
-                const panel = document.getElementById('serverInstructionsPanel');
-                if (panel) panel.classList.remove('hidden');
+                showToast(data.message || 'Could not turn alerts on.', false);
+                showDaemonFeedback(data.message || 'Could not turn alerts on.', false);
             }
         })
         .catch(err => {
-            showToast('Network error while starting watcher daemon.', false);
-            showDaemonFeedback('Network error contacting server daemon endpoint.', false);
+            showToast('Network error.', false);
         })
         .finally(() => {
             if (btn) btn.disabled = false;
-            if (textSpan) textSpan.innerHTML = 'Start Sentinel Watcher';
+            if (textSpan) textSpan.innerHTML = 'Turn Alerts ON';
         });
     }
 
@@ -2254,10 +1807,9 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         const btn = document.getElementById('btnStopDaemon');
         const textSpan = document.getElementById('btnStopDaemonText');
         if (btn) btn.disabled = true;
-        if (textSpan) textSpan.innerHTML = 'Stopping...';
+        if (textSpan) textSpan.innerHTML = 'Turning off...';
 
-        showToast('Sending stop signal to sentinel watcher...', true);
-
+        
         fetch('{{ route('daemon.stop') }}', {
             method: 'POST',
             headers: {
@@ -2273,11 +1825,11 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
             setTimeout(pollDaemonStatus, 1500);
         })
         .catch(err => {
-            showToast('Failed to stop watcher daemon.', false);
+            showToast('Could not turn alerts off.', false);
         })
         .finally(() => {
             if (btn) btn.disabled = false;
-            if (textSpan) textSpan.innerHTML = 'Stop Sentinel';
+            if (textSpan) textSpan.innerHTML = 'Turn Alerts OFF';
         });
     }
 
@@ -2314,35 +1866,13 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         .catch(() => {});
     }
 
-    function updateMonitoredCoinsUI(coins, scanMode) {
-        const count = coins ? coins.length : 0;
-        const countStat = document.getElementById('daemonMonitoredCount');
+    function updateMonitoredCoinsUI(coins) {
+        cachedMonitoredCoins = coins || [];
         const countBadge = document.getElementById('daemonCoinCountBadge');
         const managerBadge = document.getElementById('coinManagerCountBadge');
-        const modeLabel = document.getElementById('daemonScanModeLabel');
-
-        if (countStat) countStat.textContent = `${count} Coins`;
-        if (countBadge) countBadge.textContent = count;
-        if (managerBadge) managerBadge.textContent = `${count} Coins Active`;
-
-        if (modeLabel && scanMode) {
-            modeLabel.textContent = scanMode === 'monitored_only'
-                ? 'Monitored Only'
-                : (scanMode === 'whole_market' ? 'Whole Market' : 'Monitored + Breakouts');
-        }
-
-        // Update mode toggle buttons
-        const btnBoth = document.getElementById('btnModeBoth');
-        const btnMon = document.getElementById('btnModeMonitored');
-        if (btnBoth && btnMon) {
-            if (scanMode === 'monitored_only') {
-                btnMon.className = 'px-2.5 py-1 rounded font-semibold transition text-emerald-300 bg-emerald-950/60 border border-emerald-800/60 cursor-pointer';
-                btnBoth.className = 'px-2.5 py-1 rounded font-semibold transition text-slate-400 hover:text-white cursor-pointer';
-            } else {
-                btnBoth.className = 'px-2.5 py-1 rounded font-semibold transition text-emerald-300 bg-emerald-950/60 border border-emerald-800/60 cursor-pointer';
-                btnMon.className = 'px-2.5 py-1 rounded font-semibold transition text-slate-400 hover:text-white cursor-pointer';
-            }
-        }
+        if (countBadge) countBadge.textContent = cachedMonitoredCoins.length;
+        if (managerBadge) managerBadge.textContent = `${cachedMonitoredCoins.length} coins`;
+        renderMonitoredCoinsPills(cachedMonitoredCoins);
     }
 
     function renderMonitoredCoinsPills(coins) {
@@ -2468,33 +1998,8 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         });
     }
 
-    function changeScanMode(mode) {
-        fetch('{{ route('daemon.monitored-coins.mode') }}', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': csrfToken,
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify({ mode: mode })
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (data.success) {
-                showToast(data.message, true);
-                updateMonitoredCoinsUI(cachedMonitoredCoins, data.scan_mode);
-                pollDaemonStatus();
-            } else {
-                showToast(data.message || 'Failed to change mode.', false);
-            }
-        })
-        .catch(() => {
-            showToast('Network error changing scan mode.', false);
-        });
-    }
-
     // ==========================================
-    // On-Demand Whole-Market Scanner (crypto:check-signals --all --dry-run)
+    // On-Demand Whole-Market Scanner (queued; the cron runs crypto:scan --manual)
     // ==========================================
     let marketScanPollInterval = null;
     let isMarketScanRunning = false;
@@ -2505,8 +2010,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         if (btn) btn.disabled = true;
         if (textSpan) textSpan.innerHTML = 'Launching Scanner...';
 
-        showToast('Initiating whole-market scan (dry run)...', true);
-
+        
         fetch('{{ route('market-scan.start') }}', {
             method: 'POST',
             headers: {
@@ -2730,7 +2234,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
             grid.innerHTML = `
                 <div id="scanSignalsEmptyState" class="col-span-full py-8 text-center rounded-xl bg-slate-950/40 border border-dashed border-slate-800 text-slate-500 text-xs">
                     <div class="text-2xl mb-1.5">🔭</div>
-                    No setups detected yet. Click <strong class="text-slate-400">"Run Whole-Market Scan"</strong> to evaluate all ~350 USDT Perpetual contracts.
+                    No scan yet. Click <strong class="text-slate-400">"Run Whole-Market Scan"</strong> to check every crypto USDT perpetual.
                 </div>
             `;
             const badgeCount = document.getElementById('signalsBadgeCount');
@@ -2742,32 +2246,20 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
         let filtered = rawMarketScanSignals.filter(s => {
             if (activeScanFilter === 'BUY') return s.side === 'BUY';
             if (activeScanFilter === 'SELL') return s.side === 'SELL';
-            if (activeScanFilter === 'A_PLUS') return s.grade === 'A+' || (s.score && s.score >= 90);
+            if (activeScanFilter === 'A_PLUS') return s.tradable === true;
             return true;
         });
 
         // 2. Sort
         filtered.sort((a, b) => {
-            if (activeScanSort === 'score_desc') {
-                return (b.score || 0) - (a.score || 0);
-            }
-            if (activeScanSort === 'profit_desc') {
-                const pA = a.dollar_sim?.tp2_roe_pct || a.target_profit_leveraged_pct || a.target_profit_pct || 0;
-                const pB = b.dollar_sim?.tp2_roe_pct || b.target_profit_leveraged_pct || b.target_profit_pct || 0;
-                return pB - pA;
-            }
-            if (activeScanSort === 'rr_desc') {
-                const parseRr = (rr) => {
-                    if (!rr) return 0;
-                    const parts = String(rr).split(':');
-                    return parseFloat(parts[1] || parts[0]) || 0;
-                };
-                return parseRr(b.risk_reward) - parseRr(a.risk_reward);
-            }
             if (activeScanSort === 'newest') {
                 return (a.age_minutes || 0) - (b.age_minutes || 0);
             }
-            return 0;
+            if (activeScanSort === 'rr_desc') {
+                return (Number(a.sl_pct) || 99) - (Number(b.sl_pct) || 99);
+            }
+            const rank = (x) => (x.tradable ? 100 : 0) + ({ A: 3, B: 2, C: 1 }[x.grade] || 0) * 10 - (x.age_minutes || 0) / 600;
+            return rank(b) - rank(a);
         });
 
         const badgeCount = document.getElementById('signalsBadgeCount');
@@ -2826,7 +2318,7 @@ alertcondition(sellSignal, title="SignalAlgo SELL Alert", message="⚡ SignalAlg
             const resLevel = s.resistance ? Number(s.resistance).toPrecision(6) : null;
             const tradeType = s.trade_type || (isBuy ? 'DAY TRADE' : 'DAY TRADE');
             const tradeHorizon = s.trade_horizon || 'Intraday (4h – 12h)';
-            const recLeverage = s.recommended_leverage || '5x – 10x';
+            const recLeverage = s.recommended_leverage || 'Risk-sized';
             const isSwing = tradeType === 'SWING TRADE';
             const tradeTypeCls = isSwing
                 ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'

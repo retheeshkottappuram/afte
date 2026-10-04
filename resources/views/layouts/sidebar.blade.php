@@ -175,7 +175,7 @@
         <div id="sidebarSentinelBadge" class="p-2.5 rounded-xl bg-cyber-900 border border-cyber-border text-xs flex items-center justify-between">
             <div class="flex items-center space-x-2">
                 <span id="sidebarSentinelDot" class="w-2 h-2 rounded-full bg-slate-500"></span>
-                <span class="font-medium text-slate-300 text-[11px]">24/7 Sentinel</span>
+                <span class="font-medium text-slate-300 text-[11px]">Trading Engine</span>
             </div>
             <span id="sidebarSentinelStatus" class="font-mono text-[10px] text-slate-400 uppercase">OFFLINE</span>
         </div>
@@ -224,18 +224,19 @@
                 const status = document.getElementById('sidebarSentinelStatus');
                 if (!dot || !status) return;
 
+                const state = (data.stats && data.stats.engine_state) || 'never_ran';
                 if (data.is_running) {
                     dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
                     status.className = 'font-mono text-[10px] text-emerald-400 font-bold';
                     status.innerText = 'ONLINE';
-                } else if (data.sentinel_enabled) {
-                    dot.className = 'w-2 h-2 rounded-full bg-amber-400 animate-ping';
-                    status.className = 'font-mono text-[10px] text-amber-400 font-bold';
-                    status.innerText = 'STARTING';
+                } else if (state === 'stalled') {
+                    dot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-ping';
+                    status.className = 'font-mono text-[10px] text-rose-400 font-bold';
+                    status.innerText = 'STALLED';
                 } else {
                     dot.className = 'w-2 h-2 rounded-full bg-slate-500';
                     status.className = 'font-mono text-[10px] text-slate-400';
-                    status.innerText = 'STOPPED';
+                    status.innerText = 'NOT STARTED';
                 }
             })
             .catch(() => {});

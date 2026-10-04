@@ -62,7 +62,7 @@ class CryptoSignalController extends Controller
             'user' => $user,
             'cryptoConfig' => $cryptoConfig,
             'allUsers' => $user->isAdmin() ? User::orderBy('created_at', 'desc')->get() : collect([$user]),
-            'recentAlerts' => CryptoSignal::recent()->take(6)->get(),
+            'recentAlerts' => CryptoSignal::where('telegram_sent', true)->recent()->take(8)->get(),
             'monitoredCoins' => Watchlist::symbols(),
             'tradingMode' => $this->modeManager->activeMode(),
         ]);

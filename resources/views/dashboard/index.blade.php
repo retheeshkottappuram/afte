@@ -211,23 +211,17 @@
                                 <span>•</span>
                                 <span>Scanner: <span id="daemon-cycles-text" class="text-slate-200">--</span></span>
                                 <span>•</span>
-                                <span class="text-emerald-400/90 font-medium">Runs 24/7 Without User Activity</span>
+                                <span class="text-emerald-400/90 font-medium">Runs from the server cron, no browser needed</span>
                             </p>
                         </div>
                     </div>
 
-                    <div class="flex items-center space-x-2.5">
+                    <div class="flex items-center space-x-2.5 w-full sm:w-auto">
                         <button onclick="openDaemonLogsModal()" class="px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-md text-cyan-300 hover:text-cyan-200 transition flex items-center space-x-1.5 shadow-sm">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                             <span>Live Logs</span>
                         </button>
 
-                        @if (Auth::user()?->isAdmin())
-                            <button onclick="restartDaemon()" id="btn-restart-daemon" class="px-3 py-1.5 text-xs font-mono bg-cyber-700/80 hover:bg-cyber-600 border border-cyber-border rounded-md text-slate-300 hover:text-white transition flex items-center space-x-1" title="Restart Background Daemon Process">
-                                <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                                <span>Restart Daemon</span>
-                            </button>
-                        @endif
                     </div>
                 </div>
             </div>
@@ -238,25 +232,25 @@
                 <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-cyber-border/60">
                     <div class="flex items-center space-x-2">
                         <span class="text-cyan-400 text-base">📊</span>
-                        <h3 class="font-bold text-sm tracking-wide text-white font-mono uppercase">Portfolio Capital & Margin Allocation Matrix</h3>
+                        <h3 class="font-bold text-xs sm:text-sm tracking-wide text-white font-mono uppercase">Capital &amp; Risk</h3>
                     </div>
                     <div class="flex items-center space-x-2">
-                        <span class="text-xs text-slate-400 font-mono">Strict Liquidation Shield</span>
+                        <span class="hidden sm:inline text-xs text-slate-400 font-mono">Risk is set by the stop-loss</span>
                         <button onclick="toggleAllocationModal()" class="text-xs font-mono text-cyan-400 hover:text-cyan-300 underline font-semibold flex items-center space-x-1">
-                            <span>Strategy & Sizing Explained</span>
+                            <span>How the strategy works</span>
                             <span class="text-[10px]">ℹ️</span>
                         </button>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
                     <!-- Total Equity & Wallet Balance -->
                     <div class="bg-cyber-800/60 rounded-lg p-3.5 border border-cyber-border/60 space-y-1">
                         <div class="flex items-center justify-between text-slate-400 text-xs font-mono">
                             <span>TOTAL WALLET EQUITY</span>
                             <span id="alloc-stage-text" class="text-cyan-300 font-bold">Stage 1</span>
                         </div>
-                        <div class="text-2xl font-bold font-mono text-white" id="alloc-equity">${{ number_format($account->equity, 2) }}</div>
+                        <div class="text-lg sm:text-2xl font-bold font-mono text-white" id="alloc-equity">${{ number_format($account->equity, 2) }}</div>
                         <div class="text-[11px] text-slate-400 font-mono flex justify-between">
                             <span>Wallet Cash: <strong id="alloc-balance" class="text-slate-200 font-mono">${{ number_format($account->balance, 2) }}</strong></span>
                             <span id="alloc-unrealized-pnl" class="text-emerald-400 font-bold">+0.00</span>
@@ -269,23 +263,22 @@
                             <span>USED MARGIN (IN TRADES)</span>
                             <span id="stat-margin-util-badge" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">0.0% Used</span>
                         </div>
-                        <div class="text-2xl font-bold font-mono text-cyan-300" id="stat-used-margin">$0.00</div>
+                        <div class="text-lg sm:text-2xl font-bold font-mono text-cyan-300" id="stat-used-margin">$0.00</div>
                         <div class="text-[11px] text-slate-400 font-mono flex justify-between">
                             <span>Active Positions: <strong id="alloc-pos-count" class="text-slate-200">0</strong></span>
-                            <span>Max Concurrent: <strong class="text-slate-300">3</strong></span>
+                            <span>Max: <strong id="alloc-max-positions" class="text-slate-300">1</strong></span>
                         </div>
                     </div>
 
                     <!-- Available Free Margin (Safety Buffer) -->
                     <div class="bg-cyber-800/60 rounded-lg p-3.5 border border-cyber-border/60 space-y-1">
                         <div class="flex items-center justify-between text-slate-400 text-xs font-mono">
-                            <span>FREE SAFETY BUFFER</span>
-                            <span class="text-emerald-400 text-[10px] font-mono font-bold">PROTECTED</span>
+                            <span>FREE MARGIN</span>
+                            <span class="text-emerald-400 text-[10px] font-mono font-bold">AVAILABLE</span>
                         </div>
-                        <div class="text-2xl font-bold font-mono text-emerald-400" id="stat-free-buffer">${{ number_format($account->balance, 2) }}</div>
+                        <div class="text-lg sm:text-2xl font-bold font-mono text-emerald-400" id="stat-free-buffer">${{ number_format($account->balance, 2) }}</div>
                         <div class="text-[11px] text-slate-400 font-mono flex justify-between">
-                            <span>Liquidation Guard: <strong class="text-emerald-300 font-mono">Safe (>85%)</strong></span>
-                            <span>Buffer Pct: <strong id="alloc-buffer-pct" class="text-slate-300 font-mono">100%</strong></span>
+                            <span>Free: <strong id="alloc-buffer-pct" class="text-slate-300 font-mono">100%</strong></span>
                         </div>
                     </div>
 
@@ -293,14 +286,14 @@
                     <div class="bg-cyber-800/60 rounded-lg p-3.5 border border-cyber-border/60 space-y-1 flex flex-col justify-between">
                         <div>
                             <div class="flex items-center justify-between text-slate-400 text-xs font-mono">
-                                <span>PER-TRADE ALLOCATION</span>
-                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-mono font-bold">≥50% FUND</span>
+                                <span>RISK PER TRADE</span>
+                                <span id="stat-risk-pct-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-mono font-bold">2%</span>
                             </div>
-                            <div class="text-2xl font-bold font-mono text-cyan-300" id="stat-alloc-amount">~$2.50 <span class="text-xs text-slate-400 font-normal">USDT</span></div>
+                            <div class="text-lg sm:text-2xl font-bold font-mono text-cyan-300" id="stat-alloc-amount">~$0.10 <span class="text-xs text-slate-400 font-normal">USDT</span></div>
                         </div>
                         <div class="text-[11px] text-slate-400 font-mono flex items-center justify-between">
-                            <span>Sizing: <strong id="stat-alloc-subtitle" class="text-slate-300 font-mono">≥50% Capital</strong></span>
-                            <span class="text-emerald-400 font-bold text-[10px] uppercase">Shielded SL</span>
+                            <span>Lost if the stop is hit</span>
+                            <span class="text-emerald-400 font-bold text-[10px] uppercase">SL on Binance</span>
                         </div>
                     </div>
                 </div>
@@ -315,7 +308,7 @@
                         </div>
                         <div class="flex items-center space-x-4 text-[11px]">
                             <span class="flex items-center space-x-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-cyan-500"></span><span class="text-slate-400 font-mono">Used Margin</span></span>
-                            <span class="flex items-center space-x-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-500/60"></span><span class="text-slate-400 font-mono">Free Buffer (>85%)</span></span>
+                            <span class="flex items-center space-x-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-500/60"></span><span class="text-slate-400 font-mono">Free</span></span>
                         </div>
                     </div>
                     <div class="w-full bg-cyber-900 rounded-full h-3 border border-cyber-border overflow-hidden flex">
@@ -328,7 +321,7 @@
             <!-- $5 to $500 Compounding Challenge Banner -->
             <div class="glass-panel rounded-xl p-5 relative overflow-hidden">
                 <div class="absolute -right-10 -bottom-10 w-64 h-64 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none"></div>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
                     <!-- Balance & Equity -->
                     <div class="space-y-1">
                         <div class="flex items-center justify-between">
@@ -336,7 +329,7 @@
                             <span id="stage-badge" class="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-mono">Stage 1</span>
                         </div>
                         <div class="flex items-baseline space-x-3">
-                            <span id="stat-equity" class="text-3xl font-bold font-mono text-white">${{ number_format($account->equity, 2) }}</span>
+                            <span id="stat-equity" class="text-2xl sm:text-3xl font-bold font-mono text-white">${{ number_format($account->equity, 2) }}</span>
                             <span id="stat-unrealized-pnl" class="text-xs font-mono font-medium text-emerald-400">+0.00 (0.00%)</span>
                         </div>
                         <div class="text-xs text-slate-400">Wallet: <span id="stat-balance" class="font-mono text-slate-200">${{ number_format($account->balance, 2) }}</span> | Avail: <span id="stat-available-margin" class="font-mono text-cyan-300 font-semibold">${{ number_format($account->balance, 2) }}</span></div>
@@ -361,7 +354,7 @@
                     </div>
 
                     <!-- Win Rate & Stats -->
-                    <div class="grid grid-cols-2 gap-3 border-l border-cyber-border/60 pl-4">
+                    <div class="grid grid-cols-2 gap-3 sm:border-l border-cyber-border/60 sm:pl-4 pt-3 sm:pt-0 border-t sm:border-t-0">
                         <div>
                             <span class="text-[11px] text-slate-400 font-mono uppercase block">Win Rate</span>
                             <span id="stat-win-rate" class="text-xl font-bold font-mono text-white">0.0%</span>
@@ -375,7 +368,7 @@
                     </div>
 
                     <!-- Engine & Circuit Breaker Status -->
-                    <div class="border-l border-cyber-border/60 pl-4 flex flex-col justify-between">
+                    <div class="sm:border-l border-cyber-border/60 sm:pl-4 pt-3 sm:pt-0 border-t sm:border-t-0 flex flex-col justify-between">
                         <div class="space-y-1">
                             <div class="flex items-center justify-between">
                                 <span class="text-[11px] text-slate-400 font-mono uppercase">Auto Trading</span>
@@ -385,11 +378,11 @@
                             </div>
                             <div id="guard-status" class="inline-flex items-center text-xs font-mono text-emerald-400 font-medium pt-1">
                                 <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2"></span>
-                                Circuit Guard (0/2 Losses)
+                                Circuit Guard (0/3 Losses)
                             </div>
                         </div>
                         <div class="text-[11px] text-slate-400 pt-2 border-t border-cyber-border/40 flex items-center justify-between">
-                            <span>Added/Trade: <strong id="stat-amount-per-trade" class="text-cyan-300 font-mono">~$0.55</strong></span>
+                            <span>Risk/Trade: <strong id="stat-amount-per-trade" class="text-cyan-300 font-mono">~$0.10</strong></span>
                             <span id="terminal-sync-indicator" class="text-cyan-400 font-mono text-[10px]">● SYNCED</span>
                         </div>
                     </div>
@@ -500,7 +493,7 @@
                                 <div>
                                     <label class="text-slate-400 block mb-1">Timeframe</label>
                                     <select id="bt-interval" class="w-full bg-cyber-900 border border-cyber-border rounded px-3 py-1.5 text-slate-200">
-                                        <option value="1h" selected>1h (live strategy)</option>
+                                        <option value="1h" selected>1h (strategy)</option>
                                         <option value="15m">15m</option>
                                     </select>
                                 </div>
@@ -593,88 +586,48 @@
                         </div>
                         <button onclick="toggleAllocationModal()" class="text-slate-400 hover:text-white text-lg font-mono px-2">✕</button>
                     </div>
-                    <div class="p-6 space-y-4 overflow-y-auto text-xs text-slate-300 font-mono leading-relaxed">
+                    <div class="p-4 sm:p-6 space-y-4 overflow-y-auto text-xs text-slate-300 font-mono leading-relaxed">
                         <div class="p-3.5 rounded-lg bg-cyber-800/80 border border-cyan-500/30">
-                            <h4 class="text-cyan-300 font-bold text-sm mb-1.5">Single-Coin Strategy: Dedicated ≥50% Fund Utilization</h4>
-                            <p class="text-slate-300 leading-normal">
-                                In dedicated single-coin mode (e.g. <strong class="text-white">NEARUSDT</strong>), the engine allocates <strong class="text-cyan-300">at least 50% of available capital</strong> into high-conviction trades generated by the SignalAlgo PRO™ 15m/1h chart engine. This maximizes capital efficiency while strictly respecting Binance's <code class="text-cyan-300 font-mono">minNotional</code> requirement.
-                            </p>
+                            <h4 class="text-cyan-300 font-bold text-sm mb-1.5">One strategy everywhere</h4>
+                            <p class="text-slate-300 leading-normal">The auto-trader, the market scanner, the chart and Telegram all use the same engine on <strong class="text-white">1h candles</strong>, checked against the <strong class="text-white">4h trend</strong>. Signals print only after a candle closes and never repaint.</p>
                         </div>
 
                         <div class="space-y-2">
-                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">Asset Protection & Collateral Shield</h4>
-                            <ul class="space-y-2 list-disc pl-4 text-slate-300">
-                                <li>
-                                    <strong class="text-emerald-400">Strict Mathematical Stop Loss (SL):</strong> Every trade has a strictly bounded SL placed natively on Binance (between 0.80% and 1.60% from entry). Even with 50% capital deployed at 10x leverage, maximum potential account loss on an adverse stopout is capped at only <strong class="text-white">~6% - 8% of total wallet funds</strong>, permanently safeguarding your capital.
-                                </li>
-                                <li>
-                                    <strong class="text-emerald-400">25% Liquidation Shield Buffer:</strong> Total margin utilization is capped at 75%, leaving at least <strong class="text-white">25% unencumbered collateral</strong> in the wallet to prevent flash-crash liquidations.
-                                </li>
-                                <li>
-                                    <strong class="text-emerald-400">Real-Time Ratchet & Reversal Exit:</strong> The high-frequency daemon monitors the chart every 2 seconds. When opposite reversal signals print or profits surge, positions ratchet to breakeven (+0.20% fee buffer) and trail peak gains.
-                                </li>
+                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">When a trade is taken</h4>
+                            <ul class="space-y-1.5 list-disc pl-4 text-slate-300">
+                                <li><strong class="text-emerald-400">Setup:</strong> a Squeeze Breakout (or Trend Pullback while its measured edge stays above +0.05R per trade).</li>
+                                <li><strong class="text-emerald-400">Filters:</strong> 4h trend agrees (ADX ≥ 18), BTC not strongly against, 24h volume ≥ $50M, ATR 0.35–4%, funding not crowded, stop 0.6–1.8% from entry.</li>
+                                <li><strong class="text-emerald-400">Quality:</strong> grade A or B from the setup's measured track record. In LIVE mode the setup must also be proven (30+ resolved signals with a real edge).</li>
+                                <li><strong class="text-emerald-400">Freshness:</strong> price still within 0.3R of the signal candle, otherwise the entry is skipped.</li>
                             </ul>
                         </div>
 
                         <div class="space-y-2 pt-2 border-t border-cyber-border">
-                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">Dynamic 3-Stage Compounding Model:</h4>
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-1">
-                                <div class="p-2.5 rounded bg-cyber-800 border border-cyber-border">
-                                    <span class="text-cyan-400 font-bold block text-[11px]">STAGE 1: SEED</span>
-                                    <span class="text-slate-400 text-[10px] block">$5 – $25 Balance</span>
-                                    <p class="text-[10px] text-slate-300 mt-1">Fixed $5.50 notional (~$0.55 margin, 10x). Strict preservation to build initial capital cushion.</p>
-                                </div>
-                                <div class="p-2.5 rounded bg-cyber-800 border border-cyber-border">
-                                    <span class="text-emerald-400 font-bold block text-[11px]">STAGE 2: ACCELERATION</span>
-                                    <span class="text-slate-400 text-[10px] block">$25 – $100 Balance</span>
-                                    <p class="text-[10px] text-slate-300 mt-1">Dynamic 3.0% risk per trade. Trade size and margin scale proportionally with equity growth.</p>
-                                </div>
-                                <div class="p-2.5 rounded bg-cyber-800 border border-cyber-border">
-                                    <span class="text-amber-400 font-bold block text-[11px]">STAGE 3: COMPOUNDING</span>
-                                    <span class="text-slate-400 text-[10px] block">$100 – $500 Balance</span>
-                                    <p class="text-[10px] text-slate-300 mt-1">2.5% risk per trade, trailing stop-losses, and multi-tier institutional profit taking.</p>
-                                </div>
+                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">Position size &amp; limits</h4>
+                            <ul class="space-y-1.5 list-disc pl-4 text-slate-300">
+                                <li><strong class="text-cyan-300">2% of the balance</strong> is lost if the stop is hit (up to 3% only when Binance's minimum order forces it on a small account). Leverage just fits the margin; it does not change the risk.</li>
+                                <li>Max open positions: <strong class="text-white">1</strong> below $25, <strong class="text-white">2</strong> below $100, <strong class="text-white">3</strong> above. At most 2 in the same direction.</li>
+                                <li>Stop-loss and TP1 orders are placed <strong class="text-white">on Binance</strong> with the entry. If the stop cannot be placed, the position is closed at once.</li>
+                            </ul>
+                        </div>
+
+                        <div class="p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-500/40 text-[11px] space-y-2">
+                            <div class="text-cyan-300 font-bold">Exit plan (R = the distance to the stop)</div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[10px]">
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">+1R</strong>Stop moves to breakeven plus fees.</div>
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">TP1 at +1.5R</strong>Half the position is booked; stop moves to +0.5R.</div>
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">TP2 at +3R</strong>Stop is locked at no worse than TP1.</div>
+                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">Runner</strong>Trails 1.5×ATR on each candle close. Time stop: closed if not +0.5R after 12h; 48h max.</div>
                             </div>
                         </div>
 
-                        <!-- Profit Lock & Anti-Giveback Circuit Section -->
-                        <div class="p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-500/40 text-[11px] space-y-2">
-                            <div class="flex items-center space-x-1.5 text-cyan-300 font-bold">
-                                <span>🛡️</span>
-                                <span>Asymmetric Profit Ratchet & Anti-Giveback Circuit (Portfolio Protection)</span>
-                            </div>
-                            <p class="text-slate-300 leading-normal">
-                                Designed specifically to prevent profitable trades from retracing into red or flat breakeven, targeting consistent daily portfolio growth:
-                            </p>
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[10px]">
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
-                                    <strong class="text-emerald-400 block font-bold">Step 1: Early Micro-BE</strong>
-                                    <span>Gain reaches +0.30% (+3% ROE) ➔ SL moved to Entry + 0.08% (covers fees + dust profit). 100% Risk-Free.</span>
-                                </div>
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
-                                    <strong class="text-emerald-400 block font-bold">Step 2: Tier 1 Profit Lock</strong>
-                                    <span>Gain reaches +0.45% (+4.5% ROE) ➔ SL ratcheted to +0.18% profit (+1.8% ROE locked in cash).</span>
-                                </div>
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
-                                    <strong class="text-emerald-400 block font-bold">Step 3: Fast TP1 Cash Bank</strong>
-                                    <span>Gain reaches +0.65% (+6.5% ROE) ➔ 40% of position banked into cash! SL ratcheted to +0.18%.</span>
-                                </div>
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border">
-                                    <strong class="text-emerald-400 block font-bold">Step 4: Tier 2 Profit Lock</strong>
-                                    <span>Gain reaches +0.90% (+9% ROE) ➔ SL ratcheted to +0.45% profit (+4.5% ROE locked in cash).</span>
-                                </div>
-                            </div>
-                            <div class="p-2 rounded bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-[10px]">
-                                <strong class="font-bold">Anti-Giveback Circuit:</strong> If a position peaked &ge; +0.40% gain (+4% ROE) and pulls back by &ge; 35% of that peak gain, the engine executes an immediate market exit (<code class="text-white">PEAK_PROFIT_PROTECTION</code>) to lock in green profits before market reversal!
-                            </div>
-                            <div class="p-2 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300 text-[10px]">
-                                <strong class="font-bold">Revenge Trading Defense:</strong> If 2 consecutive losses occur, a 30-minute cooldown pauses auto-trading to break loss spirals and protect capital. You can monitor the cooldown or reset it instantly anytime from the dashboard.
-                            </div>
+                        <div class="p-3 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-200 text-[11px]">
+                            <strong>Circuit breakers:</strong> −6% on the day stops new entries until the next UTC day; 3 losses in a row pause entries for 12h; −30% from the peak engages the kill switch (manual reset). Open trades stay protected throughout.
                         </div>
 
                         <div class="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-[11px]">
-                            <span class="text-emerald-300 font-bold">24/7 Autonomous Operation:</span>
-                            The background daemon service executes continuously on the server independently of your browser session, monitoring breakout signals, moving stop-losses to breakeven, ratcheting profits, and booking gains 24/7.
+                            <span class="text-emerald-300 font-bold">Runs without a browser:</span>
+                            the server cron starts the engine every minute. It manages open trades every 5 seconds and scans the market after each 1h candle closes. Opening this page never places orders.
                         </div>
                     </div>
                     <div class="px-5 py-3 border-t border-cyber-border bg-cyber-800/60 text-right">
@@ -691,8 +644,8 @@
                     <div class="px-5 py-3.5 border-b border-cyber-border bg-cyber-800/90 flex items-center justify-between">
                         <div class="flex items-center space-x-2.5">
                             <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></span>
-                            <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Trading Daemon Live Execution Stream</h3>
-                            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">storage/logs/trading_daemon.log</span>
+                            <h3 class="text-xs sm:text-sm font-bold font-mono text-white uppercase tracking-wider">Trading Engine Log</h3>
+                            <span class="hidden sm:inline text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">storage/logs/trading_daemon.log</span>
                         </div>
                         <div class="flex items-center space-x-3">
                             <button onclick="fetchDaemonLogs()" class="px-2.5 py-1 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded text-slate-200 transition flex items-center space-x-1">
@@ -707,15 +660,15 @@
                     </div>
                     <div class="px-5 py-2.5 border-t border-cyber-border bg-cyber-800/60 flex items-center justify-between text-[11px] font-mono text-slate-400">
                         <span id="daemon-logs-updated-at">Last updated: Just now</span>
-                        <span class="text-emerald-400 font-medium">● 24/7 Autonomous Background Service</span>
+                        <span class="text-emerald-400 font-medium">● Cron-driven engine</span>
                     </div>
                 </div>
             </div>
         </main>
 
         <!-- Footer -->
-        <footer class="border-t border-cyber-border bg-cyber-800/50 py-4 px-8 text-center text-xs text-slate-500 font-mono">
-            AFTE Binance Futures AI Engine • Micro-Capital Dynamic Compounding Protocol • Strict Risk Containment
+        <footer class="border-t border-cyber-border bg-cyber-800/50 py-4 px-4 sm:px-8 text-center text-[11px] sm:text-xs text-slate-500 font-mono">
+            AFTE · Binance USDⓈ-M Futures · Risk-first automated trading. Past results do not guarantee future returns.
         </footer>
     </div>
 
@@ -1032,7 +985,7 @@
                     guard.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 mr-2 animate-pulse"></span>COOLDOWN PAUSED${cooldownInfo}`;
                     guard.className = 'inline-flex items-center text-xs font-mono text-amber-400 font-bold';
                 } else {
-                    guard.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span>ACTIVE (${stats.consecutive_losses}/${stats.max_consecutive_losses || 2} Losses)`;
+                    guard.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span>ACTIVE (${stats.consecutive_losses}/${stats.max_consecutive_losses || 3} Losses)`;
                     guard.className = 'inline-flex items-center text-xs font-mono text-emerald-400 font-medium';
                 }
             }
@@ -1156,7 +1109,11 @@
             if (freeBufferEl) freeBufferEl.textContent = `$${Number(freeBuffer).toFixed(2)}`;
             if (posCountEl) posCountEl.textContent = posCount;
             if (bufferPctEl) bufferPctEl.textContent = `${Math.max(0, 100 - utilPct).toFixed(1)}%`;
-            if (allocAmountEl) allocAmountEl.innerHTML = `~$${Number(stats.amount_per_trade || 0.55).toFixed(2)} <span class="text-xs text-slate-400 font-normal">USDT</span>`;
+            if (allocAmountEl) allocAmountEl.innerHTML = `~$${Number(stats.amount_per_trade || 0).toFixed(2)} <span class="text-xs text-slate-400 font-normal">USDT</span>`;
+            const maxPosEl = document.getElementById('alloc-max-positions');
+            if (maxPosEl && stats.max_positions !== undefined) maxPosEl.textContent = stats.max_positions;
+            const riskBadge = document.getElementById('stat-risk-pct-badge');
+            if (riskBadge && stats.risk_per_trade_pct !== undefined) riskBadge.textContent = `${stats.risk_per_trade_pct}%`;
 
             // Progress Bars
             const barPctText = document.getElementById('alloc-bar-pct-text');
@@ -1664,25 +1621,6 @@
                 if (updatedAt) updatedAt.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
             } catch (err) {
                 if (content) content.innerHTML = `<div class="text-rose-400 text-center py-8">Failed to fetch logs: ${err.message}</div>`;
-            }
-        }
-
-        async function restartDaemon() {
-            const btn = document.getElementById('btn-restart-daemon');
-            if (btn) btn.disabled = true;
-
-            try {
-                const res = await fetch('/api/trading-daemon/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
-                    body: JSON.stringify({ mode: currentMode })
-                });
-                const data = await res.json();
-                liveSync();
-            } catch (err) {
-                console.error("Restart daemon error:", err);
-            } finally {
-                if (btn) btn.disabled = false;
             }
         }
 
