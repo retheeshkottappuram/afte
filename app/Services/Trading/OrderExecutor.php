@@ -68,7 +68,7 @@ class OrderExecutor
                 return $this->rejected($canOpen['reason']);
             }
 
-            $sizing = $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl);
+            $sizing = $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl, isset($signal['risk_pct']) ? (float) $signal['risk_pct'] : null);
             if (! $sizing['allowed']) {
                 return $this->rejected($sizing['reason']);
             }
@@ -261,6 +261,7 @@ class OrderExecutor
                 'risk_usd' => $sizing['risk_usd'] ?? null,
                 'risk_pct' => $sizing['risk_pct'] ?? null,
                 'signal_id' => $signal['signal_id'] ?? null,
+                'breakout_box' => $signal['breakout_box'] ?? null,
                 'source' => $isManual ? 'manual' : 'auto',
             ], $exchangeMeta),
             'opened_at' => Carbon::now(),

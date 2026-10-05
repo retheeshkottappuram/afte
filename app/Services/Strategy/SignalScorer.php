@@ -82,7 +82,8 @@ class SignalScorer
             return ['allowed' => false, 'reason' => sprintf('AI rates this %d%% likely to profit, below the average signal (lift %.2f < %.2f).', round($signal->aiProbability * 100), $lift, $minLift)];
         }
 
-        if ($mode === 'live' && config('trading.strategy.live_requires_proven_setup', true) && ! $this->stats->isProven($signal->setup)) {
+        // Early breakouts trade live by the user's decision; their losing-streak pause and min-edge rule still apply.
+        if ($mode === 'live' && $signal->setup !== 'EARLY_BREAKOUT' && config('trading.strategy.live_requires_proven_setup', true) && ! $this->stats->isProven($signal->setup)) {
             return ['allowed' => false, 'reason' => "{$signal->setupLabel} is not yet proven (needs ".SetupStats::LIVE_SAMPLE_TARGET.' resolved signals with positive expectancy) for live trading.'];
         }
 

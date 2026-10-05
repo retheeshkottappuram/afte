@@ -114,7 +114,7 @@ class BacktestingEngine
      * @param  array<string, array<int, float|int>>  $regime
      * @param  array<string, array<int, float|int>>|null  $btcBase
      * @param  array<string, array<int, float|int>>|null  $btcRegime
-     * @param  bool  $intrabar  Squeeze breakouts enter when a candle trades through the level (minute watcher) instead of at the close
+     * @param  bool  $intrabar  Also simulate Early Breakout entries (minute watcher), with the configured stop and anticipation
      * @return array<int, array<string, mixed>>
      */
     public function backtestSymbol(string $symbol, string $interval, array $base, array $regime, ?array $btcBase, ?array $btcRegime, int $startMs, int $endMs, bool $intrabar = false): array
@@ -136,7 +136,7 @@ class BacktestingEngine
         if ($intrabar) {
             $context = ['symbol' => $symbol, 'interval' => $interval, 'now_ms' => $endMs];
             $signals = array_merge(
-                array_filter($signals, fn (Signal $s): bool => $s->setup !== 'SQUEEZE_BREAKOUT'),
+                $signals,
                 $this->engine->intrabarSignals($base, $regime, $btcBase, $btcRegime, $context)
             );
             usort($signals, fn (Signal $a, Signal $b): int => $a->time <=> $b->time);
@@ -166,7 +166,7 @@ class BacktestingEngine
 
             // Intrabar entry: the rest of the entry candle is unknown, so a stop touch in it counts as a loss.
             $bar = $entryBar[$signal->time] ?? null;
-            if ($intrabar && $signal->setup === 'SQUEEZE_BREAKOUT' && $bar !== null
+            if ($intrabar && $signal->setup === 'EARLY_BREAKOUT' && $bar !== null
                 && ($signal->isLong() ? $base['lows'][$bar] <= $signal->stopLoss : $base['highs'][$bar] >= $signal->stopLoss)) {
                 $risk = abs($signal->entry - $signal->stopLoss);
                 $fees = (float) config('trading.exits.fee_rate', 0.0005) * ($signal->entry + $signal->stopLoss) + 2 * self::SLIPPAGE * $signal->entry;

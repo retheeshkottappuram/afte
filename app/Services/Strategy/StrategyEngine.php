@@ -18,6 +18,7 @@ class StrategyEngine
 {
     public const SETUP_LABELS = [
         'SQUEEZE_BREAKOUT' => 'Squeeze Breakout',
+        'EARLY_BREAKOUT' => 'Early Breakout',
         'TREND_PULLBACK' => 'Trend Pullback',
         'EMA_CROSS' => 'EMA 9/21 Cross',
         'SWING_REVERSAL' => 'Swing Reversal',
@@ -156,17 +157,18 @@ class StrategyEngine
     }
 
     /**
-     * Intrabar squeeze breakouts for backtesting the minute watcher on candle history: the trade fills
-     * at the breakout level as soon as a candle trades through it (no wait for the close).
+     * Early (intrabar) squeeze breakouts on candle history, for backtesting the minute watcher: the trade
+     * fills as soon as a candle trades through the trigger price instead of waiting for the close.
      *
      * @param  array<string, array<int, float|int>>  $base
      * @param  array<string, array<int, float|int>>|null  $regime
      * @param  array<string, array<int, float|int>>|null  $btcBase
      * @param  array<string, array<int, float|int>>|null  $btcRegime
      * @param  array<string, mixed>  $context
+     * @param  array{stop_mode?: string, anticipate_pct?: float, volume_filter?: bool}  $options
      * @return array<int, Signal>
      */
-    public function intrabarSignals(array $base, ?array $regime = null, ?array $btcBase = null, ?array $btcRegime = null, array $context = []): array
+    public function intrabarSignals(array $base, ?array $regime = null, ?array $btcBase = null, ?array $btcRegime = null, array $context = [], array $options = []): array
     {
         $nowMs = (int) ($context['now_ms'] ?? (int) (microtime(true) * 1000));
         $base = CandleSanitizer::onlyClosedCandles($base, $nowMs);
@@ -186,6 +188,7 @@ class StrategyEngine
         $btc = $this->btcMap($base['closeTimes'], $btcBase, $btcRegime, $symbol);
         $signals = [];
         $lastFired = ['LONG' => -100, 'SHORT' => -100];
+        $volumeFilter = (bool) ($options['volume_filter'] ?? false);
 
         for ($i = 105; $i < $n; $i++) {
             $watch = $this->watchCandidate($symbol, $interval, $i - 1, $base, $s, $regimeAt[$i - 1], $btc[$i - 1], $context);
@@ -193,18 +196,33 @@ class StrategyEngine
                 continue;
             }
 
-            $crossed = $watch['side'] === 'LONG' ? $base['highs'][$i] >= $watch['level'] : $base['lows'][$i] <= $watch['level'];
-            if (! $crossed) {
+            $trigger = $this->triggerPrice($watch, $options['anticipate_pct'] ?? null);
+            $crossed = $watch['side'] === 'LONG' ? $base['highs'][$i] >= $trigger : $base['lows'][$i] <= $trigger;
+            // Approximates the live volume-pace check with the whole candle's volume (optimistic).
+            if (! $crossed || ($volumeFilter && $base['volumes'][$i] < 1.5 * $watch['vol_sma'])) {
                 continue;
             }
 
-            // A gap through the level fills at the open, not at the level.
-            $entry = $watch['side'] === 'LONG' ? max($watch['level'], $base['opens'][$i]) : min($watch['level'], $base['opens'][$i]);
-            $signals[] = $this->intrabarSignal($watch, $entry, intdiv((int) $base['closeTimes'][$i], 1000));
+            // A gap through the trigger fills at the open, not at the trigger.
+            $entry = $watch['side'] === 'LONG' ? max($trigger, $base['opens'][$i]) : min($trigger, $base['opens'][$i]);
+            $signals[] = $this->intrabarSignal($watch, $entry, intdiv((int) $base['closeTimes'][$i], 1000), $options['stop_mode'] ?? null);
             $lastFired[$watch['side']] = $i;
         }
 
         return $signals;
+    }
+
+    /**
+     * Price that triggers an early entry: the breakout level, or a little before it when anticipating.
+     *
+     * @param  array<string, mixed>  $watch
+     */
+    public function triggerPrice(array $watch, ?float $anticipatePct = null): float
+    {
+        $anticipatePct ??= (float) ($this->config['early_breakout']['anticipate_pct'] ?? 0.0);
+        $direction = $watch['side'] === 'LONG' ? 1 : -1;
+
+        return (float) $watch['level'] * (1 - $direction * $anticipatePct / 100);
     }
 
     /**
@@ -233,9 +251,9 @@ class StrategyEngine
         }
 
         $close = (float) $c['closes'][$k];
-        $level = $side === 'LONG'
-            ? max(array_slice($c['highs'], $k - 19, 20)) * 1.001
-            : min(array_slice($c['lows'], $k - 19, 20)) * 0.999;
+        $boxHigh = max(array_slice($c['highs'], $k - 19, 20));
+        $boxLow = min(array_slice($c['lows'], $k - 19, 20));
+        $level = $side === 'LONG' ? $boxHigh * 1.001 : $boxLow * 0.999;
         if (($side === 'LONG' && $close >= $level) || ($side === 'SHORT' && $close <= $level)) {
             return null;
         }
@@ -256,6 +274,8 @@ class StrategyEngine
             'interval' => $interval,
             'side' => $side,
             'level' => $level,
+            'box_high' => $boxHigh,
+            'box_low' => $boxLow,
             'atr' => $atr,
             'vol_sma' => $volSma,
             'bar_open_ms' => (int) $c['closeTimes'][$k] + 1,
@@ -268,32 +288,48 @@ class StrategyEngine
     }
 
     /**
-     * Squeeze Breakout signal entered during the candle at the given price. Its time is the forming
-     * candle's close, so the close-based signal for the same candle is recognised as the same trade.
+     * Early Breakout signal entered during the candle at the given price. Its time is the forming
+     * candle's close, so the close-based Squeeze Breakout for the same candle is the same trade.
+     *
+     * Stop modes: atr = 1.2 x ATR from entry; inside = back inside the box (level -/+ 0.6 x ATR);
+     * mid = box midpoint. The minimum stop distance always applies.
      *
      * @param  array<string, mixed>  $watch  From watchCandidate()
      */
-    public function intrabarSignal(array $watch, float $entry, int $time): Signal
+    public function intrabarSignal(array $watch, float $entry, int $time, ?string $stopMode = null): Signal
     {
         $side = (string) $watch['side'];
         $direction = $side === 'LONG' ? 1 : -1;
         $atr = (float) $watch['atr'];
-        $slPct = max((float) $this->config['min_sl_pct'], 1.2 * $atr / $entry * 100);
-        $sl = $entry - $direction * $entry * $slPct / 100;
+        $stopMode ??= (string) ($this->config['early_breakout']['stop_mode'] ?? 'atr');
+
+        $sl = match ($stopMode) {
+            'inside' => (float) $watch['level'] - $direction * 0.6 * $atr,
+            'mid' => isset($watch['box_high'], $watch['box_low']) ? ((float) $watch['box_high'] + (float) $watch['box_low']) / 2 : $entry - $direction * 1.2 * $atr,
+            default => $entry - $direction * 1.2 * $atr,
+        };
+        $minDistance = $entry * (float) $this->config['min_sl_pct'] / 100;
+        if (($entry - $sl) * $direction < $minDistance) {
+            $sl = $entry - $direction * $minDistance;
+        }
+        $slPct = abs($entry - $sl) / $entry * 100;
         $targets = $this->exitPlan->targets($side, $entry, $sl);
 
         $filters = (array) $watch['filters'];
-        $maxSl = $this->maxSlPct('SQUEEZE_BREAKOUT');
+        $maxSl = $this->maxSlPct('EARLY_BREAKOUT');
         $filters['stop_width'] = ['pass' => $slPct <= $maxSl + 1e-9, 'detail' => sprintf('Stop %.2f%% (max %.2f%%)', $slPct, $maxSl)];
         $features = (array) $watch['features'];
+        $features['setup'] = 'EARLY_BREAKOUT';
         $features['sl_pct'] = round($slPct, 3);
+        // Edge of the squeeze box: a candle closing back inside it means the breakout failed.
+        $features['box_edge'] = (float) ($side === 'LONG' ? ($watch['box_high'] ?? $watch['level']) : ($watch['box_low'] ?? $watch['level']));
 
         return new Signal(
             symbol: (string) $watch['symbol'],
             interval: (string) $watch['interval'],
             side: $side,
-            setup: 'SQUEEZE_BREAKOUT',
-            setupLabel: self::SETUP_LABELS['SQUEEZE_BREAKOUT'],
+            setup: 'EARLY_BREAKOUT',
+            setupLabel: self::SETUP_LABELS['EARLY_BREAKOUT'],
             time: $time,
             entry: $entry,
             stopLoss: $sl,
@@ -301,7 +337,7 @@ class StrategyEngine
             tp2: $targets['tp2'],
             tp3: $targets['tp3'],
             atr: $atr,
-            isShadow: ! in_array('SQUEEZE_BREAKOUT', (array) $this->config['core_setups'], true),
+            isShadow: ! in_array('EARLY_BREAKOUT', (array) $this->config['core_setups'], true),
             filters: $filters,
             confluences: (array) $watch['confluences'],
             features: $features,

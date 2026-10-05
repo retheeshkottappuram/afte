@@ -235,11 +235,22 @@ return [
         'max_sl_pct' => 1.8,
         'max_sl_pct_by_setup' => [ // breakouts often need a wider stop; risk stays sized by the stop distance
             'SQUEEZE_BREAKOUT' => (float) env('STRATEGY_BREAKOUT_MAX_SL_PCT', 4.0),
+            'EARLY_BREAKOUT' => (float) env('STRATEGY_BREAKOUT_MAX_SL_PCT', 4.0),
         ],
-        // Enter squeeze breakouts during the candle (checked every minute). Off: the 12-month backtest lost
-        // (PF 0.45-0.88, -0.07R to -0.40R per trade); the candle-close confirmation is where the edge comes from.
-        'intrabar_breakouts' => (bool) env('STRATEGY_INTRABAR_BREAKOUTS', false),
-        'core_setups' => ['TREND_PULLBACK', 'SQUEEZE_BREAKOUT'],
+        // Minute breakout watcher: Telegram alerts ("coiled" after each scan, "breaking out" in real time).
+        'breakout_alerts' => (bool) env('STRATEGY_BREAKOUT_ALERTS', true),
+        // Auto-trade early breakouts (before the candle closes). The user's decision: the 12-month backtest of
+        // early entries lost, so they trade as their own setup with half risk, a daily cap and an auto-pause.
+        'intrabar_breakouts' => (bool) env('STRATEGY_INTRABAR_BREAKOUTS', true),
+        'early_breakout' => [
+            'stop_mode' => env('STRATEGY_EARLY_STOP_MODE', 'mid'), // atr | inside | mid: box midpoint tested best (PF 0.78 pessimistic to 1.17 optimistic)
+            'anticipate_pct' => (float) env('STRATEGY_EARLY_ANTICIPATE_PCT', 0.15), // enter this % before the breakout level
+            'risk_pct' => (float) env('STRATEGY_EARLY_RISK_PCT', 1.0),
+            'max_per_day' => (int) env('STRATEGY_EARLY_MAX_PER_DAY', 3),
+            'max_open' => (int) env('STRATEGY_EARLY_MAX_OPEN', 1),
+            'pause_after_losses' => (int) env('STRATEGY_EARLY_PAUSE_AFTER_LOSSES', 5),
+        ],
+        'core_setups' => ['TREND_PULLBACK', 'SQUEEZE_BREAKOUT', 'EARLY_BREAKOUT'],
         'min_setup_expectancy_r' => (float) env('STRATEGY_MIN_SETUP_EXPECTANCY_R', 0.05), // pause setups below this measured edge
         'shadow_setups' => ['SWING_REVERSAL', 'EMA_CROSS'],
         'min_ai_lift' => (float) env('STRATEGY_MIN_AI_LIFT', 0.85), // skip signals the AI rates clearly below an average signal

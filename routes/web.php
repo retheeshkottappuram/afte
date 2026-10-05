@@ -121,6 +121,10 @@ Route::middleware('auth')->group(function (): void {
     // 7. Whole-Market Scan API
     Route::prefix('market-scan')->group(function (): void {
         Route::get('/status', [MarketScanController::class, 'status'])->name('market-scan.status');
+        Route::get('/watch', [MarketScanController::class, 'watch'])->name('market-scan.watch');
+        Route::post('/early-breakout/resume', [MarketScanController::class, 'resumeEarly'])
+            ->middleware('permission:manage_trading')
+            ->name('market-scan.early-resume');
         Route::post('/start', [MarketScanController::class, 'start'])
             ->middleware('permission:trigger_scans')
             ->name('market-scan.start');

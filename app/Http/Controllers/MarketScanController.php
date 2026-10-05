@@ -5,10 +5,12 @@ namespace App\Http\Controllers;
 use App\Models\Setting;
 use App\Models\TradingAccount;
 use App\Services\Crypto\BinanceClient;
+use App\Services\Strategy\BreakoutWatcher;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\OpportunityScorer;
 use App\Services\Strategy\StrategyEngine;
 use App\Services\Strategy\Watchlist;
+use App\Services\Trading\EarlyBreakoutGuard;
 use App\Services\Trading\TradingModeManager;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -34,6 +36,60 @@ class MarketScanController extends Controller
         }
 
         return response()->json(['success' => true, 'message' => 'Whole-market scan queued. It starts within a minute and takes about a minute; progress shows below.', 'status' => 'RUNNING']);
+    }
+
+    /**
+     * Coins coiled for a breakout on the current candle, with live distance to their trigger,
+     * plus the early-breakout auto-trader status (limits, pause).
+     */
+    public function watch(BreakoutWatcher $watcher, StrategyEngine $engine): JsonResponse
+    {
+        $prices = $this->livePrices();
+        $mode = $this->modeManager->activeMode();
+        $coins = [];
+
+        foreach ($watcher->watching() as $symbol => $watch) {
+            $price = $prices[$symbol] ?? (float) ($watch['price'] ?? 0);
+            $trigger = $engine->triggerPrice($watch);
+            $isLong = $watch['side'] === 'LONG';
+            $coins[] = [
+                'symbol' => $symbol,
+                'side' => $watch['side'],
+                'level' => round((float) $watch['level'], MarketScanService::priceDecimals((float) $watch['level'])),
+                'trigger' => round($trigger, MarketScanService::priceDecimals($trigger)),
+                'price' => $price,
+                'price_decimals' => MarketScanService::priceDecimals($price ?: (float) $watch['level']),
+                'distance_pct' => $price > 0 ? round(($isLong ? $trigger - $price : $price - $trigger) / $price * 100, 2) : null,
+                'triggered' => $price > 0 && ($isLong ? $price >= $trigger : $price <= $trigger),
+            ];
+        }
+        usort($coins, fn (array $a, array $b): int => ($a['distance_pct'] ?? 99) <=> ($b['distance_pct'] ?? 99));
+
+        $state = (array) Setting::getValue(BreakoutWatcher::WATCH_KEY, []);
+
+        return response()->json([
+            'coins' => $coins,
+            'candle_closes_at' => isset($state['bar_close_ms']) ? Carbon::createFromTimestampMs((int) $state['bar_close_ms'])->toIso8601String() : null,
+            'early_breakout' => [
+                'alerts' => BreakoutWatcher::alertsEnabled(),
+                'auto_trade' => BreakoutWatcher::tradingEnabled(),
+                'mode' => $mode,
+                'blocked' => BreakoutWatcher::tradingEnabled() ? EarlyBreakoutGuard::blockReason($mode) : null,
+                'paused' => EarlyBreakoutGuard::pauseReason($mode),
+                'risk_pct' => (float) config('trading.strategy.early_breakout.risk_pct', 1.0),
+                'max_per_day' => (int) config('trading.strategy.early_breakout.max_per_day', 3),
+            ],
+        ]);
+    }
+
+    /**
+     * Resume early-breakout auto-trading after a losing-streak pause.
+     */
+    public function resumeEarly(): JsonResponse
+    {
+        EarlyBreakoutGuard::resume();
+
+        return response()->json(['success' => true, 'message' => 'Early Breakout auto-trading resumed. The losing streak count starts again from now.']);
     }
 
     public function stop(): JsonResponse

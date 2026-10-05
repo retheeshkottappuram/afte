@@ -261,6 +261,20 @@
             </div>
         </div>
 
+        <!-- Breakout watch: coins coiled in a squeeze on the current candle (updated every 15s) -->
+        <div id="breakoutWatchPanel" class="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/[0.04] p-3.5">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <div>
+                    <h4 class="text-sm font-black text-amber-200">🔭 Breakout watch <span id="breakoutWatchCount" class="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30">0</span></h4>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Coins squeezed tight near their 20-candle high/low with every filter passing. ⚡ = trading through its trigger now. Telegram alerts both.</p>
+                </div>
+                <div id="earlyBreakoutStatus" class="text-[11px] font-mono text-slate-400"></div>
+            </div>
+            <div id="breakoutWatchList" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 text-xs">
+                <div class="col-span-full text-slate-500 text-[11px]">Loading...</div>
+            </div>
+        </div>
+
         <!-- Detected Signals Container -->
         <div class="mt-5">
             <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800/80">
@@ -1726,7 +1740,9 @@
             set('daemonUniverse', st.universe_size ?? '--');
             set('daemonSignals', st.signals_last_scan ?? '--');
             set('daemonAlerts24h', st.alerts_sent_24h ?? 0);
-            set('daemonTelegram', st.telegram_configured ? 'connected' : 'not configured', st.telegram_configured ? 'text-emerald-400' : 'text-amber-300');
+            set('daemonTelegram', st.telegram_problem ? 'NOT delivering' : (st.telegram_configured ? 'connected' : 'not configured'), st.telegram_problem || !st.telegram_configured ? 'text-amber-300' : 'text-emerald-400');
+            const tgEl = document.getElementById('daemonTelegram');
+            if (tgEl) tgEl.title = st.telegram_problem || '';
             set('daemonCoinCountBadge', st.watchlist_count ?? 0);
 
             const hint = document.getElementById('daemonCronHint');
@@ -2529,12 +2545,72 @@
         }
     }
 
+    /** Breakout watch list + early-breakout auto-trader status. */
+    async function pollBreakoutWatch() {
+        const list = document.getElementById('breakoutWatchList');
+        if (!list) return;
+        try {
+            const res = await fetch('{{ route('market-scan.watch') }}', { headers: { 'Accept': 'application/json' } });
+            const data = await res.json();
+            const coins = Array.isArray(data.coins) ? data.coins : [];
+            document.getElementById('breakoutWatchCount').textContent = coins.length;
+
+            const eb = data.early_breakout || {};
+            const status = document.getElementById('earlyBreakoutStatus');
+            if (status) {
+                const auto = eb.auto_trade
+                    ? (eb.paused
+                        ? `<span class="text-rose-300">⏸ ${escHtml(eb.paused)}</span> <button type="button" onclick="resumeEarlyBreakout(this)" class="ml-1 px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold">Resume</button>`
+                        : `<span class="text-emerald-300">🤖 Auto-trade ON (${escHtml(String(eb.mode).toUpperCase())}, ${eb.risk_pct}% risk, max ${eb.max_per_day}/day)</span>${eb.blocked ? ` · <span class="text-amber-300">${escHtml(eb.blocked)}</span>` : ''}`)
+                    : '<span>Auto-trade OFF (alerts only)</span>';
+                status.innerHTML = auto;
+            }
+
+            if (coins.length === 0) {
+                list.innerHTML = '<div class="col-span-full text-slate-500 text-[11px]">No coin is coiled for a breakout on this candle. The list refreshes after each hourly scan.</div>';
+                return;
+            }
+            list.innerHTML = coins.map(c => {
+                const isLong = c.side === 'LONG';
+                const away = c.distance_pct === null ? '—' : (c.triggered ? '⚡ breaking out' : `${Number(c.distance_pct).toFixed(2)}% away`);
+                return `
+                    <button type="button" onclick="openScanChart('${c.symbol}', 0, '1h')" class="text-left rounded-lg border ${c.triggered ? 'border-amber-400 bg-amber-500/10' : 'border-slate-800 bg-slate-950/70 hover:bg-slate-900'} px-2.5 py-2 min-w-0">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="font-black text-white">${escHtml(c.symbol.replace('USDT', ''))}<span class="text-slate-500 text-[10px]">USDT</span></span>
+                            <span class="px-1.5 py-0.5 rounded text-[10px] font-black border ${isLong ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/15 text-rose-300 border-rose-500/40'}">${isLong ? '▲ above' : '▼ below'} ${fmtPrice(c.trigger, c.price_decimals)}</span>
+                        </div>
+                        <div class="flex items-center justify-between mt-1 text-[11px] font-mono">
+                            <span class="text-slate-400">now ${fmtPrice(c.price, c.price_decimals)}</span>
+                            <span class="${c.triggered ? 'text-amber-300 font-bold' : 'text-slate-300'}">${away}</span>
+                        </div>
+                    </button>`;
+            }).join('');
+        } catch (e) {
+            list.innerHTML = '<div class="col-span-full text-slate-500 text-[11px]">Could not load the breakout watch list.</div>';
+        }
+    }
+
+    async function resumeEarlyBreakout(btn) {
+        btn.disabled = true;
+        try {
+            const res = await fetch('{{ route('market-scan.early-resume') }}', { method: 'POST', headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken } });
+            const data = await res.json().catch(() => ({}));
+            showToast(data.message || (res.ok ? 'Resumed.' : 'Not allowed.'), res.ok);
+        } finally {
+            pollBreakoutWatch();
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         initAlgoCanvasChart();
         loadFuturesChart(activeSymbol);
         pollDaemonStatus();
         loadMonitoredCoins();
         pollMarketScanStatus();
+        pollBreakoutWatch();
+        setInterval(function() {
+            if (document.visibilityState === 'visible') pollBreakoutWatch();
+        }, 15000);
 
         // Check daemon status every 10 seconds
         setInterval(pollDaemonStatus, 10000);

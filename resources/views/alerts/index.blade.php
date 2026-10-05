@@ -16,7 +16,8 @@
                 </h1>
             </div>
             <p class="mt-2 text-sm text-slate-400">
-                Audit log of all algorithmic trading alerts delivered to Telegram with verified timestamps, targets, and execution parameters.
+                Every signal the scanner recorded, and whether it went to Telegram. Only tradable grade A/B signals
+                (or coins on your Alert Me list) are sent; the rest are kept here for the track record.
             </p>
         </div>
 
@@ -32,33 +33,60 @@
         </div>
     </div>
 
+    @if ($telegram['problem'])
+        <div class="p-4 rounded-xl border border-rose-700/60 bg-rose-950/40 text-rose-200 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+                <div class="font-bold">⚠️ Telegram messages are not being delivered</div>
+                <div class="text-xs text-rose-300/90 mt-0.5 break-all">{{ $telegram['problem'] }}</div>
+                @if ($telegram['last_error_at'])
+                    <div class="text-[11px] text-rose-300/70 mt-0.5">Last error {{ \Carbon\Carbon::parse($telegram['last_error_at'])->diffForHumans() }}</div>
+                @endif
+            </div>
+            <a href="{{ route('signals.dashboard') }}#dispatcher" class="shrink-0 px-3 py-2 text-xs font-bold rounded-lg bg-rose-600 hover:bg-rose-500 text-white">Send a Test Alert</a>
+        </div>
+    @elseif ($telegram['last_ok_at'])
+        <div class="px-4 py-2.5 rounded-xl border border-emerald-800/60 bg-emerald-950/30 text-emerald-300 text-xs">
+            ✓ Telegram is working. Last message delivered {{ \Carbon\Carbon::parse($telegram['last_ok_at'])->diffForHumans() }}.
+        </div>
+    @endif
+
     <!-- Summary KPI Cards -->
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div class="p-5 rounded-xl glass-panel border border-cyber-border shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Alerts Sent</div>
-            <div class="text-2xl sm:text-3xl font-black text-white mt-1.5">{{ number_format($stats['total']) }}</div>
-            <p class="text-[11px] text-slate-500 mt-1">Recorded in database</p>
+            <div class="text-xs font-semibold uppercase tracking-wider text-slate-400">Sent to Telegram</div>
+            <div class="text-2xl sm:text-3xl font-black text-white mt-1.5">{{ number_format($stats['sent']) }}</div>
+            <p class="text-[11px] text-slate-500 mt-1">{{ number_format($stats['sent_24h']) }} in the last 24h</p>
         </div>
         <div class="p-5 rounded-xl glass-panel border border-emerald-900/60 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-emerald-400">Long (BUY) Alerts</div>
-            <div class="text-2xl sm:text-3xl font-black text-emerald-400 mt-1.5">{{ number_format($stats['buy']) }}</div>
-            <p class="text-[11px] text-slate-500 mt-1">Bullish trend &amp; bottom reversals</p>
+            <div class="text-xs font-semibold uppercase tracking-wider text-emerald-400">Signals recorded</div>
+            <div class="text-2xl sm:text-3xl font-black text-emerald-400 mt-1.5">{{ number_format($stats['recorded']) }}</div>
+            <p class="text-[11px] text-slate-500 mt-1">All setups, including filtered ones</p>
         </div>
         <div class="p-5 rounded-xl glass-panel border border-rose-900/60 shadow">
-            <div class="text-xs font-semibold uppercase tracking-wider text-rose-400">Short (SELL) Alerts</div>
-            <div class="text-2xl sm:text-3xl font-black text-rose-400 mt-1.5">{{ number_format($stats['sell']) }}</div>
-            <p class="text-[11px] text-slate-500 mt-1">Bearish breakdowns &amp; top reversals</p>
+            <div class="text-xs font-semibold uppercase tracking-wider text-rose-400">Not sent</div>
+            <div class="text-2xl sm:text-3xl font-black text-rose-400 mt-1.5">{{ number_format($stats['recorded'] - $stats['sent']) }}</div>
+            <p class="text-[11px] text-slate-500 mt-1">Filtered, grade C or tracked-only</p>
         </div>
         <div class="p-5 rounded-xl glass-panel border border-amber-900/60 shadow">
             <div class="text-xs font-semibold uppercase tracking-wider text-amber-400">Grade A Confluence</div>
             <div class="text-2xl sm:text-3xl font-black text-amber-400 mt-1.5">{{ number_format($stats['grade_a']) }}</div>
-            <p class="text-[11px] text-slate-500 mt-1">Scores &ge; 90 / 100</p>
+            <p class="text-[11px] text-slate-500 mt-1">Strongest setups recorded</p>
         </div>
     </div>
 
     <!-- Filters Bar -->
     <div class="p-5 rounded-xl glass-panel border border-cyber-border shadow-xl">
-        <form method="GET" action="{{ route('alerts.index') }}" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 items-end">
+        <form method="GET" action="{{ route('alerts.index') }}" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-4 items-end">
+            <!-- Delivery filter -->
+            <div>
+                <label for="delivery" class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Telegram</label>
+                <select id="delivery" name="delivery" class="block w-full px-3 py-2 bg-cyber-900 border border-cyber-border rounded-xl text-white text-xs focus:outline-none focus:border-cyan-500">
+                    <option value="sent" {{ $delivery === 'sent' ? 'selected' : '' }}>✓ Sent only</option>
+                    <option value="not_sent" {{ $delivery === 'not_sent' ? 'selected' : '' }}>Not sent</option>
+                    <option value="all" {{ $delivery === 'all' ? 'selected' : '' }}>All recorded</option>
+                </select>
+            </div>
+
             <!-- Symbol search -->
             <div>
                 <label for="symbol" class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Symbol / Pair</label>
@@ -116,11 +144,11 @@
         <div class="p-5 border-b border-cyber-border flex justify-between items-center bg-cyber-900/60">
             <div>
                 <h2 class="text-sm font-bold text-white uppercase tracking-wider">Alert Log Records</h2>
-                <p class="text-[11px] text-slate-400 mt-0.5">Showing {{ $alerts->firstItem() ?? 0 }} to {{ $alerts->lastItem() ?? 0 }} of {{ $alerts->total() }} alerts</p>
+                <p class="text-[11px] text-slate-400 mt-0.5">Showing {{ $alerts->firstItem() ?? 0 }} to {{ $alerts->lastItem() ?? 0 }} of {{ $alerts->total() }} {{ $delivery === 'sent' ? 'sent alerts' : 'signals' }}</p>
             </div>
             <div class="flex items-center space-x-2">
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-800">
-                    Auto-Synced with Telegram
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded text-[10px] font-semibold {{ $telegram['problem'] ? 'bg-rose-950 text-rose-300 border-rose-800' : 'bg-emerald-950 text-emerald-300 border-emerald-800' }} border">
+                    Telegram {{ $telegram['problem'] ? 'NOT delivering' : 'connected' }}
                 </span>
             </div>
         </div>
@@ -139,7 +167,7 @@
                         <th class="py-3 px-4">Stop Loss</th>
                         <th class="py-3 px-4">TP1 / TP2 / TP3</th>
                         <th class="py-3 px-4">R:R / Lev</th>
-                        <th class="py-3 px-4">Source</th>
+                        <th class="py-3 px-4">Telegram</th>
                         <th class="py-3 px-4 text-right">Actions</th>
                     </tr>
                 </thead>
@@ -232,13 +260,14 @@
 
                             <!-- Source -->
                             <td class="py-3 px-4 whitespace-nowrap font-sans">
-                                @if ($a->source === 'cron_scanner')
-                                    <span class="px-2 py-0.5 rounded text-[10px] bg-cyber-700 text-slate-300 border border-cyber-border">Scanner</span>
-                                @elseif ($a->source === 'manual_alert')
-                                    <span class="px-2 py-0.5 rounded text-[10px] bg-indigo-950 text-indigo-300 border border-indigo-800">On-Demand</span>
+                                @php($decision = $decisions[$a->id] ?? ['sent' => (bool) $a->telegram_sent, 'reason' => ''])
+                                @if ($decision['sent'])
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800">✓ Sent {{ $a->sent_at?->format('H:i') }}</span>
                                 @else
-                                    <span class="px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-300 border border-amber-800">Test</span>
+                                    <span class="px-2 py-0.5 rounded text-[10px] bg-cyber-700 text-slate-300 border border-cyber-border">Not sent</span>
+                                    <div class="text-[10px] text-slate-500 mt-0.5 max-w-[220px] whitespace-normal">{{ $decision['reason'] }}</div>
                                 @endif
+                                <div class="text-[10px] text-slate-500 mt-0.5">{{ $a->source === 'watcher' ? 'Early breakout' : ucfirst((string) $a->source) }}</div>
                             </td>
 
                             <!-- Actions -->

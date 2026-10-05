@@ -3,62 +3,55 @@
 namespace App\Http\Controllers;
 
 use App\Models\CryptoSignal;
+use App\Services\Notifications\SignalAlerts;
+use App\Services\Notifications\TelegramGateway;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class AlertHistoryController extends Controller
 {
     /**
-     * Display a paginated history of all signals sent to Telegram.
+     * Signals recorded by the scanner, with whether each one was sent to Telegram (and why not).
      */
-    public function index(Request $request): View
+    public function index(Request $request, SignalAlerts $alerts, TelegramGateway $gateway): View
     {
         $symbol = (string) $request->query('symbol', '');
         $side = (string) $request->query('side', '');
         $interval = (string) $request->query('interval', '');
         $setupType = (string) $request->query('setup_type', '');
+        $delivery = in_array($request->query('delivery'), ['sent', 'not_sent', 'all'], true) ? (string) $request->query('delivery') : 'sent';
 
         $query = CryptoSignal::query()
+            ->where('source', '!=', 'backtest')
             ->bySymbol($symbol)
             ->bySide($side)
             ->byInterval($interval)
             ->bySetupType($setupType)
+            ->when($delivery === 'sent', fn ($q) => $q->where('telegram_sent', true))
+            ->when($delivery === 'not_sent', fn ($q) => $q->where('telegram_sent', false))
             ->recent();
 
-        $alerts = $query->paginate(15)->withQueryString();
+        $alerts_ = $query->paginate(15)->withQueryString();
+        $decisions = $alerts_->getCollection()->mapWithKeys(fn (CryptoSignal $a): array => [$a->id => $alerts->sendDecision($a)]);
 
-        // High-level statistics
+        $live = CryptoSignal::where('source', '!=', 'backtest');
         $stats = [
-            'total' => CryptoSignal::count(),
-            'buy' => CryptoSignal::where('side', 'BUY')->count(),
-            'sell' => CryptoSignal::where('side', 'SELL')->count(),
-            'grade_a' => CryptoSignal::where('grade', 'A')->count(),
+            'recorded' => (clone $live)->count(),
+            'sent' => (clone $live)->where('telegram_sent', true)->count(),
+            'sent_24h' => (clone $live)->where('telegram_sent', true)->where('created_at', '>=', now()->subDay())->count(),
+            'grade_a' => (clone $live)->where('grade', 'A')->count(),
         ];
 
-        // Available symbols and intervals for filter dropdowns
-        $availableSymbols = CryptoSignal::query()
-            ->select('symbol')
-            ->distinct()
-            ->orderBy('symbol')
-            ->pluck('symbol')
-            ->toArray();
-
-        $availableIntervals = CryptoSignal::query()
-            ->select('interval')
-            ->distinct()
-            ->orderBy('interval')
-            ->pluck('interval')
-            ->toArray();
-
-        return view('alerts.index', compact(
-            'alerts',
-            'stats',
-            'symbol',
-            'side',
-            'interval',
-            'setupType',
-            'availableSymbols',
-            'availableIntervals'
-        ));
+        return view('alerts.index', [
+            'alerts' => $alerts_,
+            'decisions' => $decisions,
+            'stats' => $stats,
+            'telegram' => $gateway->health(),
+            'symbol' => $symbol,
+            'side' => $side,
+            'interval' => $interval,
+            'setupType' => $setupType,
+            'delivery' => $delivery,
+        ]);
     }
 }

@@ -107,6 +107,9 @@ class TradingDaemonCommand extends Command
                             $stats['last_error_at'] = null;
                             $this->log("[{$mode}] {$scan['message']}");
                             $this->actOnSignals($scan['fresh'], $mode, $account, $pausedReason, $trader, $scanner, $alerts, $stats);
+                            if (BreakoutWatcher::alertsEnabled()) {
+                                $alerts->breakoutWatchAlert((array) ($scan['watches'] ?? []));
+                            }
                         }
                     } catch (Throwable $e) {
                         $retry = $scanner->releaseScan($interval);
@@ -119,11 +122,25 @@ class TradingDaemonCommand extends Command
                 // 3b. Intrabar breakout watcher, once a minute
                 if (BreakoutWatcher::enabled() && Cache::add('engine:breakout-watch:'.intdiv(time(), 60), true, 120)) {
                     try {
-                        $breakouts = $watcher->check();
-                        foreach ($breakouts as ['signal' => $signal]) {
-                            $this->log("[{$mode}] BREAKOUT {$signal->symbol} {$signal->side} through the squeeze box at {$signal->entry} (intrabar)");
+                        foreach ($watcher->check() as $breakout) {
+                            $signal = $breakout['signal'];
+                            $status = null;
+
+                            if (BreakoutWatcher::tradingEnabled()) {
+                                $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
+                                $decision = $trader->processFreshSignals([$breakout], $mode, $entriesAllowed)[0] ?? null;
+                                $status = $entriesAllowed ? ($decision['message'] ?? null) : 'skipped: '.($pausedReason ?? $this->accountBlockReason($account->fresh()));
+                                if (($decision['status'] ?? '') === 'taken') {
+                                    $stats['opened']++;
+                                    $this->log("OPENED {$signal->symbol} {$signal->side} Early Breakout");
+                                }
+                            }
+
+                            $this->log(sprintf('[%s] BREAKOUT %s %s at %s (level %s, volume %.1fx pace)%s', strtoupper($mode), $signal->symbol, $signal->side, $signal->entry, $breakout['level'], $breakout['volume_pace'], $status ? ' · '.preg_replace('/^\[\w+\] /', '', $status) : ''));
+                            if (BreakoutWatcher::alertsEnabled()) {
+                                $alerts->breakoutNowAlert($signal, $breakout['level'], $breakout['volume_pace'], $status);
+                            }
                         }
-                        $this->actOnSignals($breakouts, $mode, $account, $pausedReason, $trader, $scanner, $alerts, $stats);
                     } catch (Throwable $e) {
                         $this->recordError($stats, 'Breakout watcher: '.$e->getMessage());
                         Log::warning("[TradeEngine] Breakout watcher: {$e->getMessage()}");

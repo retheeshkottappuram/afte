@@ -186,7 +186,7 @@ class RiskManager
      *
      * @return array{allowed: bool, quantity: float, margin: float, amount_added: float, leverage: int, risk_usd: float, risk_pct: float, notional: float, reason: string}
      */
-    public function calculatePositionSize(TradingAccount $account, string $symbol, float $entryPrice, float $slPrice): array
+    public function calculatePositionSize(TradingAccount $account, string $symbol, float $entryPrice, float $slPrice, ?float $riskPctOverride = null): array
     {
         $reject = fn (string $reason): array => [
             'allowed' => false, 'quantity' => 0.0, 'margin' => 0.0, 'amount_added' => 0.0, 'leverage' => 0,
@@ -199,7 +199,7 @@ class RiskManager
         }
 
         $equity = max(0.0, (float) $account->balance);
-        $riskPct = (float) config('trading.sizing.risk_per_trade_pct', 2.0);
+        $riskPct = $riskPctOverride ?? (float) config('trading.sizing.risk_per_trade_pct', 2.0);
         $smallAccountMaxRiskPct = (float) config('trading.sizing.small_account_max_risk_pct', 5.0);
         $maxLeverage = (int) config('trading.sizing.max_leverage', 10);
         $maxMarginPct = (float) config('trading.sizing.max_margin_pct', 90.0) / 100.0;

@@ -62,6 +62,11 @@ class DynamicTradeManager
                 return ['status' => 'error', 'message' => 'Invalid mark price.'];
             }
 
+            // Early breakout: the hourly candle closed back inside the squeeze box, so the breakout failed.
+            if (($failedClose = $this->failedBreakoutClose($trade)) !== null) {
+                return $this->closeTradeUnlocked($trade, $trade->mode === 'live' ? $price : $failedClose, 'FAILED_BREAKOUT');
+            }
+
             [$atr, $isBarClose] = $this->trailingInputs($trade);
             $result = $this->exitPlan->evaluate($this->stateOf($trade), $price, $price, $price, now()->timestamp, $atr, $isBarClose);
             $state = $result['state'];
@@ -465,6 +470,43 @@ class DynamicTradeManager
         $trade->meta = $meta;
 
         return [$atr, $atr !== null];
+    }
+
+    /**
+     * Close of the last finished candle when an early-breakout trade closed back inside its box
+     * (checked once per candle, only before TP1). Null when the breakout still holds.
+     */
+    protected function failedBreakoutClose(Trade $trade): ?float
+    {
+        $box = $trade->meta['breakout_box'] ?? null;
+        if ($box === null || $trade->tp1_hit || $trade->opened_at === null) {
+            return null;
+        }
+
+        $interval = (string) ($trade->meta['interval'] ?? '1h');
+        $barSeconds = $interval === '15m' ? 900 : ($interval === '4h' ? 14400 : 3600);
+        $currentBar = intdiv(now()->timestamp, $barSeconds);
+        $meta = $trade->meta;
+        if ($currentBar <= intdiv($trade->opened_at->timestamp, $barSeconds) || (int) ($meta['box_checked_bar'] ?? 0) === $currentBar) {
+            return null;
+        }
+
+        try {
+            $candles = $this->marketData->klines($trade->symbol, $interval, 3);
+        } catch (Throwable) {
+            return null;
+        }
+
+        $meta['box_checked_bar'] = $currentBar;
+        $trade->meta = $meta;
+        $closed = count($candles['closes'] ?? []) - 2;
+        if ($closed < 0) {
+            return null;
+        }
+
+        $close = (float) $candles['closes'][$closed];
+
+        return ($trade->isLong() ? $close < (float) $box : $close > (float) $box) ? $close : null;
     }
 
     protected function paperExitPrice(Trade $trade, float $plannedPrice, float $currentPrice): float

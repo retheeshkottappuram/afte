@@ -60,7 +60,7 @@ class BreakoutWatcherTest extends TestCase
 
         $this->assertCount(1, $fresh);
         $signal = $fresh[0]['signal'];
-        $this->assertSame('SQUEEZE_BREAKOUT', $signal->setup);
+        $this->assertSame('EARLY_BREAKOUT', $signal->setup);
         $this->assertSame(100.5, $signal->entry, 'Entry is the live price, not the candle close');
         $this->assertSame(intdiv($this->barOpenMs + 3_600_000 - 1, 1000), $signal->time, 'Same key as the close signal of this candle');
         $this->assertTrue($signal->isTradable());

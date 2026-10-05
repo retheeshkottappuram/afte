@@ -56,6 +56,108 @@ class SignalAlerts
     }
 
     /**
+     * "Coiled for a breakout" list after an hourly scan: coins in a squeeze with every filter passing,
+     * close to their breakout level. Each coin is announced once per 6 hours.
+     *
+     * @param  array<string, array<string, mixed>>  $watches  From the scan, keyed by symbol (with 'price')
+     */
+    public function breakoutWatchAlert(array $watches): bool
+    {
+        if ($watches === [] || ! Watchlist::alertsEnabled()) {
+            return false;
+        }
+
+        $rows = [];
+        foreach ($watches as $symbol => $watch) {
+            $price = (float) ($watch['price'] ?? 0);
+            if ($price <= 0) {
+                continue;
+            }
+            $rows[] = $watch + ['symbol' => $symbol, 'distance_pct' => abs((float) $watch['level'] - $price) / $price * 100];
+        }
+        usort($rows, fn (array $a, array $b): int => $a['distance_pct'] <=> $b['distance_pct']);
+
+        $lines = [];
+        foreach ($rows as $row) {
+            if (count($lines) >= 8 || ! Cache::add("tg:coiled:{$row['symbol']}:{$row['side']}", true, now()->addHours(6))) {
+                continue;
+            }
+            $isLong = $row['side'] === 'LONG';
+            $level = (float) $row['level'];
+            $stopPct = isset($row['box_high'], $row['box_low']) ? abs($level - ((float) $row['box_high'] + (float) $row['box_low']) / 2) / $level * 100 : 1.2 * (float) $row['atr'] / $level * 100;
+            $lines[] = sprintf('%s <b>%s</b> %s <code>%s</code> · now %s (%.1f%% away) · stop ≈%.1f%%',
+                $isLong ? '🟢' : '🔴', $row['symbol'], $isLong ? '▲ above' : '▼ below', $this->fmt($level), $this->fmt((float) $row['price']), $row['distance_pct'], $stopPct);
+        }
+
+        if ($lines === []) {
+            return false;
+        }
+
+        $auto = (bool) config('trading.strategy.intrabar_breakouts', true)
+            ? 'The bot enters early breakouts automatically (half risk, max '.(int) config('trading.strategy.early_breakout.max_per_day', 3).'/day).'
+            : 'The bot trades only the confirmed candle close.';
+
+        return $this->gateway->send("🔭 <b>Coiled for a breakout</b> (this 1h candle)\n".implode("\n", $lines)."\n\nVolume must confirm. {$auto}") !== null;
+    }
+
+    /**
+     * Instant "breaking out now" alert from the minute watcher (priority: never rate-limited).
+     */
+    public function breakoutNowAlert(Signal $signal, float $level, float $volumePace, ?string $autoTradeStatus): bool
+    {
+        if (! Watchlist::alertsEnabled() || ! Cache::add("tg:breakout:{$signal->symbol}:{$signal->time}", true, now()->addHours(2))) {
+            return false;
+        }
+
+        $isLong = $signal->isLong();
+        $html = sprintf("⚡ <b>BREAKING OUT: %s %s</b>\n", $signal->symbol, $signal->side)
+            .sprintf("Price %s %s %s · volume %.1fx pace\n", $this->fmt($signal->entry), $isLong ? 'at/above' : 'at/below', $this->fmt($level), $volumePace)
+            .sprintf("Entry ≈<code>%s</code> · Stop <code>%s</code> (−%.2f%%)\n", $this->fmt($signal->entry), $this->fmt($signal->stopLoss), $signal->slPct())
+            ."TP1 <code>{$this->fmt($signal->tp1)}</code> · TP2 <code>{$this->fmt($signal->tp2)}</code>\n"
+            .'Early entry (before the candle closes): higher fake-out risk. Exit if the hourly candle closes back inside the box.';
+
+        if ($autoTradeStatus) {
+            $html .= "\nAuto-trader: ".e($autoTradeStatus);
+        }
+
+        try {
+            $url = route('signals.dashboard', ['symbol' => $signal->symbol, 'interval' => $signal->interval]);
+            if (str_starts_with($url, 'http') && ! str_contains($url, 'localhost')) {
+                $html .= "\n<a href=\"{$url}\">Open chart</a>";
+            }
+        } catch (Throwable) {
+            // URL generation unavailable
+        }
+
+        return $this->gateway->send($html, null, priority: true) !== null;
+    }
+
+    /**
+     * Whether a recorded signal was (or would be) sent to Telegram, and why not.
+     *
+     * @return array{sent: bool, reason: string}
+     */
+    public function sendDecision(CryptoSignal $record): array
+    {
+        if ($record->telegram_sent) {
+            return ['sent' => true, 'reason' => 'Sent'];
+        }
+
+        $features = (array) ($record->features ?? []);
+
+        return ['sent' => false, 'reason' => match (true) {
+            ! $this->gateway->isEnabled() => 'Telegram is not configured or disabled',
+            ! Watchlist::alertsEnabled() => 'Alerts are switched OFF',
+            (bool) $record->is_shadow => 'Tracked setup (shadow), never alerted',
+            ! $record->passed_filters && ! Watchlist::contains($record->symbol) => 'Filters failed: '.($record->auto_trade_status ? preg_replace('/^\[\w+\] skipped: (Filters failed: )?/', '', (string) $record->auto_trade_status) : 'market filters'),
+            ! in_array($record->grade, (array) config('trading.strategy.telegram_grades', ['A', 'B']), true) && ! Watchlist::contains($record->symbol) => "Grade {$record->grade} is below the alert grade",
+            $record->source === 'backtest' => 'Backtest record',
+            ($features['tradable'] ?? true) === false => 'Not tradable when recorded',
+            default => 'Not sent (rate limit, or Telegram error at the time)',
+        }];
+    }
+
+    /**
      * Reply to the original signal message with its outcome.
      */
     public function announceOutcome(CryptoSignal $signal): void

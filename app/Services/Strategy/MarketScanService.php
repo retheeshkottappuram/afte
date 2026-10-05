@@ -237,7 +237,7 @@ class MarketScanService
             $record = null;
 
             if (! empty($result['watch'])) {
-                $watches[$symbol] = $result['watch'];
+                $watches[$symbol] = $result['watch'] + ['price' => $result['state']['price'] ?? null];
             }
 
             if ($latest !== null) {
@@ -268,7 +268,7 @@ class MarketScanService
             'rows' => $rows,
         ]);
 
-        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), count($watches)), 'fresh' => $fresh, 'rows' => $rows];
+        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), count($watches)), 'fresh' => $fresh, 'rows' => $rows, 'watches' => $watches];
     }
 
     /**

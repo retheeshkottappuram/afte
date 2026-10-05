@@ -42,6 +42,7 @@ class DaemonController extends Controller
             'universe_size' => $results['universe_size'] ?? 0,
             'signals_last_scan' => count(array_filter((array) ($results['rows'] ?? []), fn (array $r): bool => ! empty($r['signal']))),
             'telegram_configured' => app(TelegramGateway::class)->isEnabled(),
+            'telegram_problem' => app(TelegramGateway::class)->health()['problem'],
             'alerts_sent_24h' => CryptoSignal::where('telegram_sent', true)->where('sent_at', '>=', now()->subDay())->count(),
             'last_alert_at' => CryptoSignal::where('telegram_sent', true)->max('sent_at'),
             'watchlist_count' => count(Watchlist::symbols()),

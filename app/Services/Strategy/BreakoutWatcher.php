@@ -34,9 +34,20 @@ class BreakoutWatcher
         protected SignalLedger $ledger
     ) {}
 
+    /** Runs when breakout alerts or early-breakout auto-trading is on. */
     public static function enabled(): bool
     {
-        return (bool) config('trading.strategy.intrabar_breakouts', false);
+        return self::alertsEnabled() || self::tradingEnabled();
+    }
+
+    public static function alertsEnabled(): bool
+    {
+        return (bool) config('trading.strategy.breakout_alerts', true);
+    }
+
+    public static function tradingEnabled(): bool
+    {
+        return (bool) config('trading.strategy.intrabar_breakouts', true);
     }
 
     /**
@@ -75,7 +86,7 @@ class BreakoutWatcher
     /**
      * Check every watched coin against its live price and return the breakouts that triggered.
      *
-     * @return array<int, array{signal: Signal, record: CryptoSignal}>
+     * @return array<int, array{signal: Signal, record: CryptoSignal, level: float, volume_pace: float}>
      */
     public function check(): array
     {
@@ -94,17 +105,19 @@ class BreakoutWatcher
         foreach ($coins as $symbol => $watch) {
             $price = $prices[$symbol] ?? 0.0;
             $isLong = $watch['side'] === 'LONG';
-            if ($price <= 0 || ($isLong ? $price < $watch['level'] : $price > $watch['level'])) {
+            $trigger = $this->engine->triggerPrice($watch);
+            if ($price <= 0 || ($isLong ? $price < $trigger : $price > $trigger)) {
                 continue;
             }
 
             try {
-                if (! $this->confirmed($watch, $price)) {
+                $pace = $this->confirmed($watch, $price);
+                if ($pace === null) {
                     continue;
                 }
 
                 $signal = $this->scorer->score($this->engine->intrabarSignal($watch, $price, intdiv((int) $watch['bar_close_ms'], 1000)));
-                $fresh[] = ['signal' => $signal, 'record' => $this->ledger->record($signal, 'watcher')];
+                $fresh[] = ['signal' => $signal, 'record' => $this->ledger->record($signal, 'watcher'), 'level' => (float) $watch['level'], 'volume_pace' => $pace];
                 unset($coins[$symbol]);
             } catch (Throwable $e) {
                 Log::warning("[BreakoutWatcher] {$symbol}: {$e->getMessage()}");
@@ -121,15 +134,16 @@ class BreakoutWatcher
 
     /**
      * The forming candle backs the breakout: volume on pace and price holding near the candle's extreme.
+     * Returns the volume pace (1.0 = the 20-candle average for the time elapsed), or null when not confirmed.
      *
      * @param  array<string, mixed>  $watch
      */
-    protected function confirmed(array $watch, float $price): bool
+    protected function confirmed(array $watch, float $price): ?float
     {
         $candles = $this->market->klines((string) $watch['symbol'], (string) $watch['interval'], 2);
         $last = count($candles['closes'] ?? []) - 1;
         if ($last < 0 || (int) $candles['closeTimes'][$last] !== (int) $watch['bar_close_ms']) {
-            return false;
+            return null;
         }
 
         $high = max((float) $candles['highs'][$last], $price);
@@ -139,8 +153,8 @@ class BreakoutWatcher
 
         $span = max(1, (int) $watch['bar_close_ms'] - (int) $watch['bar_open_ms']);
         $elapsed = min(1.0, max(self::MIN_ELAPSED_SHARE, (now()->getTimestampMs() - (int) $watch['bar_open_ms']) / $span));
-        $volumeOnPace = (float) $candles['volumes'][$last] >= self::VOLUME_PACE * (float) $watch['vol_sma'] * $elapsed;
+        $pace = (float) $candles['volumes'][$last] / max(1e-12, (float) $watch['vol_sma'] * $elapsed);
 
-        return $holding && $volumeOnPace;
+        return $holding && $pace >= self::VOLUME_PACE ? round($pace, 2) : null;
     }
 }

@@ -103,9 +103,20 @@ class SignalAlgoTrader
             return ['status' => 'skipped', 'message' => $decision['reason']];
         }
 
+        $isEarly = $signal->setup === EarlyBreakoutGuard::SETUP;
+        if ($isEarly && ($blocked = EarlyBreakoutGuard::blockReason($mode)) !== null) {
+            return ['status' => 'skipped', 'message' => $blocked];
+        }
+
         $payload = $this->entryPayload($signal);
         if ($payload === null) {
             return ['status' => 'skipped', 'message' => 'Price moved too far from the signal candle. Entry missed.'];
+        }
+
+        if ($isEarly) {
+            // Half the normal risk, and the box edge for the failed-breakout exit.
+            $payload['risk_pct'] = (float) config('trading.strategy.early_breakout.risk_pct', 1.0);
+            $payload['breakout_box'] = $signal->features['box_edge'] ?? null;
         }
 
         $result = $this->orderExecutor->executeSignal($payload, $mode);
