@@ -123,7 +123,7 @@ class SignalAlgoTraderTest extends TestCase
         $decision = app(SignalAlgoTrader::class)->handleSignal($this->signal(), 'paper', true);
 
         $this->assertSame('skipped', $decision['status']);
-        $this->assertStringContainsString('Entry missed', $decision['message']);
+        $this->assertStringContainsString('Price ran ahead', $decision['message']);
     }
 
     public function test_live_mode_only_trades_proven_setups(): void

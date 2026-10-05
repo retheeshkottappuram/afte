@@ -1796,7 +1796,7 @@
                     : '<div class="text-slate-500">No track record yet</div>';
                 const failed = Object.entries(op.failed_filters || {}).map(([k, v]) => `✗ ${esc(k.replace('_', ' '))}: ${esc(v)}`).join('<br>');
                 const filterHtml = op.tradable
-                    ? `<span class="text-emerald-400">✓ All filters passed</span>`
+                    ? `<span class="text-emerald-400">✓ Market filters passed</span>`
                     : `<span class="text-rose-300">${failed || (op.is_shadow ? 'Shadow setup (tracked only)' : 'Not tradable')}</span>`;
                 const auto = op.auto_trade ? `<div class="text-[10px] text-cyan-300 mt-1">🤖 ${esc(op.auto_trade)}</div>` : '';
                 const canTrade = op.tradable && !op.is_shadow && (op.entry_status || 'Enter now') === 'Enter now';

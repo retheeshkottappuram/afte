@@ -6,6 +6,7 @@ use App\Models\CryptoSignal;
 use App\Models\Setting;
 use App\Models\Trade;
 use App\Services\Crypto\CandleSanitizer;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -269,6 +270,38 @@ class MarketScanService
         ]);
 
         return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), count($watches)), 'fresh' => $fresh, 'rows' => $rows, 'watches' => $watches];
+    }
+
+    /**
+     * What the auto-trader did (or would do) with a scanner signal: the decision recorded when the engine
+     * handled it, otherwise why it is not auto-traded. Shown on the scanner instead of a bare "filters passed".
+     *
+     * @param  array<string, mixed>  $signal  The 'signal' part of a scanner row
+     */
+    public function autoTradeVerdict(array $signal): string
+    {
+        $recorded = $signal['auto_trade'] ?? null;
+        if (! $recorded && isset($signal['symbol'], $signal['time'], $signal['side'])) {
+            $recorded = CryptoSignal::where('symbol', $signal['symbol'])
+                ->where('interval', $signal['interval'] ?? '1h')
+                ->where('candle_close_time', Carbon::createFromTimestampUTC((int) $signal['time']))
+                ->where('side', $signal['side'] === 'LONG' ? 'BUY' : 'SELL')
+                ->value('auto_trade_status');
+        }
+        if ($recorded) {
+            return (string) preg_replace('/^\[\w+\] /', '', (string) $recorded);
+        }
+
+        $setup = (string) ($signal['setup'] ?? '');
+        $stats = $this->stats->forSetup($setup, null, 90);
+
+        return match (true) {
+            (bool) ($signal['is_shadow'] ?? false) => 'Not auto-traded: tracked-only setup',
+            ! (bool) ($signal['tradable'] ?? false) => 'Not auto-traded: filters failed',
+            ! $this->stats->isActive($setup) => sprintf('Not auto-traded: %s is paused (%+.2fR avg per trade)', StrategyEngine::SETUP_LABELS[$setup] ?? $setup, (float) ($stats['expectancy'] ?? 0)),
+            ! in_array($signal['grade'] ?? 'C', (array) config('trading.strategy.auto_trade_grades', ['A', 'B']), true) => "Not auto-traded: grade {$signal['grade']} (the bot takes A and B)",
+            default => 'Earlier candle: the auto-trader only acts right after the signal candle closes',
+        };
     }
 
     /**

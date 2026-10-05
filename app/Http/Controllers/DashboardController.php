@@ -420,7 +420,7 @@ class DashboardController extends Controller
             'indicators' => $signal['indicators'],
             'stats' => $signal['stats'] ?? null,
             'stats_30d' => $signal['stats_30d'] ?? null,
-            'auto_trade' => $signal['auto_trade'] ?? null,
+            'auto_trade' => $this->scanner->autoTradeVerdict($signal),
             'quote_volume' => $row['quote_volume'],
             'funding_rate' => $row['funding_rate'],
             'chart_url' => route('signals.dashboard', ['symbol' => $row['symbol'], 'interval' => $signal['interval'], 'signal_time' => $signal['time']]),

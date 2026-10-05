@@ -226,7 +226,7 @@ Previous results:
                 'volume_ratio' => $s['indicators']['volume_ratio'] ?? null,
                 'atr_pct' => $s['indicators']['atr_pct'] ?? null,
             ],
-            'auto_trade' => $s['auto_trade'] ?? null,
+            'auto_trade' => $this->scanner->autoTradeVerdict($s),
             'watched' => in_array($row['symbol'], $watchlist, true),
         ];
     }

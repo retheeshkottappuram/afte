@@ -104,7 +104,7 @@ class OpportunityScorer
     {
         return match ($this->entryStatus($drift)) {
             'Enter now' => 15.0,
-            'Entry missed' => 15.0 * $this->clamp(1 - (abs((float) $drift) - self::MAX_ENTRY_DRIFT_R) / (1 - self::MAX_ENTRY_DRIFT_R), 0, 1),
+            'Price ran ahead' => 15.0 * $this->clamp(1 - (abs((float) $drift) - self::MAX_ENTRY_DRIFT_R) / (1 - self::MAX_ENTRY_DRIFT_R), 0, 1),
             default => 0.0,
         };
     }
@@ -116,7 +116,7 @@ class OpportunityScorer
             $drift <= -1.0 => 'Stopped out',
             $drift >= (float) config('trading.exits.tp1_r', 1.5) => 'Target hit',
             abs($drift) <= self::MAX_ENTRY_DRIFT_R => 'Enter now',
-            default => 'Entry missed',
+            default => 'Price ran ahead',
         };
     }
 

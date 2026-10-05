@@ -64,7 +64,7 @@ class OpportunityScorerTest extends TestCase
         $this->assertSame(10.0, $filtered['breakdown']['filters']);
         $this->assertLessThan($good, $filtered['score']);
         $this->assertLessThan($good, $stale['score']);
-        $this->assertSame('Entry missed', $missed['entry_status']);
+        $this->assertSame('Price ran ahead', $missed['entry_status']);
         $this->assertLessThan($good, $missed['score']);
         $this->assertSame('Stopped out', $stopped['entry_status']);
         $this->assertSame(0.0, $stopped['breakdown']['entry']);

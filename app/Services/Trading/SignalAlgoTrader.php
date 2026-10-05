@@ -110,7 +110,7 @@ class SignalAlgoTrader
 
         $payload = $this->entryPayload($signal);
         if ($payload === null) {
-            return ['status' => 'skipped', 'message' => 'Price moved too far from the signal candle. Entry missed.'];
+            return ['status' => 'skipped', 'message' => 'Price ran ahead of the signal entry (> 0.3R). Late entries lost money in the backtest, so this one is skipped.'];
         }
 
         if ($isEarly) {
@@ -153,7 +153,7 @@ class SignalAlgoTrader
 
         $payload = $this->entryPayload($signal);
         if ($payload === null) {
-            return ['success' => false, 'message' => 'Price moved too far from the signal candle. Entry missed; wait for the next setup.', 'trade' => null];
+            return ['success' => false, 'message' => 'Price ran ahead of the signal entry (> 0.3R). Late entries lost money in the backtest; wait for the next setup.', 'trade' => null];
         }
 
         $result = $this->orderExecutor->executeSignal($payload, $mode, isManual: true);

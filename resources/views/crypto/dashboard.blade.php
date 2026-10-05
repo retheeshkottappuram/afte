@@ -2411,6 +2411,7 @@
                 </details>
 
                 <div class="text-xs">${status}</div>
+                ${s.auto_trade ? `<div class="text-[11px] text-indigo-300 -mt-1">🤖 ${escHtml(s.auto_trade)}</div>` : ""}
 
                 <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     ${level('Entry', fmtPrice(s.entry, d), `${s.interval} close`, 'text-white')}
