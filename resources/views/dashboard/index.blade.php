@@ -1099,8 +1099,19 @@
                 } else {
                     parts.push('waiting for first scan');
                 }
+                Object.entries(daemon.scans_by_interval || {}).forEach(([tf, scan]) => {
+                    if (tf === '1h' || !scan || !scan.at) return;
+                    const fm = String(scan.summary || '').match(/(\d+) fresh signals/);
+                    parts.push(`${tf} last ${hhmm(scan.at)}${fm ? ` · ${fm[1]} signals` : ''}`);
+                });
                 if (daemon.next_scan_at) parts.push(`next ${hhmm(daemon.next_scan_at)}`);
                 if (daemon.watching) parts.push(`watching ${daemon.watching} for breakout`);
+                const d24 = daemon.decisions_24h;
+                if (d24) {
+                    let line = `24h: ${d24.signals} signals, ${d24.taken} taken`;
+                    if (d24.top_reason) line += ` (top skip: ${d24.top_reason} ×${d24.top_reason_count})`;
+                    parts.push(line);
+                }
                 cycles.textContent = parts.join(' · ');
                 cycles.title = daemon.last_error ? `Last error ${daemon.last_error_at ? hhmm(daemon.last_error_at) : ''}: ${daemon.last_error}` : '';
                 cycles.className = daemon.last_error ? 'text-amber-300' : 'text-slate-200';
@@ -1809,7 +1820,7 @@
                                 <span class="font-bold text-white text-sm">${esc(op.symbol)}</span>
                                 <span class="px-1.5 py-0.5 rounded text-[10px] border ${dirBadge}">${op.direction}</span>
                             </div>
-                            <span class="text-[10px] text-cyan-400 font-mono font-medium block mt-0.5">${esc(op.setup_label)}${op.is_shadow ? ' (shadow)' : ''}</span>
+                            <span class="text-[10px] text-cyan-400 font-mono font-medium block mt-0.5">${esc(op.setup_label)}${op.is_shadow ? ' (shadow)' : ''} <span class="text-slate-400">· ${esc(op.interval || '')}</span></span>
                             ${op.confluences && op.confluences.length ? `<span class="text-[10px] text-slate-500 block">${esc(op.confluences.join(' · '))}</span>` : ''}
                         </td>
                         <td class="px-3 py-3">

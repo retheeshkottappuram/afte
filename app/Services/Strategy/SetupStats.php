@@ -20,15 +20,17 @@ class SetupStats
     public const DECISION_SAMPLES = 50;
 
     /**
-     * Stats for one setup (optionally one side) over a window of days.
+     * Stats for one setup (optionally one side) over a window of days, on one timeframe
+     * (default: the base timeframe, so faster-timeframe signals never blend into its record).
      *
      * @return array{setup: string, side: ?string, days: int, n: int, n_live: int, win_rate: ?float, expectancy: ?float, profit_factor: ?float, source: string}
      */
-    public function forSetup(string $setup, ?string $side = null, int $days = 90): array
+    public function forSetup(string $setup, ?string $side = null, int $days = 90, ?string $interval = null): array
     {
-        $key = 'setup-stats:'.$setup.':'.($side ?? 'all').':'.$days;
+        $interval ??= self::baseInterval();
+        $key = 'setup-stats:'.$setup.':'.($side ?? 'all').':'.$days.($interval === self::baseInterval() ? '' : ':'.$interval);
 
-        return Cache::remember($key, 900, fn (): array => $this->compute($setup, $side, $days));
+        return Cache::remember($key, 900, fn (): array => $this->compute($setup, $side, $days, $interval));
     }
 
     /**
@@ -56,9 +58,9 @@ class SetupStats
      * Core setups stay active while they keep a real edge (breakeven-after-fees only adds risk);
      * shadow setups activate once they prove a clearly positive one.
      */
-    public function isActive(string $setup): bool
+    public function isActive(string $setup, ?string $interval = null): bool
     {
-        $stats = $this->forSetup($setup, null, 90);
+        $stats = $this->forSetup($setup, null, 90, $interval);
         $isCore = in_array($setup, (array) config('trading.strategy.core_setups', []), true);
 
         if ($stats['n'] < self::DECISION_SAMPLES || $stats['expectancy'] === null) {
@@ -71,9 +73,9 @@ class SetupStats
     /**
      * A setup is "proven" when it has enough samples and a real edge per trade.
      */
-    public function isProven(string $setup): bool
+    public function isProven(string $setup, ?string $interval = null): bool
     {
-        $stats = $this->forSetup($setup, null, 90);
+        $stats = $this->forSetup($setup, null, 90, $interval);
 
         return $stats['n'] >= self::LIVE_SAMPLE_TARGET && ($stats['expectancy'] ?? -1) >= self::minEdge();
     }
@@ -81,6 +83,11 @@ class SetupStats
     /**
      * Minimum average R per trade (after fees) for a setup to be traded.
      */
+    public static function baseInterval(): string
+    {
+        return (string) config('trading.strategy.base_interval', '1h');
+    }
+
     public static function minEdge(): float
     {
         return (float) config('trading.strategy.min_setup_expectancy_r', 0.05);
@@ -92,6 +99,9 @@ class SetupStats
             foreach ([null, 'LONG', 'SHORT'] as $side) {
                 foreach ([30, 90] as $days) {
                     Cache::forget('setup-stats:'.$setup.':'.($side ?? 'all').':'.$days);
+                    foreach ((array) config('trading.strategy.scan_intervals', []) as $interval) {
+                        Cache::forget('setup-stats:'.$setup.':'.($side ?? 'all').':'.$days.':'.$interval);
+                    }
                 }
             }
         }
@@ -100,11 +110,12 @@ class SetupStats
     /**
      * @return array{setup: string, side: ?string, days: int, n: int, n_live: int, win_rate: ?float, expectancy: ?float, profit_factor: ?float, source: string}
      */
-    protected function compute(string $setup, ?string $side, int $days): array
+    protected function compute(string $setup, ?string $side, int $days, string $interval): array
     {
         // Only signals that passed every market filter: those are the trades the bot would actually take.
         $base = CryptoSignal::query()
             ->where('setup', $setup)
+            ->where('interval', $interval)
             ->where('passed_filters', true)
             ->whereIn('outcome', self::RESOLVED)
             ->whereNotNull('r_multiple');

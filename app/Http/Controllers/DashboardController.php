@@ -337,6 +337,16 @@ class DashboardController extends Controller
         $results = ($manual['scanned_at'] ?? '') > ($engine['scanned_at'] ?? '') ? $manual : $engine;
         $rows = (array) ($results['rows'] ?? []);
 
+        // Signals from the faster scanned timeframes (e.g. 15m) are listed too, newest scan only.
+        if ($results === $engine) {
+            foreach (MarketScanService::scanIntervals() as $extraInterval) {
+                if ($extraInterval !== ($engine['interval'] ?? null)) {
+                    $extra = $this->scanner->latestResults($extraInterval);
+                    $rows = array_merge($rows, array_values(array_filter((array) ($extra['rows'] ?? []), fn (array $r): bool => ! empty($r['signal']))));
+                }
+            }
+        }
+
         $opportunities = [];
         $watchlist = [];
 

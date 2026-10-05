@@ -2,7 +2,9 @@
 
 namespace App\Services\Trading;
 
+use App\Models\CryptoSignal;
 use App\Models\TradingAccount;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Dashboard-facing control of the cron-driven trading engine (shared hosting: no background
@@ -54,14 +56,56 @@ class TradingDaemonManager
             'last_scan_at' => $details['last_scan_at'] ?? null,
             'last_scan_summary' => $details['last_scan_summary'] ?? null,
             'next_scan_at' => $details['next_scan_at'] ?? null,
+            'scans_by_interval' => (array) ($details['scans_by_interval'] ?? []),
             'watching' => (int) ($details['watching'] ?? 0),
             'last_error' => $details['last_error'] ?? null,
             'last_error_at' => $details['last_error_at'] ?? null,
             'open_trades' => $details['open_trades'] ?? 0,
             'cycle_ms' => $details['cycle_ms'] ?? null,
+            'decisions_24h' => $this->decisionSummary(),
             'stats' => $details,
             'cron_hint' => '* * * * * cd '.base_path().' && php artisan schedule:run >> /dev/null 2>&1',
         ];
+    }
+
+    /**
+     * What the auto-trader did with the signals of the last 24 hours: how many it saw, how many it took,
+     * and the most common reason it skipped one. Answers "why no trades?" at a glance.
+     *
+     * @return array{signals: int, taken: int, top_reason: ?string, top_reason_count: int}
+     */
+    public function decisionSummary(): array
+    {
+        return Cache::remember('engine:decisions-24h', 60, function (): array {
+            $statuses = CryptoSignal::where('source', '!=', 'backtest')
+                ->where('sent_at', '>=', now()->subDay())
+                ->whereNotNull('auto_trade_status')
+                ->pluck('auto_trade_status')
+                ->map(fn ($s): string => (string) preg_replace('/^\[\w+\] /', '', (string) $s));
+
+            $reasons = $statuses
+                ->filter(fn (string $s): bool => str_starts_with($s, 'skipped: '))
+                ->map(fn (string $s): string => self::shortReason(substr($s, 9)))
+                ->countBy()
+                ->sortDesc();
+
+            return [
+                'signals' => $statuses->count(),
+                'taken' => $statuses->filter(fn (string $s): bool => $s === 'taken')->count(),
+                'top_reason' => $reasons->keys()->first(),
+                'top_reason_count' => (int) ($reasons->first() ?? 0),
+            ];
+        });
+    }
+
+    /**
+     * Group skip messages that differ only in numbers (e.g. "Max open positions reached (1).").
+     */
+    protected static function shortReason(string $reason): string
+    {
+        $reason = (string) preg_replace('/\s*\(.*$|:.*$/', '', $reason);
+
+        return rtrim(mb_substr($reason, 0, 80), '. ');
     }
 
     /**

@@ -9,6 +9,7 @@ use App\Models\TradingAccount;
 use App\Services\Notifications\SignalAlerts;
 use App\Services\Strategy\BreakoutWatcher;
 use App\Services\Strategy\MarketScanService;
+use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
@@ -95,28 +96,38 @@ class TradingDaemonCommand extends Command
                     }
                 }
 
-                // 3. Market scan right after each candle close. A crash never stops trade management.
-                if ($scanner->isScanDue($interval)) {
+                // 3. Market scan right after each candle close of every scanned timeframe (one scan per pass,
+                //    so open trades keep being managed in between). A crash never stops trade management.
+                foreach (MarketScanService::scanIntervals() as $scanInterval) {
+                    if (! $scanner->isScanDue($scanInterval)) {
+                        continue;
+                    }
+
                     try {
-                        $scan = $scanner->runScan($interval);
+                        $scan = $scanner->runScan($scanInterval);
                         if ($scan['scanned']) {
                             $stats['scans']++;
-                            $stats['last_scan_at'] = now()->toIso8601String();
-                            $stats['last_scan_summary'] = $scan['message'];
+                            $stats['scans_by_interval'][$scanInterval] = ['at' => now()->toIso8601String(), 'summary' => $scan['message']];
+                            if ($scanInterval === $interval) {
+                                $stats['last_scan_at'] = now()->toIso8601String();
+                                $stats['last_scan_summary'] = $scan['message'];
+                            }
                             $stats['last_error'] = null;
                             $stats['last_error_at'] = null;
-                            $this->log("[{$mode}] {$scan['message']}");
-                            $this->actOnSignals($scan['fresh'], $mode, $account, $pausedReason, $trader, $scanner, $alerts, $stats);
-                            if (BreakoutWatcher::alertsEnabled()) {
+                            $this->log("[{$mode}] ".($scanInterval === $interval ? '' : "{$scanInterval}: ").$scan['message']);
+                            $this->actOnSignals($scan['fresh'], $mode, $account, $pausedReason, $trader, $scanner, $alerts, $stats, $scanInterval);
+                            if ($scanInterval === $interval && BreakoutWatcher::alertsEnabled()) {
                                 $alerts->breakoutWatchAlert((array) ($scan['watches'] ?? []));
                             }
                         }
                     } catch (Throwable $e) {
-                        $retry = $scanner->releaseScan($interval);
-                        $this->recordError($stats, 'Scan failed: '.$e->getMessage());
-                        Log::error("[TradeEngine] Scan failed: {$e->getMessage()}", ['exception' => $e]);
-                        $this->log('ERROR scan failed'.($retry ? ' (retrying next minute)' : ' (gave up for this candle)').': '.$e->getMessage());
+                        $retry = $scanner->releaseScan($scanInterval);
+                        $this->recordError($stats, "Scan {$scanInterval} failed: ".$e->getMessage());
+                        Log::error("[TradeEngine] Scan {$scanInterval} failed: {$e->getMessage()}", ['exception' => $e]);
+                        $this->log("ERROR {$scanInterval} scan failed".($retry ? ' (retrying next minute)' : ' (gave up for this candle)').': '.$e->getMessage());
                     }
+
+                    break;
                 }
 
                 // 3b. Intrabar breakout watcher, once a minute
@@ -164,7 +175,7 @@ class TradingDaemonCommand extends Command
                     'open_trades' => Trade::where('status', 'OPEN')->count(),
                     'cycle_ms' => (int) round((microtime(true) - $passStarted) * 1000),
                     'watching' => BreakoutWatcher::enabled() ? count($watcher->watching()) : 0,
-                    'next_scan_at' => $this->nextScanAt($interval),
+                    'next_scan_at' => $this->nextScanAt(MarketScanService::scanIntervals()),
                 ] + $stats);
 
                 if ($this->option('once')) {
@@ -194,7 +205,7 @@ class TradingDaemonCommand extends Command
      * @param  array<int, array{signal: Signal, record: CryptoSignal}>  $fresh
      * @param  array<string, mixed>  $stats
      */
-    protected function actOnSignals(array $fresh, string $mode, TradingAccount $account, ?string $pausedReason, SignalAlgoTrader $trader, MarketScanService $scanner, SignalAlerts $alerts, array &$stats): void
+    protected function actOnSignals(array $fresh, string $mode, TradingAccount $account, ?string $pausedReason, SignalAlgoTrader $trader, MarketScanService $scanner, SignalAlerts $alerts, array &$stats, ?string $interval = null): void
     {
         if ($fresh === []) {
             return;
@@ -213,9 +224,9 @@ class TradingDaemonCommand extends Command
                 continue;
             }
 
-            $scanner->markAutoTrade($signal->symbol, $decision['message'] ?? '');
+            $scanner->markAutoTrade($signal->symbol, $decision['message'] ?? '', $interval);
             $alerts->announceSignal($signal, $record->fresh(), $decision['message'] ?? null);
-            $this->log(sprintf('%s %s %s %s %s · %s', strtoupper("[{$mode}]"), $signal->symbol, $signal->side, $signal->setupLabel, $signal->grade ?? '-', preg_replace('/^\[\w+\] /', '', (string) ($decision['message'] ?? 'no decision'))));
+            $this->log(sprintf('%s %s %s %s %s · %s', strtoupper("[{$mode}]"), $signal->symbol, $signal->side, $signal->setupLabel.($signal->interval === SetupStats::baseInterval() ? '' : " {$signal->interval}"), $signal->grade ?? '-', preg_replace('/^\[\w+\] /', '', (string) ($decision['message'] ?? 'no decision'))));
 
             if (($decision['status'] ?? '') === 'taken') {
                 $stats['opened']++;
@@ -243,6 +254,7 @@ class TradingDaemonCommand extends Command
             'last_scan_summary' => $previous['last_scan_summary'] ?? (isset($results['symbols_scanned']) ? "Scanned {$results['symbols_scanned']} symbols, {$results['fresh_signals']} fresh signals." : null),
             'last_error' => $previous['last_error'] ?? null,
             'last_error_at' => $previous['last_error_at'] ?? null,
+            'scans_by_interval' => (array) ($previous['scans_by_interval'] ?? []),
         ];
     }
 
@@ -255,11 +267,20 @@ class TradingDaemonCommand extends Command
         $stats['last_error_at'] = now()->toIso8601String();
     }
 
-    protected function nextScanAt(string $interval): string
+    /**
+     * The next candle close among the scanned timeframes.
+     *
+     * @param  array<int, string>  $intervals
+     */
+    protected function nextScanAt(array $intervals): string
     {
-        $bar = MarketScanService::barSeconds($interval);
+        $next = min(array_map(function (string $interval): int {
+            $bar = MarketScanService::barSeconds($interval);
 
-        return now()->setTimestamp((intdiv(now()->timestamp, $bar) + 1) * $bar)->toIso8601String();
+            return (intdiv(now()->timestamp, $bar) + 1) * $bar;
+        }, $intervals));
+
+        return now()->setTimestamp($next)->toIso8601String();
     }
 
     protected function accountBlockReason(TradingAccount $account): string

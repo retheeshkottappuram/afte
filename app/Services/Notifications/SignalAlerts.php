@@ -226,7 +226,7 @@ class SignalAlerts
     protected function signalMessage(Signal $signal, ?string $autoTradeStatus): string
     {
         $icon = $signal->isLong() ? '🟢' : '🔴';
-        $stats = $this->stats->forSetup($signal->setup, null, 90);
+        $stats = $this->stats->forSetup($signal->setup, null, 90, $signal->interval);
         $statsLine = $stats['n'] > 0
             ? sprintf('%s%% win · %+.2fR avg · n=%d (90d, %s)', $stats['win_rate'], $stats['expectancy'], $stats['n'], $stats['source'])
             : 'No track record yet (new setup data)';

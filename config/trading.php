@@ -225,6 +225,11 @@ return [
     'strategy' => [
         'base_interval' => '1h',
         'regime_interval' => '4h',
+        // Timeframes the engine scans right after each of their candle closes (the base one drives the dashboard scanner).
+        // 15m failed its 12-month backtest (every setup negative: Squeeze PF 0.80, Pullback 0.84), so only 1h by default.
+        'scan_intervals' => array_values(array_filter(array_map('trim', explode(',', (string) env('STRATEGY_SCAN_INTERVALS', '1h'))))),
+        // Timeframes the auto-trader may enter on; the others are scanned for alerts and manual trading only
+        'trade_intervals' => array_values(array_filter(array_map('trim', explode(',', (string) env('STRATEGY_TRADE_INTERVALS', '1h'))))),
         'min_quote_volume_24h' => (float) env('STRATEGY_MIN_VOLUME_24H', 50000000.0),
         'min_listing_days' => 30,
         'min_atr_pct' => 0.35,

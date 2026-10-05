@@ -19,7 +19,7 @@ class SignalScorer
 
     public function score(Signal $signal): Signal
     {
-        $stats = $this->stats->forSetup($signal->setup, null, 90);
+        $stats = $this->stats->forSetup($signal->setup, null, 90, $signal->interval);
         $proven = $stats['n'] >= SetupStats::LIVE_SAMPLE_TARGET;
         $expectancy = $stats['expectancy'];
         $confluenceCount = count($signal->confluences);
@@ -57,7 +57,7 @@ class SignalScorer
      */
     public function autoTradeDecision(Signal $signal, string $mode): array
     {
-        if ($signal->isShadow && ! $this->stats->isActive($signal->setup)) {
+        if ($signal->isShadow && ! $this->stats->isActive($signal->setup, $signal->interval)) {
             return ['allowed' => false, 'reason' => 'Shadow setup: tracked, not traded until it proves an edge.'];
         }
 
@@ -65,7 +65,11 @@ class SignalScorer
             return ['allowed' => false, 'reason' => 'Filters failed: '.implode('; ', $signal->failedFilters())];
         }
 
-        if (! $this->stats->isActive($signal->setup)) {
+        if (! in_array($signal->interval, self::tradeIntervals(), true)) {
+            return ['allowed' => false, 'reason' => "{$signal->interval} signals are alerts-only: this timeframe has not passed its backtest for auto-trading."];
+        }
+
+        if (! $this->stats->isActive($signal->setup, $signal->interval)) {
             return ['allowed' => false, 'reason' => sprintf('%s is paused: measured edge is below %+.2fR per trade.', $signal->setupLabel, SetupStats::minEdge())];
         }
 
@@ -83,10 +87,20 @@ class SignalScorer
         }
 
         // Early breakouts trade live by the user's decision; their losing-streak pause and min-edge rule still apply.
-        if ($mode === 'live' && $signal->setup !== 'EARLY_BREAKOUT' && config('trading.strategy.live_requires_proven_setup', true) && ! $this->stats->isProven($signal->setup)) {
+        if ($mode === 'live' && $signal->setup !== 'EARLY_BREAKOUT' && config('trading.strategy.live_requires_proven_setup', true) && ! $this->stats->isProven($signal->setup, $signal->interval)) {
             return ['allowed' => false, 'reason' => "{$signal->setupLabel} is not yet proven (needs ".SetupStats::LIVE_SAMPLE_TARGET.' resolved signals with positive expectancy) for live trading.'];
         }
 
         return ['allowed' => true, 'reason' => 'Signal approved.'];
+    }
+
+    /**
+     * Timeframes the auto-trader may enter on (others are scanned for alerts only).
+     *
+     * @return array<int, string>
+     */
+    public static function tradeIntervals(): array
+    {
+        return (array) config('trading.strategy.trade_intervals', [config('trading.strategy.base_interval', '1h')]);
     }
 }

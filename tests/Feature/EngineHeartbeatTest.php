@@ -53,7 +53,7 @@ class EngineHeartbeatTest extends TestCase
 
         $details = app(TradingModeManager::class)->heartbeat()['details'];
         $this->assertSame('running', app(TradingModeManager::class)->heartbeat()['state'], 'The run finished and wrote its heartbeat');
-        $this->assertStringContainsString('Scan failed: fopen', $details['last_error']);
+        $this->assertStringContainsString('Scan 1h failed: fopen', $details['last_error']);
         $this->assertNotNull($details['last_error_at']);
     }
 }

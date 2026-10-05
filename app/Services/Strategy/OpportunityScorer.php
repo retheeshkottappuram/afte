@@ -28,7 +28,7 @@ class OpportunityScorer
     public function score(Signal $signal, ?float $currentPrice = null, ?int $now = null): array
     {
         $now ??= now()->timestamp;
-        $stats = $this->stats->forSetup($signal->setup, null, 90);
+        $stats = $this->stats->forSetup($signal->setup, null, 90, $signal->interval);
         $edge = $stats['expectancy'];
 
         $edgePoints = $edge === null ? 0.0 : $this->clamp($edge / 0.30, 0, 1) * 35 * min(1.0, $stats['n'] / 100);

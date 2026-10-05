@@ -181,7 +181,9 @@ class MarketScanService
     public static function barSeconds(string $interval): int
     {
         return match ($interval) {
+            '5m' => 300,
             '15m' => 900,
+            '30m' => 1800,
             '4h' => 14400,
             default => 3600,
         };
@@ -193,7 +195,7 @@ class MarketScanService
     public function isScanDue(string $interval = '1h'): bool
     {
         $currentBar = intdiv(now()->timestamp, self::barSeconds($interval));
-        $results = (array) Setting::getValue(self::RESULTS_KEY, []);
+        $results = (array) Setting::getValue(self::resultsKey($interval), []);
 
         // Wait 30s into the new candle so short-lived kline caches cannot hold the pre-close candle.
         if (now()->timestamp % self::barSeconds($interval) < 30) {
@@ -255,9 +257,14 @@ class MarketScanService
 
         usort($rows, fn (array $a, array $b): int => $this->rank($b) <=> $this->rank($a));
         $rows = $this->numberRanks($rows);
-        $this->watcher->store($interval, $watches);
+        // The minute breakout watcher follows the base timeframe's squeeze boxes only.
+        if ($interval === SetupStats::baseInterval()) {
+            $this->watcher->store($interval, $watches);
+        } else {
+            $watches = [];
+        }
 
-        Setting::putValue(self::RESULTS_KEY, [
+        Setting::putValue(self::resultsKey($interval), [
             'interval' => $interval,
             'bar' => $currentBar,
             'scanned_at' => now()->toIso8601String(),
@@ -293,12 +300,14 @@ class MarketScanService
         }
 
         $setup = (string) ($signal['setup'] ?? '');
-        $stats = $this->stats->forSetup($setup, null, 90);
+        $interval = (string) ($signal['interval'] ?? SetupStats::baseInterval());
+        $stats = $this->stats->forSetup($setup, null, 90, $interval);
 
         return match (true) {
             (bool) ($signal['is_shadow'] ?? false) => 'Not auto-traded: tracked-only setup',
             ! (bool) ($signal['tradable'] ?? false) => 'Not auto-traded: filters failed',
-            ! $this->stats->isActive($setup) => sprintf('Not auto-traded: %s is paused (%+.2fR avg per trade)', StrategyEngine::SETUP_LABELS[$setup] ?? $setup, (float) ($stats['expectancy'] ?? 0)),
+            ! in_array($interval, SignalScorer::tradeIntervals(), true) => "Not auto-traded: {$interval} signals are alerts-only (trade them manually)",
+            ! $this->stats->isActive($setup, $interval) => sprintf('Not auto-traded: %s is paused (%+.2fR avg per trade)', StrategyEngine::SETUP_LABELS[$setup] ?? $setup, (float) ($stats['expectancy'] ?? 0)),
             ! in_array($signal['grade'] ?? 'C', (array) config('trading.strategy.auto_trade_grades', ['A', 'B']), true) => "Not auto-traded: grade {$signal['grade']} (the bot takes A and B)",
             default => 'Earlier candle: the auto-trader only acts right after the signal candle closes',
         };
@@ -307,23 +316,48 @@ class MarketScanService
     /**
      * Update the auto-trader decision for a symbol in the stored scanner rows.
      */
-    public function markAutoTrade(string $symbol, string $status): void
+    public function markAutoTrade(string $symbol, string $status, ?string $interval = null): void
     {
-        $results = (array) Setting::getValue(self::RESULTS_KEY, []);
+        $key = self::resultsKey($interval ?? SetupStats::baseInterval());
+        $results = (array) Setting::getValue($key, []);
         foreach ($results['rows'] ?? [] as $index => $row) {
             if ($row['symbol'] === $symbol && isset($row['signal'])) {
                 $results['rows'][$index]['signal']['auto_trade'] = $status;
             }
         }
-        Setting::putValue(self::RESULTS_KEY, $results);
+        Setting::putValue($key, $results);
     }
 
     /**
+     * Stored scan of one timeframe (default: the base timeframe the dashboard scanner shows).
+     *
      * @return array<string, mixed>
      */
-    public function latestResults(): array
+    public function latestResults(?string $interval = null): array
     {
-        return (array) Setting::getValue(self::RESULTS_KEY, []);
+        return (array) Setting::getValue(self::resultsKey($interval ?? SetupStats::baseInterval()), []);
+    }
+
+    /**
+     * Timeframes the engine scans, base timeframe first.
+     *
+     * @return array<int, string>
+     */
+    public static function scanIntervals(): array
+    {
+        $base = SetupStats::baseInterval();
+
+        return array_values(array_unique(array_merge([$base], array_filter((array) config('trading.strategy.scan_intervals', [$base]), fn ($i): bool => self::barSecondsKnown((string) $i)))));
+    }
+
+    protected static function barSecondsKnown(string $interval): bool
+    {
+        return in_array($interval, ['5m', '15m', '30m', '1h', '4h'], true);
+    }
+
+    public static function resultsKey(string $interval): string
+    {
+        return $interval === SetupStats::baseInterval() ? self::RESULTS_KEY : self::RESULTS_KEY.'_'.$interval;
     }
 
     /**
@@ -348,7 +382,7 @@ class MarketScanService
         ];
 
         if ($latest !== null) {
-            $stats = $this->stats->forSetup($latest->setup, null, 90);
+            $stats = $this->stats->forSetup($latest->setup, null, 90, $latest->interval);
             $opportunity = $this->opportunity->score($latest, isset($state['price']) ? (float) $state['price'] : null);
             $row['signal'] = array_merge($latest->toArray(), [
                 'opportunity' => $opportunity,
@@ -357,7 +391,7 @@ class MarketScanService
                 'id' => $record?->id,
                 'ai_lift' => $this->scorer->aiLift($latest),
                 'stats' => $stats,
-                'stats_30d' => $this->stats->forSetup($latest->setup, null, 30),
+                'stats_30d' => $this->stats->forSetup($latest->setup, null, 30, $latest->interval),
                 'auto_trade' => $record?->auto_trade_status,
             ]);
         }
