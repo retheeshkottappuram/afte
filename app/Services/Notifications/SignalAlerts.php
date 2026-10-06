@@ -97,7 +97,7 @@ class SignalAlerts
             ? 'The bot enters early breakouts automatically (half risk, max '.(int) config('trading.strategy.early_breakout.max_per_day', 3).'/day).'
             : 'The bot trades only the confirmed candle close.';
 
-        return $this->gateway->send("🔭 <b>Coiled for a breakout</b> (this 1h candle)\n".implode("\n", $lines)."\n\nVolume must confirm. {$auto}") !== null;
+        return $this->gateway->send("🔭 <b>Coiled for a breakout</b> (this 1h candle)\n".implode("\n", $lines)."\n\nOnly coins where price sits at the box edge, highs and lows lean the same way and volume agrees: in a 12-month test about 3 in 4 broke in the alerted direction (not every break keeps going). Volume must confirm. {$auto}") !== null;
     }
 
     /**
@@ -178,8 +178,23 @@ class SignalAlerts
         };
 
         if ($text !== null) {
-            $this->gateway->send($text, (int) $signal->telegram_message_id);
+            $this->gateway->send($text."\n".self::outcomeTradeNote($signal->auto_trade_status), (int) $signal->telegram_message_id);
         }
+    }
+
+    /**
+     * Outcome replies track the signal itself (as if entered at the signal price), whether or not the bot
+     * traded it. Say which, so a "TP2 reached" never reads like a trade that did not happen.
+     */
+    public static function outcomeTradeNote(?string $autoTradeStatus): string
+    {
+        $status = trim((string) preg_replace('/^\[\w+\] /', '', (string) $autoTradeStatus));
+
+        return match (true) {
+            $status === 'taken' => '🤖 The bot traded this signal; its own result is in the trade-closed message.',
+            $status === '' => '📊 Signal result only: the bot did not trade it (it was not an auto-trade candidate).',
+            default => '📊 Signal result only: the bot did not trade it ('.preg_replace('/^skipped: /', '', $status).').',
+        };
     }
 
     /**

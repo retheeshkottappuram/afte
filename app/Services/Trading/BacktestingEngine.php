@@ -63,11 +63,12 @@ class BacktestingEngine
         $trades = [];
         $errors = [];
 
-        foreach ($symbols as $symbol) {
+        foreach (array_values($symbols) as $index => $symbol) {
             try {
                 $base = $this->market->klinesRange($symbol, $interval, $startMs - $warmupMs, $endMs);
                 $regime = $this->market->klinesRange($symbol, $regimeInterval, $startMs - $regimeWarmupMs, $endMs);
-                $symbolTrades = $this->backtestSymbol($symbol, $interval, $base, $regime, $symbol === 'BTCUSDT' ? null : $btcBase, $btcRegime, $startMs, $endMs, $intrabar);
+                // Symbols arrive sorted by today's volume, so the list position is the volume rank.
+                $symbolTrades = $this->backtestSymbol($symbol, $interval, $base, $regime, $symbol === 'BTCUSDT' ? null : $btcBase, $btcRegime, $startMs, $endMs, $intrabar, $index + 1);
 
                 if ($seedStats) {
                     $this->seed($symbol, $interval, $symbolTrades);
@@ -117,7 +118,7 @@ class BacktestingEngine
      * @param  bool  $intrabar  Also simulate Early Breakout entries (minute watcher), with the configured stop and anticipation
      * @return array<int, array<string, mixed>>
      */
-    public function backtestSymbol(string $symbol, string $interval, array $base, array $regime, ?array $btcBase, ?array $btcRegime, int $startMs, int $endMs, bool $intrabar = false): array
+    public function backtestSymbol(string $symbol, string $interval, array $base, array $regime, ?array $btcBase, ?array $btcRegime, int $startMs, int $endMs, bool $intrabar = false, ?int $volumeRank = null): array
     {
         $bars = count($base['closes']);
         if ($bars < 320) {
@@ -129,12 +130,13 @@ class BacktestingEngine
             'interval' => $interval,
             'lookback' => $bars,
             'now_ms' => $endMs,
+            'volume_rank' => $volumeRank,
         ]);
 
         $signals = $analysis['signals'];
         $entryBar = [];
         if ($intrabar) {
-            $context = ['symbol' => $symbol, 'interval' => $interval, 'now_ms' => $endMs];
+            $context = ['symbol' => $symbol, 'interval' => $interval, 'now_ms' => $endMs, 'volume_rank' => $volumeRank];
             $signals = array_merge(
                 $signals,
                 $this->engine->intrabarSignals($base, $regime, $btcBase, $btcRegime, $context)

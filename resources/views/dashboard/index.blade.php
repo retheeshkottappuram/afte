@@ -452,9 +452,9 @@
             </div>
 
             <!-- Split Section: Market Breakout Scanner & Strategy Studio -->
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <!-- Market Breakout Scanner (2 cols) -->
-                <div class="lg:col-span-2 glass-panel rounded-xl overflow-hidden flex flex-col">
+            <div class="grid grid-cols-1 gap-6">
+                <!-- Market Breakout Scanner (full width) -->
+                <div class="glass-panel rounded-xl overflow-hidden flex flex-col">
                     <div class="px-5 py-4 border-b border-cyber-border flex items-center justify-between">
                         <div class="flex items-center space-x-2">
                             <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
@@ -487,81 +487,6 @@
                     </div>
                 </div>
 
-                <!-- Backtesting & Strategy Studio (1 col) -->
-                <div class="glass-panel rounded-xl p-5 flex flex-col justify-between">
-                    <div>
-                        <div class="flex items-center justify-between border-b border-cyber-border pb-3 mb-4">
-                            <h2 class="font-bold text-sm tracking-wide text-white font-mono uppercase flex items-center space-x-2">
-                                <span class="text-cyan-400 font-bold">🧪</span>
-                                <span>Backtesting Studio</span>
-                            </h2>
-                            <span class="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-mono border border-cyan-500/20">Binance Klines</span>
-                        </div>
-
-                        <div class="space-y-3 text-xs font-mono">
-                            <div>
-                                <label class="text-slate-400 block mb-1">Trading Pair</label>
-                                <select id="bt-symbol" class="w-full bg-cyber-900 border border-cyber-border rounded px-3 py-1.5 text-slate-200">
-                                    <option value="SOLUSDT">SOLUSDT (High Momentum)</option>
-                                    <option value="BTCUSDT">BTCUSDT (Benchmark)</option>
-                                    <option value="ETHUSDT">ETHUSDT (Macro)</option>
-                                    <option value="SUIUSDT">SUIUSDT (Breakout Layer 1)</option>
-                                    <option value="DOGEUSDT">DOGEUSDT (High Volatility)</option>
-                                    <option value="NEARUSDT">NEARUSDT (Trend Follow)</option>
-                                </select>
-                            </div>
-                            <div class="grid grid-cols-2 gap-2">
-                                <div>
-                                    <label class="text-slate-400 block mb-1">Timeframe</label>
-                                    <select id="bt-interval" class="w-full bg-cyber-900 border border-cyber-border rounded px-3 py-1.5 text-slate-200">
-                                        <option value="1h" selected>1h (strategy)</option>
-                                        <option value="15m">15m</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="text-slate-400 block mb-1">Candles</label>
-                                    <select id="bt-limit" class="w-full bg-cyber-900 border border-cyber-border rounded px-3 py-1.5 text-slate-200">
-                                        <option value="720">30 days</option>
-                                        <option value="2160" selected>90 days</option>
-                                        <option value="4320">180 days</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div>
-                                <label class="text-slate-400 block mb-1">Starting Capital</label>
-                                <input type="number" id="bt-balance" value="5.0" step="0.5" class="w-full bg-cyber-900 border border-cyber-border rounded px-3 py-1.5 text-slate-200">
-                            </div>
-
-                            <button onclick="runBacktest()" id="btn-run-backtest" class="w-full py-2 px-4 rounded bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold transition flex items-center justify-center space-x-2">
-                                <span>Simulate Strategy</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- Backtest Results Display -->
-                    <div id="bt-results" class="mt-4 pt-4 border-t border-cyber-border/60 text-xs font-mono space-y-2 hidden">
-                        <div class="flex justify-between">
-                            <span class="text-slate-400">Simulated Return:</span>
-                            <span id="bt-return" class="font-bold text-emerald-400">+0.00%</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-slate-400">Final Balance:</span>
-                            <span id="bt-final-bal" class="font-bold text-white">$0.00</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-slate-400">Win Rate:</span>
-                            <span id="bt-winrate" class="text-slate-200">0%</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-slate-400">Profit Factor:</span>
-                            <span id="bt-pf" class="text-slate-200">0.0</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-slate-400">Max Drawdown:</span>
-                            <span id="bt-dd" class="text-rose-400">0%</span>
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <!-- Closed Trades Audit Journal -->
@@ -617,7 +542,7 @@
                             <h4 class="text-white font-bold uppercase tracking-wider text-xs">When a trade is taken</h4>
                             <ul class="space-y-1.5 list-disc pl-4 text-slate-300">
                                 <li><strong class="text-emerald-400">Setup:</strong> a Squeeze Breakout (or Trend Pullback while its measured edge stays above +0.05R per trade).</li>
-                                <li><strong class="text-emerald-400">Filters:</strong> 4h trend agrees (ADX ≥ 18), BTC not strongly against, 24h volume ≥ $50M, ATR 0.35–4%, funding not crowded, stop 0.6–1.8% from entry.</li>
+                                <li><strong class="text-emerald-400">Filters:</strong> 4h trend agrees (ADX ≥ 18), BTC not strongly against, 24h volume ≥ ${{ number_format((float) config('trading.strategy.min_quote_volume_24h', 2e7) / 1e6) }}M, ATR 0.35–4%, funding not crowded, stop 0.6–1.8% from entry.</li>
                                 <li><strong class="text-emerald-400">Quality:</strong> grade A or B from the setup's measured track record. In LIVE mode the setup must also be proven (30+ resolved signals with a real edge).</li>
                                 <li><strong class="text-emerald-400">Freshness:</strong> price still within 0.3R of the signal candle, otherwise the entry is skipped.</li>
                             </ul>
@@ -2188,44 +2113,6 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
-        }
-
-        async function runBacktest() {
-            const btn = document.getElementById('btn-run-backtest');
-            btn.innerHTML = '<span>Simulating...</span>';
-            btn.disabled = true;
-
-            const symbol = document.getElementById('bt-symbol').value;
-            const interval = document.getElementById('bt-interval').value;
-            const limit = document.getElementById('bt-limit').value;
-            const balance = document.getElementById('bt-balance').value;
-
-            try {
-                const res = await fetch('/api/backtest', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
-                    body: JSON.stringify({ symbol, interval, limit, balance })
-                });
-                const resData = await res.json();
-                if (resData.success) {
-                    const d = resData.data;
-                    document.getElementById('bt-results').classList.remove('hidden');
-                    const sign = d.net_profit >= 0 ? '+' : '';
-                    document.getElementById('bt-return').textContent = `${sign}${d.net_profit_pct.toFixed(2)}% (${sign}$${d.net_profit.toFixed(2)})`;
-                    document.getElementById('bt-return').className = d.net_profit >= 0 ? 'font-bold text-emerald-400' : 'font-bold text-rose-400';
-                    document.getElementById('bt-final-bal').textContent = `$${d.final_balance.toFixed(2)}`;
-                    document.getElementById('bt-winrate').textContent = `${d.win_rate}% (${d.wins}W / ${d.losses}L)`;
-                    document.getElementById('bt-pf').textContent = `${d.profit_factor}`;
-                    document.getElementById('bt-dd').textContent = `${d.max_drawdown_pct}%`;
-                } else {
-                    alert('Backtest error: ' + resData.message);
-                }
-            } catch (err) {
-                console.error("Backtest error:", err);
-            } finally {
-                btn.innerHTML = '<span>Simulate Strategy</span>';
-                btn.disabled = false;
-            }
         }
 
         // Direct Binance Futures WebSocket Integration (Zero Server Load)

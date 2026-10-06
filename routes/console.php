@@ -23,10 +23,11 @@ Schedule::command('trade:engine')
     ->everyMinute()
     ->runInBackground();
 
-// 1b. On-demand whole-market scan requested from the dashboard (does nothing unless queued)
+// 1b. On-demand whole-market scan requested from the dashboard (does nothing unless queued).
+// No withoutOverlapping: its cache mutex can get stuck on shared hosting and silently skip every scan.
+// The scan state in the settings table already stops a second run (a running scan is skipped).
 Schedule::command('crypto:scan --manual')
     ->everyMinute()
-    ->withoutOverlapping(5)
     ->runInBackground();
 
 // 2. Signal outcome tracking (feeds the measured win rates and the AI model)

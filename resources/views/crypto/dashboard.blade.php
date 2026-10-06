@@ -217,7 +217,7 @@
                         Setups Found: <strong id="scanSignalsCount" class="text-emerald-400">0</strong>
                     </span>
                     <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">
-                        Started: <strong id="scanStartedAt" class="text-indigo-300">--</strong>
+                        Results from: <strong id="scanStartedAt" class="text-indigo-300">--</strong>
                     </span>
                 </div>
             </div>
@@ -2207,7 +2207,13 @@
 
             if (sigsCount) sigsCount.textContent = data.total_signals || 0;
             if (badgeCount) badgeCount.textContent = `${data.total_signals || 0} Found`;
-            if (startedAt) startedAt.textContent = data.started_at || '--';
+            if (startedAt) {
+                const age = data.age_minutes;
+                const ageText = age === null || age === undefined ? '' : (age < 1 ? ' (just now)' : age < 60 ? ` (${age} min ago)` : ` (${Math.floor(age / 60)}h ${age % 60}m ago)`);
+                startedAt.textContent = data.started_at ? `${data.started_at}${ageText}` : '--';
+                startedAt.className = age !== null && age !== undefined && age > 15 ? 'text-amber-300' : 'text-indigo-300';
+                startedAt.title = age > 15 ? 'These results are old. Press the scan button for a fresh scan.' : '';
+            }
 
             // Update terminal log
             const term = document.getElementById('marketScanTerminalLog');

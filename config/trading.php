@@ -230,9 +230,13 @@ return [
         'scan_intervals' => array_values(array_filter(array_map('trim', explode(',', (string) env('STRATEGY_SCAN_INTERVALS', '1h'))))),
         // Timeframes the auto-trader may enter on; the others are scanned for alerts and manual trading only
         'trade_intervals' => array_values(array_filter(array_map('trim', explode(',', (string) env('STRATEGY_TRADE_INTERVALS', '1h'))))),
-        'min_quote_volume_24h' => (float) env('STRATEGY_MIN_VOLUME_24H', 50000000.0),
+        'min_quote_volume_24h' => (float) env('STRATEGY_MIN_VOLUME_24H', 20000000.0),
         'min_listing_days' => 30,
         'min_atr_pct' => 0.35,
+        'min_atr_pct_by_setup' => [
+            // Trend Pullback on quiet coins lost (tight stops, fees eat the R); ATR >= 1.06% won in- and out-of-sample.
+            'TREND_PULLBACK' => (float) env('STRATEGY_PULLBACK_MIN_ATR_PCT', 1.06),
+        ],
         'max_atr_pct' => 4.0,
         'max_adverse_funding' => 0.0005,
         'regime_min_adx' => 18.0,
@@ -250,6 +254,9 @@ return [
         'early_breakout' => [
             'stop_mode' => env('STRATEGY_EARLY_STOP_MODE', 'mid'), // atr | inside | mid: box midpoint tested best (PF 0.78 pessimistic to 1.17 optimistic)
             'anticipate_pct' => (float) env('STRATEGY_EARLY_ANTICIPATE_PCT', 0.15), // enter this % before the breakout level
+            // Watch / alert / early-enter only when the box itself leans the trend's way (edge + structure + volume).
+            // 12-month test: alert direction right 74.5% (was 48.9%); early trades PF 0.87-1.25 -> 1.11-1.18.
+            'require_box_bias' => (bool) env('STRATEGY_EARLY_REQUIRE_BOX_BIAS', true),
             'risk_pct' => (float) env('STRATEGY_EARLY_RISK_PCT', 1.0),
             'max_per_day' => (int) env('STRATEGY_EARLY_MAX_PER_DAY', 3),
             'max_open' => (int) env('STRATEGY_EARLY_MAX_OPEN', 1),
@@ -262,7 +269,14 @@ return [
         'live_requires_proven_setup' => (bool) env('STRATEGY_LIVE_REQUIRES_PROVEN', true),
         'auto_trade_grades' => ['A', 'B'],
         'telegram_grades' => ['A', 'B'],
-        'max_universe' => 120,
+        // 12-month test by volume rank (2026-10-06): Squeeze Breakout won only on the top 10 coins (+0.15R, PF 1.34)
+        // and lost on every lower group; Trend Pullback with ATR >= 1.06% won on ranks 1-50 (+0.15R per group, held
+        // on coins it was not tuned on). So: scan the top 50, breakouts only on the top 10.
+        'max_universe' => (int) env('STRATEGY_MAX_UNIVERSE', 50),
+        'max_volume_rank_by_setup' => [
+            'SQUEEZE_BREAKOUT' => (int) env('STRATEGY_BREAKOUT_MAX_RANK', 10),
+            'EARLY_BREAKOUT' => (int) env('STRATEGY_BREAKOUT_MAX_RANK', 10),
+        ],
         'manual_scan_min_volume_24h' => (float) env('STRATEGY_MANUAL_SCAN_MIN_VOLUME', 5000000.0), // on-demand scanner covers smaller coins too (shown, flagged if below the trading floor)
         'manual_scan_max_symbols' => 200,
         'manual_scan_lookback_bars' => 6,

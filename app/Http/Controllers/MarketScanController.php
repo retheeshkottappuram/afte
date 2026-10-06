@@ -100,8 +100,11 @@ class MarketScanController extends Controller
     public function status(): JsonResponse
     {
         $state = $this->scanner->manualState();
-        $busy = in_array($state['status'] ?? 'IDLE', ['QUEUED', 'RUNNING'], true);
+        $busy = $this->scanner->manualScanBusy();
+        $stalled = $this->scanner->manualScanStalled($state);
         $results = $this->scanner->latestManualResults();
+        $ageMinutes = isset($results['scanned_at']) ? max(0, (int) floor((now()->timestamp - Carbon::parse($results['scanned_at'])->timestamp) / 60)) : null;
+        $queuedFor = ($state['status'] ?? '') === 'QUEUED' ? now()->timestamp - (strtotime((string) ($state['requested_at'] ?? '')) ?: now()->timestamp) : 0;
         $rows = (array) ($results['rows'] ?? []);
         $prices = $this->livePrices();
         $watchlist = Watchlist::symbols();
@@ -118,14 +121,21 @@ class MarketScanController extends Controller
             'Uptrend ('.count($coins('LONG')).'): '.implode(', ', array_slice($coins('LONG'), 0, 30)),
             'Downtrend ('.count($coins('SHORT')).'): '.implode(', ', array_slice($coins('SHORT'), 0, 30)),
             'No clear trend: '.count($coins('NONE')).' coins.',
-            'Coins below $50M daily volume are shown but flagged not tradable for the auto-trader. [COMPLETED]',
+            'Coins below $'.number_format((float) config('trading.strategy.min_quote_volume_24h', 2e7) / 1e6).'M daily volume are shown but flagged not tradable for the auto-trader. [COMPLETED]',
         ]));
 
         if ($busy) {
-            $log = ($state['status'] === 'QUEUED' ? 'Scan queued. Waiting for the background worker (runs every minute via cron)...' : 'Scanning the whole market...')
+            $waiting = $queuedFor > 90
+                ? 'Scan queued '.$queuedFor.'s ago but the background worker has not picked it up. Check that the hosting cron runs `php artisan schedule:run` every minute.'
+                : 'Scan queued. Waiting for the background worker (runs every minute via cron)...';
+            $log = ($state['status'] === 'QUEUED' ? $waiting : 'Scanning the whole market...')
                 .'
 
 Previous results:
+'.$log;
+        } elseif ($stalled) {
+            $log = 'The last scan stopped at '.($state['index'] ?? 0).' / '.($state['total'] ?? 0).' coins without finishing (the server ended the process). It restarts automatically within a minute, or press the scan button.
+
 '.$log;
         } elseif (($state['status'] ?? '') === 'FAILED') {
             $log = 'Last scan failed: '.($state['error'] ?? 'unknown error').'
@@ -148,6 +158,9 @@ Previous results:
             'account' => $this->accountSummary(),
             'log_tail' => $log,
             'started_at' => isset($results['scanned_at']) ? Carbon::parse($results['scanned_at'])->setTimezone('Asia/Kolkata')->format('H:i:s \I\S\T') : null,
+            'scanned_at' => $results['scanned_at'] ?? null,
+            'age_minutes' => $ageMinutes,
+            'queued_seconds' => $queuedFor,
         ]);
     }
 
@@ -199,7 +212,7 @@ Previous results:
             'score_breakdown' => $breakdown,
             'edge_r' => $opportunity['edge_r'] ?? ($stats['expectancy'] ?? null),
             'time' => (int) $s['time'],
-            'age_minutes' => $s['age_minutes'] ?? max(0, (int) round((now()->timestamp - (int) $s['time']) / 60)),
+            'age_minutes' => max(0, (int) round((now()->timestamp - (int) $s['time']) / 60)), // live, not frozen at scan time
             'price_decimals' => $decimals,
             'entry' => $round($entry),
             'now_price' => $now !== null ? $round($now) : null,

@@ -142,13 +142,13 @@ class StrategyEngineTest extends TestCase
     {
         $base = self::randomWalk(700);
         $result = $this->analyze($base, $base['closeTimes'][699] + 1, [
-            'quote_volume_24h' => 20_000_000.0,
+            'quote_volume_24h' => 10_000_000.0,
             'listing_days' => 400,
             'funding_rate' => 0.0001,
         ]);
 
         $this->assertArrayHasKey('liquidity', $result['state']['checklist']);
-        $this->assertFalse($result['state']['checklist']['liquidity']['pass'], '$20M volume is below the $50M liquidity floor');
+        $this->assertFalse($result['state']['checklist']['liquidity']['pass'], '$10M volume is below the $20M liquidity floor');
         $this->assertTrue($result['state']['checklist']['funding']['pass']);
     }
 

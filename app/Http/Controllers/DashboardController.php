@@ -10,7 +10,6 @@ use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\SetupStats;
-use App\Services\Trading\BacktestingEngine;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\RiskManager;
@@ -29,7 +28,6 @@ class DashboardController extends Controller
         protected BinanceFuturesClient $client,
         protected DynamicTradeManager $tradeManager,
         protected RiskManager $riskManager,
-        protected BacktestingEngine $backtestingEngine,
         protected TradingDaemonManager $daemonManager,
         protected ExchangePositionSync $exchangeSync,
         protected TradingModeManager $modeManager,
@@ -576,26 +574,6 @@ class DashboardController extends Controller
                 ? 'Kill switch ACTIVATED. Positions closed.'.($failed !== [] ? ' NOT confirmed closed: '.implode('; ', $failed) : '')
                 : 'Kill switch deactivated. Drawdown reference reset to the current balance.',
         ]);
-    }
-
-    /**
-     * Interactive Backtesting API.
-     */
-    public function runBacktest(Request $request): JsonResponse
-    {
-        @set_time_limit(180);
-        $symbol = strtoupper($request->input('symbol', 'SOLUSDT'));
-        $interval = (string) $request->input('interval', '1h');
-        $limit = max(200, min(4320, (int) $request->input('limit', 2160)));
-        $balance = (float) $request->input('balance', 5.0);
-
-        try {
-            $results = $this->backtestingEngine->run($symbol, $interval, $limit, $balance);
-
-            return response()->json(['success' => true, 'data' => $results]);
-        } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
-        }
     }
 
     /**

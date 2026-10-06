@@ -106,16 +106,16 @@ class MarketScanService
         return ['message' => sprintf('Scanned %d coins, %d active setups from the last %d candles.', count($symbols), $signalCount, $lookbackBars), 'rows' => $rows];
     }
 
+    /** A running on-demand scan with no progress for this long was killed (e.g. a hosting time limit). */
+    public const MANUAL_STALE_SECONDS = 180;
+
     /**
      * Queue an on-demand scan for the cron-run `crypto:scan --manual` (a web request would time out).
-     * Returns false when a scan is already queued or running.
+     * Returns false when a scan is already queued or running (and still making progress).
      */
     public function requestManualScan(): bool
     {
-        $state = $this->manualState();
-        $busySince = strtotime((string) ($state['updated_at'] ?? '')) ?: 0;
-
-        if (in_array($state['status'] ?? 'IDLE', ['QUEUED', 'RUNNING'], true) && now()->timestamp - $busySince < 300) {
+        if ($this->manualScanBusy()) {
             return false;
         }
 
@@ -124,9 +124,36 @@ class MarketScanService
         return true;
     }
 
+    /**
+     * True while a scan is queued, or running and still updating its progress.
+     */
+    public function manualScanBusy(): bool
+    {
+        $state = $this->manualState();
+
+        return in_array($state['status'] ?? 'IDLE', ['QUEUED', 'RUNNING'], true) && ! $this->manualScanStalled($state);
+    }
+
+    /**
+     * A RUNNING scan that stopped updating its progress: the process died mid-scan.
+     *
+     * @param  array<string, mixed>  $state
+     */
+    public function manualScanStalled(array $state): bool
+    {
+        $updated = strtotime((string) ($state['updated_at'] ?? '')) ?: 0;
+
+        return ($state['status'] ?? '') === 'RUNNING' && now()->timestamp - $updated > self::MANUAL_STALE_SECONDS;
+    }
+
+    /**
+     * Should the cron worker run an on-demand scan now: one is queued, or a previous one died mid-scan.
+     */
     public function isManualScanQueued(): bool
     {
-        return ($this->manualState()['status'] ?? 'IDLE') === 'QUEUED';
+        $state = $this->manualState();
+
+        return ($state['status'] ?? 'IDLE') === 'QUEUED' || $this->manualScanStalled($state);
     }
 
     /**

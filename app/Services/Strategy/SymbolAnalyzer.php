@@ -75,6 +75,12 @@ class SymbolAnalyzer
 
         uasort($rows, fn (array $a, array $b): int => $b['quote_volume'] <=> $a['quote_volume']);
 
+        // 1 = most traded. Some setups only have an edge on the most liquid coins.
+        $rank = 0;
+        foreach ($rows as $symbol => $row) {
+            $rows[$symbol]['volume_rank'] = ++$rank;
+        }
+
         return array_slice($rows, 0, $limit, true);
     }
 
@@ -123,7 +129,7 @@ class SymbolAnalyzer
 
                 try {
                     $context = isset($universe[$symbol])
-                        ? ['quote_volume_24h' => $universe[$symbol]['quote_volume'], 'listing_days' => $universe[$symbol]['listing_days'], 'funding_rate' => $universe[$symbol]['funding_rate']]
+                        ? ['quote_volume_24h' => $universe[$symbol]['quote_volume'], 'listing_days' => $universe[$symbol]['listing_days'], 'funding_rate' => $universe[$symbol]['funding_rate'], 'volume_rank' => $universe[$symbol]['volume_rank'] ?? null]
                         : $this->contextFor($symbol);
                     $results[$symbol] = $this->run($symbol, $interval, $bases[$symbol], $regimes[$symbol] ?? null, $btcBase, $btcRegime, $context, $lookback);
                 } catch (Throwable $e) {
@@ -201,7 +207,7 @@ class SymbolAnalyzer
     }
 
     /**
-     * @return array{quote_volume_24h: ?float, listing_days: ?int, funding_rate: ?float}
+     * @return array{quote_volume_24h: ?float, listing_days: ?int, funding_rate: ?float, volume_rank: ?int}
      */
     protected function contextFor(string $symbol): array
     {
@@ -217,6 +223,7 @@ class SymbolAnalyzer
             'quote_volume_24h' => $volume,
             'listing_days' => $this->listingDays($this->market->getExchangeInfo()[$symbol] ?? null),
             'funding_rate' => $this->market->getFundingRates()[$symbol] ?? null,
+            'volume_rank' => $this->universe(1000, 0.0)[$symbol]['volume_rank'] ?? null,
         ];
     }
 

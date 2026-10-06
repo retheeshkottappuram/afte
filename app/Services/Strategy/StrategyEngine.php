@@ -124,7 +124,8 @@ class StrategyEngine
             }
 
             $isLatest = $i === $lastIndex;
-            $signals[] = $this->buildSignal($symbol, $interval, $i, $trigger, $base, $s, $regimeAt[$i], $btc[$i], $isLatest ? $context : []);
+            // Live data (volume, funding) only describes the newest candle; the volume rank is stable enough for every bar.
+            $signals[] = $this->buildSignal($symbol, $interval, $i, $trigger, $base, $s, $regimeAt[$i], $btc[$i], $isLatest ? $context : array_intersect_key($context, ['volume_rank' => true]));
         }
 
         $latest = null;
@@ -253,6 +254,13 @@ class StrategyEngine
         $close = (float) $c['closes'][$k];
         $boxHigh = max(array_slice($c['highs'], $k - 19, 20));
         $boxLow = min(array_slice($c['lows'], $k - 19, 20));
+
+        // The 4h trend alone called the break direction right only ~50% of the time (12-month test);
+        // price at the box edge + rising/falling highs and lows + volume balance agreeing was right ~78%.
+        if (($this->config['early_breakout']['require_box_bias'] ?? true) && $this->boxBias($k, $c, $atr) !== $side) {
+            return null;
+        }
+
         $level = $side === 'LONG' ? $boxHigh * 1.001 : $boxLow * 0.999;
         if (($side === 'LONG' && $close >= $level) || ($side === 'SHORT' && $close <= $level)) {
             return null;
@@ -285,6 +293,66 @@ class StrategyEngine
             'confluences' => $this->confluences($indicators, $side, $context['daily'] ?? null),
             'features' => $this->features('SQUEEZE_BREAKOUT', $side, $indicators, $slPct, (int) $c['closeTimes'][$k] + $barMs, $context),
         ];
+    }
+
+    /**
+     * Which way a 20-bar squeeze box is likely to break, from inside the box: close in the top/bottom quarter,
+     * highs and lows drifting the same way, and more volume on up (or down) candles. Null unless all three agree.
+     *
+     * @param  array<string, array<int, float|int>>  $c
+     */
+    public function boxBias(int $k, array $c, float $atr): ?string
+    {
+        if ($k < 19 || $atr <= 0) {
+            return null;
+        }
+
+        $highs = array_slice($c['highs'], $k - 19, 20);
+        $lows = array_slice($c['lows'], $k - 19, 20);
+        $boxHigh = max($highs);
+        $boxLow = min($lows);
+        if ($boxHigh <= $boxLow) {
+            return null;
+        }
+
+        $position = ((float) $c['closes'][$k] - $boxLow) / ($boxHigh - $boxLow);
+        $edge = $position >= 0.75 ? 'LONG' : ($position <= 0.25 ? 'SHORT' : null);
+
+        $drift = (self::slope($highs) + self::slope($lows)) / $atr;
+        $structure = $drift > 0.02 ? 'LONG' : ($drift < -0.02 ? 'SHORT' : null);
+
+        $upVolume = 0.0;
+        $downVolume = 0.0;
+        for ($j = $k - 19; $j <= $k; $j++) {
+            if ($c['closes'][$j] >= $c['opens'][$j]) {
+                $upVolume += (float) $c['volumes'][$j];
+            } else {
+                $downVolume += (float) $c['volumes'][$j];
+            }
+        }
+        $volume = $upVolume > 1.2 * $downVolume ? 'LONG' : ($downVolume > 1.2 * $upVolume ? 'SHORT' : null);
+
+        return $edge !== null && $edge === $structure && $edge === $volume ? $edge : null;
+    }
+
+    /**
+     * Least-squares slope per bar.
+     *
+     * @param  array<int, float|int>  $values
+     */
+    protected static function slope(array $values): float
+    {
+        $n = count($values);
+        $meanX = ($n - 1) / 2;
+        $meanY = array_sum($values) / $n;
+        $num = 0.0;
+        $den = 0.0;
+        foreach (array_values($values) as $x => $y) {
+            $num += ($x - $meanX) * ((float) $y - $meanY);
+            $den += ($x - $meanX) ** 2;
+        }
+
+        return $den > 0 ? $num / $den : 0.0;
     }
 
     /**
@@ -704,6 +772,8 @@ class StrategyEngine
     protected function evaluateFilters(string $side, array $regime, array $btc, float $atrPct, float $slPct, array $context, ?string $setup = null): array
     {
         $minAtr = (float) $this->config['min_atr_pct'];
+        // Some setups need more movement: on quiet coins the stop is tight, so fees eat a large share of each R.
+        $minAtr = max($minAtr, (float) (((array) ($this->config['min_atr_pct_by_setup'] ?? []))[$setup ?? ''] ?? 0));
         $maxAtr = (float) $this->config['max_atr_pct'];
         $maxSl = $this->maxSlPct($setup);
         $btcBlocked = $side === 'LONG' ? $btc['block_long'] : $btc['block_short'];
@@ -714,6 +784,13 @@ class StrategyEngine
             'volatility' => ['pass' => $atrPct >= $minAtr && $atrPct <= $maxAtr, 'detail' => sprintf('ATR %.2f%% (band %.2f-%.1f%%)', $atrPct, $minAtr, $maxAtr)],
             'stop_width' => ['pass' => $slPct <= $maxSl + 1e-9, 'detail' => sprintf('Stop %.2f%% (max %.2f%%)', $slPct, $maxSl)],
         ];
+
+        // Squeeze breakouts only kept an edge on the most traded coins (12-month test by volume rank).
+        $maxRank = ((array) ($this->config['max_volume_rank_by_setup'] ?? []))[$setup ?? ''] ?? null;
+        $rank = $context['volume_rank'] ?? null;
+        if ($maxRank !== null && $rank !== null) {
+            $filters['volume_rank'] = ['pass' => (int) $rank <= (int) $maxRank, 'detail' => sprintf('Volume rank #%d (this setup: top %d)', $rank, $maxRank)];
+        }
 
         if (array_key_exists('quote_volume_24h', $context) && $context['quote_volume_24h'] !== null) {
             $volume = (float) $context['quote_volume_24h'];

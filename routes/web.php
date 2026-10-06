@@ -40,7 +40,6 @@ Route::middleware('auth')->group(function (): void {
         Route::get('/scan', [DashboardController::class, 'scanMarket'])->name('api.scan');
         Route::get('/live-sync', [DashboardController::class, 'liveSync'])->name('api.live_sync');
         Route::post('/auto-tick', [DashboardController::class, 'autoTick'])->name('api.auto_tick');
-        Route::post('/backtest', [DashboardController::class, 'runBacktest'])->name('api.backtest');
 
         // Trading actions: require the manage_trading permission (admins always pass)
         Route::middleware('permission:manage_trading')->group(function (): void {
