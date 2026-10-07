@@ -253,34 +253,6 @@
         el('card-accuracy-sub').textContent = `${n} resolved signals of the setups currently traded, fees included`;
     }
 
-    /**
-     * TradingView's free embedded widget cannot draw our markers, so this panel lists the current
-     * signal and the recent ones (with times) to match against the TradingView candles.
-     */
-    function renderTvPanel(data) {
-        const panel = el('tvSignalPanel');
-        if (!panel) return;
-        const sig = data.signal;
-        const dec = (v) => fmt(v);
-        const time = (t) => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-
-        const current = sig
-            ? `<div class="font-black ${sig.direction === 'LONG' ? 'text-emerald-300' : 'text-rose-300'}">${sig.direction === 'LONG' ? '▲ BUY' : '▼ SELL'} ${esc(data.symbol)} · ${esc(sig.setup_label)} · Grade ${esc(sig.grade)}</div>
-               <div class="grid grid-cols-2 gap-x-3 mt-1 font-mono tabular-nums">
-                 <span>Entry <b class="text-white">${dec(sig.entry)}</b></span><span>Stop <b class="text-rose-300">${dec(sig.sl)}</b></span>
-                 <span>TP1 <b class="text-emerald-300">${dec(sig.tp1)}</b></span><span>TP2 <b class="text-emerald-300">${dec(sig.tp2)}</b></span>
-               </div>
-               <div class="text-slate-500 mt-0.5">Signal candle: ${time(sig.time)}</div>`
-            : `<div class="text-slate-300">No open signal on ${esc(data.symbol)}. ${esc((data.state && data.state.reason) || '')}</div>`;
-
-        const recent = (data.signal_history || []).filter((h) => !h.is_shadow).slice(-5).reverse()
-            .map((h) => `<div class="flex justify-between gap-2"><span class="${h.side === 'LONG' ? 'text-emerald-300' : 'text-rose-300'}">${h.side === 'LONG' ? '▲' : '▼'} ${time(h.time)}</span><span class="font-mono">${dec(h.entry)}</span><span class="${(h.r_multiple || 0) > 0 ? 'text-emerald-300' : (h.r_multiple === null ? 'text-slate-400' : 'text-rose-300')}">${h.r_multiple === null ? 'open' : (h.r_multiple >= 0 ? '+' : '') + Number(h.r_multiple).toFixed(1) + 'R'}</span></div>`)
-            .join('');
-
-        panel.innerHTML = `${current}${recent ? `<div class="mt-2 pt-1.5 border-t border-slate-700 text-slate-400 font-semibold">Recent signals</div>${recent}` : ''}
-            <div class="mt-1.5 text-[10px] text-slate-500">TradingView's embedded chart can't show our markers; use the Signals chart for drawn signals.</div>`;
-    }
-
     async function postJson(url, body) {
         const token = document.querySelector('meta[name="csrf-token"]')?.content;
         const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': token }, body: JSON.stringify(body) });
@@ -311,7 +283,6 @@
             renderStrip(data);
             renderInspector(data);
             renderAccuracyCard(data.all_setup_stats);
-            renderTvPanel(data);
         },
 
         /** Chart toggle checkbox handler: results / filtered / shadow / levels. */

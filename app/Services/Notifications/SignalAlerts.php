@@ -67,26 +67,41 @@ class SignalAlerts
             return false;
         }
 
-        $rows = [];
-        foreach ($watches as $symbol => $watch) {
+        // Group the box edges by coin (two-sided watches are keyed "SYMBOL:SIDE").
+        $coins = [];
+        foreach ($watches as $key => $watch) {
             $price = (float) ($watch['price'] ?? 0);
             if ($price <= 0) {
                 continue;
             }
-            $rows[] = $watch + ['symbol' => $symbol, 'distance_pct' => abs((float) $watch['level'] - $price) / $price * 100];
+            $symbol = (string) ($watch['symbol'] ?? $key);
+            $coins[$symbol]['symbol'] = $symbol;
+            $coins[$symbol]['price'] = $price;
+            $coins[$symbol]['bias'] = $watch['bias'] ?? null;
+            $coins[$symbol]['sides'][$watch['side']] = (float) $watch['level'];
+            $distance = abs((float) $watch['level'] - $price) / $price * 100;
+            $coins[$symbol]['distance_pct'] = min($coins[$symbol]['distance_pct'] ?? INF, $distance);
         }
-        usort($rows, fn (array $a, array $b): int => $a['distance_pct'] <=> $b['distance_pct']);
+        usort($coins, fn (array $a, array $b): int => $a['distance_pct'] <=> $b['distance_pct']);
 
         $lines = [];
-        foreach ($rows as $row) {
-            if (count($lines) >= 8 || ! Cache::add("tg:coiled:{$row['symbol']}:{$row['side']}", true, now()->addHours(6))) {
+        foreach ($coins as $coin) {
+            if (count($lines) >= 8 || ! Cache::add("tg:coiled:{$coin['symbol']}", true, now()->addHours(6))) {
                 continue;
             }
-            $isLong = $row['side'] === 'LONG';
-            $level = (float) $row['level'];
-            $stopPct = isset($row['box_high'], $row['box_low']) ? abs($level - ((float) $row['box_high'] + (float) $row['box_low']) / 2) / $level * 100 : 1.2 * (float) $row['atr'] / $level * 100;
-            $lines[] = sprintf('%s <b>%s</b> %s <code>%s</code> · now %s (%.1f%% away) · stop ≈%.1f%%',
-                $isLong ? '🟢' : '🔴', $row['symbol'], $isLong ? '▲ above' : '▼ below', $this->fmt($level), $this->fmt((float) $row['price']), $row['distance_pct'], $stopPct);
+            $levels = [];
+            if (isset($coin['sides']['LONG'])) {
+                $levels[] = '🟢 ▲ above <code>'.$this->fmt($coin['sides']['LONG']).'</code>';
+            }
+            if (isset($coin['sides']['SHORT'])) {
+                $levels[] = '🔴 ▼ below <code>'.$this->fmt($coin['sides']['SHORT']).'</code>';
+            }
+            $lean = match ($coin['bias']) {
+                'LONG' => ' · leans up',
+                'SHORT' => ' · leans down',
+                default => '',
+            };
+            $lines[] = sprintf('<b>%s</b> now %s · %s%s', $coin['symbol'], $this->fmt($coin['price']), implode(' / ', $levels), $lean);
         }
 
         if ($lines === []) {
@@ -94,10 +109,10 @@ class SignalAlerts
         }
 
         $auto = (bool) config('trading.strategy.intrabar_breakouts', true)
-            ? 'The bot enters early breakouts automatically (half risk, max '.(int) config('trading.strategy.early_breakout.max_per_day', 3).'/day).'
+            ? 'The bot enters confirmed breakouts automatically (1% risk, max '.(int) config('trading.strategy.early_breakout.max_per_day', 3).'/day).'
             : 'The bot trades only the confirmed candle close.';
 
-        return $this->gateway->send("🔭 <b>Coiled for a breakout</b> (this 1h candle)\n".implode("\n", $lines)."\n\nOnly coins where price sits at the box edge, highs and lows lean the same way and volume agrees: in a 12-month test about 3 in 4 broke in the alerted direction (not every break keeps going). Volume must confirm. {$auto}") !== null;
+        return $this->gateway->send("🔭 <b>Coiled for a breakout</b> (this 1h candle)\n".implode("\n", $lines)."\n\nA squeeze can break either way. The direction is confirmed only by the ⚡ BREAKING OUT alert (price through the level with volume). \"Leans\" marks the side the box tilts toward (price at that edge, highs/lows and volume agreeing). {$auto}") !== null;
     }
 
     /**

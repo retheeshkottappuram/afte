@@ -290,7 +290,7 @@ class RiskManager
 
             $maxConsecutive = (int) config('trading.circuit_breakers.max_consecutive_losses', 3);
             if ($account->consecutive_losses >= $maxConsecutive) {
-                $minutes = (int) config('trading.circuit_breakers.loss_cooldown_minutes', 720);
+                $minutes = (int) config('trading.circuit_breakers.loss_cooldown_minutes', 360);
                 $this->pause($account, Carbon::now()->addMinutes($minutes), "{$account->consecutive_losses} losses in a row");
             }
         }

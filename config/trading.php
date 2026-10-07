@@ -121,7 +121,7 @@ return [
     */
     'circuit_breakers' => [
         'max_consecutive_losses' => (int) env('TRADING_MAX_CONSECUTIVE_LOSSES', 3),
-        'loss_cooldown_minutes' => (int) env('TRADING_LOSS_COOLDOWN_MINUTES', 720), // 12h pause after a losing streak
+        'loss_cooldown_minutes' => (int) env('TRADING_LOSS_COOLDOWN_MINUTES', 360), // 6h pause after a losing streak (no revenge trading)
         'max_daily_loss_pct' => (float) env('TRADING_MAX_DAILY_LOSS_PCT', 6.0),     // No new entries after -6% on the UTC day
         'max_drawdown_pct' => (float) env('TRADING_MAX_DRAWDOWN_PCT', 30.0),        // Kill switch at -30% from peak equity
         'emergency_kill_switch' => (bool) env('TRADING_KILL_SWITCH', false),
@@ -256,11 +256,22 @@ return [
             'anticipate_pct' => (float) env('STRATEGY_EARLY_ANTICIPATE_PCT', 0.15), // enter this % before the breakout level
             // Watch / alert / early-enter only when the box itself leans the trend's way (edge + structure + volume).
             // 12-month test: alert direction right 74.5% (was 48.9%); early trades PF 0.87-1.25 -> 1.11-1.18.
+            // (one-sided mode only)
             'require_box_bias' => (bool) env('STRATEGY_EARLY_REQUIRE_BOX_BIAS', true),
+            // User's decision (2026-10-07): watch and alert both box edges on every squeezed coin (no 4h-trend
+            // requirement); the volume-confirmed break picks the side. false = trend side only (needs box bias).
+            'two_sided' => (bool) env('STRATEGY_EARLY_TWO_SIDED', true),
+            // User's decision (2026-10-07): auto-trade early breakouts even when their measured edge is negative.
+            'ignore_min_edge' => (bool) env('STRATEGY_EARLY_IGNORE_MIN_EDGE', true),
+            // 12-month test, top 50 (2026-10-07): trading every two-sided breakout = ~17/week, PF 0.70-1.07,
+            // $5 -> $0.98-$6.14, max DD 36-81%. Only the trend + box-bias + top-10 subset: ~3/week, PF 1.39-1.58,
+            // $5 -> $6.27-$6.87, max DD 5-7%. false = alert every breakout, trade only that subset.
+            'trade_all_breakouts' => (bool) env('STRATEGY_EARLY_TRADE_ALL', true),
             'risk_pct' => (float) env('STRATEGY_EARLY_RISK_PCT', 1.0),
-            'max_per_day' => (int) env('STRATEGY_EARLY_MAX_PER_DAY', 3),
+            'max_per_day' => (int) env('STRATEGY_EARLY_MAX_PER_DAY', 8),
             'max_open' => (int) env('STRATEGY_EARLY_MAX_OPEN', 1),
-            'pause_after_losses' => (int) env('STRATEGY_EARLY_PAUSE_AFTER_LOSSES', 5),
+            // 0 = no separate pause; the global 3-loss cooldown (circuit_breakers) applies instead.
+            'pause_after_losses' => (int) env('STRATEGY_EARLY_PAUSE_AFTER_LOSSES', 0),
         ],
         'core_setups' => ['TREND_PULLBACK', 'SQUEEZE_BREAKOUT', 'EARLY_BREAKOUT'],
         'min_setup_expectancy_r' => (float) env('STRATEGY_MIN_SETUP_EXPECTANCY_R', 0.05), // pause setups below this measured edge
@@ -275,7 +286,8 @@ return [
         'max_universe' => (int) env('STRATEGY_MAX_UNIVERSE', 50),
         'max_volume_rank_by_setup' => [
             'SQUEEZE_BREAKOUT' => (int) env('STRATEGY_BREAKOUT_MAX_RANK', 10),
-            'EARLY_BREAKOUT' => (int) env('STRATEGY_BREAKOUT_MAX_RANK', 10),
+            // Early breakouts: every coin scanned (user's decision 2026-10-07).
+            'EARLY_BREAKOUT' => (int) env('STRATEGY_EARLY_MAX_RANK', 50),
         ],
         'manual_scan_min_volume_24h' => (float) env('STRATEGY_MANUAL_SCAN_MIN_VOLUME', 5000000.0), // on-demand scanner covers smaller coins too (shown, flagged if below the trading floor)
         'manual_scan_max_symbols' => 200,

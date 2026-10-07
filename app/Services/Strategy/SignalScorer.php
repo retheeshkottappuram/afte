@@ -69,12 +69,22 @@ class SignalScorer
             return ['allowed' => false, 'reason' => "{$signal->interval} signals are alerts-only: this timeframe has not passed its backtest for auto-trading."];
         }
 
-        if (! $this->stats->isActive($signal->setup, $signal->interval)) {
+        // User's decision (2026-10-07): trade every confirmed early breakout, even with a negative measured edge.
+        // The 3-loss cooldown, daily loss cap and drawdown kill switch still apply.
+        $earlyExempt = self::ignoresMinEdge($signal->setup);
+
+        // Two-sided breakouts are always alerted; trading them all lost in the 12-month test (PF 0.70-1.07),
+        // so unless switched on, only the trend + box-bias + top-10 subset (PF 1.39-1.58) is traded.
+        if ($signal->setup === 'EARLY_BREAKOUT' && ! config('trading.strategy.early_breakout.trade_all_breakouts', true) && ! ($signal->features['proven_subset'] ?? true)) {
+            return ['allowed' => false, 'reason' => 'Alert only: breakout against the 4h trend / box lean or outside the top 10 coins (this group lost in the 12-month test).'];
+        }
+        if (! $earlyExempt && ! $this->stats->isActive($signal->setup, $signal->interval)) {
             return ['allowed' => false, 'reason' => sprintf('%s is paused: measured edge is below %+.2fR per trade.', $signal->setupLabel, SetupStats::minEdge())];
         }
 
         $grades = (array) config('trading.strategy.auto_trade_grades', ['A', 'B']);
-        if (! in_array($signal->grade, $grades, true)) {
+        // Grade C on a proven setup means a negative measured edge, which early breakouts trade anyway (above).
+        if (! in_array($signal->grade, $grades, true) && ! ($earlyExempt && $signal->confluences !== [])) {
             return ['allowed' => false, 'reason' => "Grade {$signal->grade} is below the auto-trade threshold."];
         }
 
@@ -92,6 +102,14 @@ class SignalScorer
         }
 
         return ['allowed' => true, 'reason' => 'Signal approved.'];
+    }
+
+    /**
+     * Setups the auto-trader takes regardless of their measured edge (early breakouts, by the user's choice).
+     */
+    public static function ignoresMinEdge(string $setup): bool
+    {
+        return $setup === 'EARLY_BREAKOUT' && (bool) config('trading.strategy.early_breakout.ignore_min_edge', true);
     }
 
     /**

@@ -1,0 +1,7 @@
+Server steps:
+
+git pull
+Check the server .env. .env.example had TRADING_LOSS_COOLDOWN_MINUTES=20 and TRADING_MAX_CONSECUTIVE_LOSSES=4, and those override the new defaults. Set them to 360 and 3, or delete both lines.
+php artisan config:clear
+php artisan trade:backtest --top=50 --months=12 --seed
+After a few days, run php artisan trade:diagnose --days=3 and paste the output.

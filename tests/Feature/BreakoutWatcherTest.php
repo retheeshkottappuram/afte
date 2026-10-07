@@ -79,6 +79,20 @@ class BreakoutWatcherTest extends TestCase
         $this->assertCount(1, app(BreakoutWatcher::class)->watching());
     }
 
+    public function test_when_one_edge_breaks_the_other_edge_of_that_coin_stops_being_watched(): void
+    {
+        $this->fakeMarket(100.5, 900);
+        $short = ['side' => 'SHORT', 'level' => 95.0] + $this->watch();
+        app(BreakoutWatcher::class)->store('1h', ['SOLUSDT:LONG' => $this->watch(), 'SOLUSDT:SHORT' => $short]);
+        $this->assertSame(1, app(BreakoutWatcher::class)->watchingCoins());
+
+        $fresh = app(BreakoutWatcher::class)->check();
+
+        $this->assertCount(1, $fresh);
+        $this->assertSame('LONG', $fresh[0]['signal']->side);
+        $this->assertSame([], app(BreakoutWatcher::class)->watching());
+    }
+
     public function test_watch_list_expires_with_its_candle(): void
     {
         app(BreakoutWatcher::class)->store('1h', ['SOLUSDT' => $this->watch()]);

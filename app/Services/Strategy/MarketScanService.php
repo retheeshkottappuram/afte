@@ -266,8 +266,9 @@ class MarketScanService
             $latest = $result['latest'] ?? null;
             $record = null;
 
-            if (! empty($result['watch'])) {
-                $watches[$symbol] = $result['watch'] + ['price' => $result['state']['price'] ?? null];
+            // Up to two watches per coin (one per box edge), keyed "SYMBOL:SIDE".
+            foreach ((array) ($result['watches'] ?? []) as $watch) {
+                $watches[$symbol.':'.$watch['side']] = $watch + ['price' => $result['state']['price'] ?? null];
             }
 
             if ($latest !== null) {
@@ -299,11 +300,11 @@ class MarketScanService
             'universe_size' => count($universe),
             'symbols_scanned' => count($results),
             'fresh_signals' => count($fresh),
-            'watching' => count($watches),
+            'watching' => BreakoutWatcher::coinCount($watches),
             'rows' => $rows,
         ]);
 
-        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), count($watches)), 'fresh' => $fresh, 'rows' => $rows, 'watches' => $watches];
+        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), BreakoutWatcher::coinCount($watches)), 'fresh' => $fresh, 'rows' => $rows, 'watches' => $watches];
     }
 
     /**
@@ -334,7 +335,7 @@ class MarketScanService
             (bool) ($signal['is_shadow'] ?? false) => 'Not auto-traded: tracked-only setup',
             ! (bool) ($signal['tradable'] ?? false) => 'Not auto-traded: filters failed',
             ! in_array($interval, SignalScorer::tradeIntervals(), true) => "Not auto-traded: {$interval} signals are alerts-only (trade them manually)",
-            ! $this->stats->isActive($setup, $interval) => sprintf('Not auto-traded: %s is paused (%+.2fR avg per trade)', StrategyEngine::SETUP_LABELS[$setup] ?? $setup, (float) ($stats['expectancy'] ?? 0)),
+            ! SignalScorer::ignoresMinEdge($setup) && ! $this->stats->isActive($setup, $interval) => sprintf('Not auto-traded: %s is paused (%+.2fR avg per trade)', StrategyEngine::SETUP_LABELS[$setup] ?? $setup, (float) ($stats['expectancy'] ?? 0)),
             ! in_array($signal['grade'] ?? 'C', (array) config('trading.strategy.auto_trade_grades', ['A', 'B']), true) => "Not auto-traded: grade {$signal['grade']} (the bot takes A and B)",
             default => 'Earlier candle: the auto-trader only acts right after the signal candle closes',
         };

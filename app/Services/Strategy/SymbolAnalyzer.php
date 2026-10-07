@@ -179,7 +179,7 @@ class SymbolAnalyzer
             'latest' => $latest,
             'state' => $analysis['state'],
             'series' => $analysis['series'],
-            'watch' => $analysis['watch'] ?? null,
+            'watches' => $analysis['watches'] ?? [],
             'candles' => $base,
             'regime_candles' => $regime,
         ];

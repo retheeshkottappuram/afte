@@ -137,7 +137,7 @@ class StrategyEngine
         }
 
         // Coin is coiled for a breakout on the candle now forming (unless a squeeze signal fired recently).
-        $watch = null;
+        $watches = [];
         $suppressed = false;
         for ($j = $n - self::REPEAT_SUPPRESS_BARS; $j < $n; $j++) {
             foreach ($raw[$j] ?? [] as $previous) {
@@ -145,7 +145,7 @@ class StrategyEngine
             }
         }
         if (! $suppressed) {
-            $watch = $this->watchCandidate($symbol, $interval, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context);
+            $watches = $this->watchCandidates($symbol, $interval, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context);
         }
 
         return [
@@ -153,7 +153,7 @@ class StrategyEngine
             'latest' => $latest,
             'state' => $this->currentState($symbol, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context, $latest),
             'series' => $s,
-            'watch' => $watch,
+            'watches' => $watches,
         ];
     }
 
@@ -192,22 +192,25 @@ class StrategyEngine
         $volumeFilter = (bool) ($options['volume_filter'] ?? false);
 
         for ($i = 105; $i < $n; $i++) {
-            $watch = $this->watchCandidate($symbol, $interval, $i - 1, $base, $s, $regimeAt[$i - 1], $btc[$i - 1], $context);
-            if ($watch === null || $i - $lastFired[$watch['side']] <= self::REPEAT_SUPPRESS_BARS) {
-                continue;
-            }
+            foreach ($this->watchCandidates($symbol, $interval, $i - 1, $base, $s, $regimeAt[$i - 1], $btc[$i - 1], $context) as $watch) {
+                if ($i - $lastFired[$watch['side']] <= self::REPEAT_SUPPRESS_BARS) {
+                    continue;
+                }
 
-            $trigger = $this->triggerPrice($watch, $options['anticipate_pct'] ?? null);
-            $crossed = $watch['side'] === 'LONG' ? $base['highs'][$i] >= $trigger : $base['lows'][$i] <= $trigger;
-            // Approximates the live volume-pace check with the whole candle's volume (optimistic).
-            if (! $crossed || ($volumeFilter && $base['volumes'][$i] < 1.5 * $watch['vol_sma'])) {
-                continue;
-            }
+                $trigger = $this->triggerPrice($watch, $options['anticipate_pct'] ?? null);
+                $crossed = $watch['side'] === 'LONG' ? $base['highs'][$i] >= $trigger : $base['lows'][$i] <= $trigger;
+                // Approximates the live volume-pace check with the whole candle's volume (optimistic).
+                if (! $crossed || ($volumeFilter && $base['volumes'][$i] < 1.5 * $watch['vol_sma'])) {
+                    continue;
+                }
 
-            // A gap through the trigger fills at the open, not at the trigger.
-            $entry = $watch['side'] === 'LONG' ? max($trigger, $base['opens'][$i]) : min($trigger, $base['opens'][$i]);
-            $signals[] = $this->intrabarSignal($watch, $entry, intdiv((int) $base['closeTimes'][$i], 1000), $options['stop_mode'] ?? null);
-            $lastFired[$watch['side']] = $i;
+                // A gap through the trigger fills at the open, not at the trigger.
+                $entry = $watch['side'] === 'LONG' ? max($trigger, $base['opens'][$i]) : min($trigger, $base['opens'][$i]);
+                $signals[] = $this->intrabarSignal($watch, $entry, intdiv((int) $base['closeTimes'][$i], 1000), $options['stop_mode'] ?? null);
+                $lastFired[$watch['side']] = $i;
+                // A candle that runs through both edges can't be judged from candle data: take the first side only.
+                break;
+            }
         }
 
         return $signals;
@@ -227,72 +230,94 @@ class StrategyEngine
     }
 
     /**
-     * Breakout watch entry for the candle after bar k: the coin is in a squeeze, every market filter
-     * passes for the trend side, and price has not broken out yet. Null when there is nothing to watch.
+     * Breakout watches for the candle after bar k: the coin is in a squeeze, price has not broken out yet,
+     * and every market filter passes for that side. Two-sided (default): both box edges are watched and
+     * the 4h trend is not required, so a break either way is caught; the box bias only marks the likelier
+     * side. One-sided: only the trend side, and only when the box bias agrees. Likelier side first.
      *
      * @param  array<string, array<int, float|int>>  $c
      * @param  array<string, array<int, float|null>>  $s
      * @param  array{side: string, adx: ?float, detail: string}  $regime
      * @param  array{block_long: bool, block_short: bool, state: string, returns_24: ?float}  $btc
      * @param  array<string, mixed>  $context
-     * @return array<string, mixed>|null
+     * @return array<int, array<string, mixed>>
      */
-    protected function watchCandidate(string $symbol, string $interval, int $k, array $c, array $s, array $regime, array $btc, array $context): ?array
+    protected function watchCandidates(string $symbol, string $interval, int $k, array $c, array $s, array $regime, array $btc, array $context): array
     {
-        $side = $regime['side'];
         $atr = (float) ($s['atr'][$k] ?? 0);
         $volSma = (float) ($s['vol_sma'][$k] ?? 0);
-        if ($k < 104 || ! in_array($side, ['LONG', 'SHORT'], true) || $atr <= 0 || $volSma <= 0) {
-            return null;
+        if ($k < 104 || $atr <= 0 || $volSma <= 0) {
+            return [];
         }
 
         $squeezePct = $this->recentSqueezePercentile($k + 1, $s['bbw']);
         if ($squeezePct === null || $squeezePct > 0.20) {
-            return null;
+            return [];
+        }
+
+        $twoSided = (bool) ($this->config['early_breakout']['two_sided'] ?? true);
+        $bias = $this->boxBias($k, $c, $atr);
+        if ($twoSided) {
+            $sides = $bias === 'SHORT' ? ['SHORT', 'LONG'] : ['LONG', 'SHORT'];
+        } else {
+            // The 4h trend alone called the break direction right only ~50% of the time (12-month test);
+            // price at the box edge + rising/falling highs and lows + volume balance agreeing was right ~78%.
+            $side = $regime['side'];
+            $biasOk = ! ($this->config['early_breakout']['require_box_bias'] ?? true) || $bias === $side;
+            $sides = in_array($side, ['LONG', 'SHORT'], true) && $biasOk ? [$side] : [];
         }
 
         $close = (float) $c['closes'][$k];
         $boxHigh = max(array_slice($c['highs'], $k - 19, 20));
         $boxLow = min(array_slice($c['lows'], $k - 19, 20));
-
-        // The 4h trend alone called the break direction right only ~50% of the time (12-month test);
-        // price at the box edge + rising/falling highs and lows + volume balance agreeing was right ~78%.
-        if (($this->config['early_breakout']['require_box_bias'] ?? true) && $this->boxBias($k, $c, $atr) !== $side) {
-            return null;
-        }
-
-        $level = $side === 'LONG' ? $boxHigh * 1.001 : $boxLow * 0.999;
-        if (($side === 'LONG' && $close >= $level) || ($side === 'SHORT' && $close <= $level)) {
-            return null;
-        }
-
-        $slPct = max((float) $this->config['min_sl_pct'], 1.2 * $atr / $level * 100);
-        $filters = $this->evaluateFilters($side, $regime, $btc, $atr / $close * 100, $slPct, $context, 'SQUEEZE_BREAKOUT');
-        foreach ($filters as $filter) {
-            if (! $filter['pass']) {
-                return null;
-            }
-        }
-
-        $indicators = $this->indicatorsAt($k, $c, $s, $regime, $btc, $side);
         $barMs = (int) $c['closeTimes'][$k] - (int) $c['closeTimes'][$k - 1];
+        $watches = [];
 
-        return [
-            'symbol' => $symbol,
-            'interval' => $interval,
-            'side' => $side,
-            'level' => $level,
-            'box_high' => $boxHigh,
-            'box_low' => $boxLow,
-            'atr' => $atr,
-            'vol_sma' => $volSma,
-            'bar_open_ms' => (int) $c['closeTimes'][$k] + 1,
-            'bar_close_ms' => (int) $c['closeTimes'][$k] + $barMs,
-            'filters' => $filters,
-            'indicators' => $indicators,
-            'confluences' => $this->confluences($indicators, $side, $context['daily'] ?? null),
-            'features' => $this->features('SQUEEZE_BREAKOUT', $side, $indicators, $slPct, (int) $c['closeTimes'][$k] + $barMs, $context),
-        ];
+        foreach ($sides as $side) {
+            $level = $side === 'LONG' ? $boxHigh * 1.001 : $boxLow * 0.999;
+            if (($side === 'LONG' && $close >= $level) || ($side === 'SHORT' && $close <= $level)) {
+                continue;
+            }
+
+            $slPct = max((float) $this->config['min_sl_pct'], 1.2 * $atr / $level * 100);
+            $filters = $this->evaluateFilters($side, $regime, $btc, $atr / $close * 100, $slPct, $context, $twoSided ? 'EARLY_BREAKOUT' : 'SQUEEZE_BREAKOUT');
+            if ($twoSided) {
+                // A squeeze can break either way; the break itself (with volume) decides the side.
+                $filters['regime'] = ['pass' => true, 'detail' => $regime['detail'].' (not required: either-way breakout)'];
+            }
+            foreach ($filters as $filter) {
+                if (! $filter['pass']) {
+                    continue 2;
+                }
+            }
+
+            // The subset that kept an edge in the 12-month test: 4h trend and box bias on this side, top-10 coin.
+            $topRank = ((array) ($this->config['max_volume_rank_by_setup'] ?? []))['SQUEEZE_BREAKOUT'] ?? null;
+            $rank = $context['volume_rank'] ?? null;
+            $proven = $regime['side'] === $side && $bias === $side && ($topRank === null || $rank === null || (int) $rank <= (int) $topRank);
+
+            $indicators = $this->indicatorsAt($k, $c, $s, $regime, $btc, $side);
+            $watches[] = [
+                'symbol' => $symbol,
+                'interval' => $interval,
+                'side' => $side,
+                'bias' => $bias,
+                'proven_subset' => $proven,
+                'level' => $level,
+                'box_high' => $boxHigh,
+                'box_low' => $boxLow,
+                'atr' => $atr,
+                'vol_sma' => $volSma,
+                'bar_open_ms' => (int) $c['closeTimes'][$k] + 1,
+                'bar_close_ms' => (int) $c['closeTimes'][$k] + $barMs,
+                'filters' => $filters,
+                'indicators' => $indicators,
+                'confluences' => $this->confluences($indicators, $side, $context['daily'] ?? null),
+                'features' => $this->features('SQUEEZE_BREAKOUT', $side, $indicators, $slPct, (int) $c['closeTimes'][$k] + $barMs, $context),
+            ];
+        }
+
+        return $watches;
     }
 
     /**
@@ -391,6 +416,7 @@ class StrategyEngine
         $features['sl_pct'] = round($slPct, 3);
         // Edge of the squeeze box: a candle closing back inside it means the breakout failed.
         $features['box_edge'] = (float) ($side === 'LONG' ? ($watch['box_high'] ?? $watch['level']) : ($watch['box_low'] ?? $watch['level']));
+        $features['proven_subset'] = (bool) ($watch['proven_subset'] ?? true);
 
         return new Signal(
             symbol: (string) $watch['symbol'],

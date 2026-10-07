@@ -53,7 +53,7 @@ class BreakoutWatcher
     /**
      * Replace the watch list after an hourly scan.
      *
-     * @param  array<string, array<string, mixed>>  $watches  Keyed by symbol, from StrategyEngine::watchCandidate()
+     * @param  array<string, array<string, mixed>>  $watches  Keyed "SYMBOL:SIDE" (or symbol), from StrategyEngine::watchCandidates()
      */
     public function store(string $interval, array $watches): void
     {
@@ -84,6 +84,27 @@ class BreakoutWatcher
     }
 
     /**
+     * Number of distinct coins being watched (a coin can be watched on both box edges).
+     */
+    public function watchingCoins(): int
+    {
+        return self::coinCount($this->watching());
+    }
+
+    /**
+     * @param  array<string|int, array<string, mixed>>  $watches
+     */
+    public static function coinCount(array $watches): int
+    {
+        $symbols = [];
+        foreach ($watches as $key => $watch) {
+            $symbols[(string) ($watch['symbol'] ?? $key)] = true;
+        }
+
+        return count($symbols);
+    }
+
+    /**
      * Check every watched coin against its live price and return the breakouts that triggered.
      *
      * @return array<int, array{signal: Signal, record: CryptoSignal, level: float, volume_pace: float}>
@@ -102,7 +123,11 @@ class BreakoutWatcher
         }
 
         $fresh = [];
-        foreach ($coins as $symbol => $watch) {
+        foreach ($coins as $key => $watch) {
+            $symbol = (string) ($watch['symbol'] ?? $key);
+            if (! isset($coins[$key])) {
+                continue; // the other edge of this coin already fired this candle
+            }
             $price = $prices[$symbol] ?? 0.0;
             $isLong = $watch['side'] === 'LONG';
             $trigger = $this->engine->triggerPrice($watch);
@@ -118,7 +143,8 @@ class BreakoutWatcher
 
                 $signal = $this->scorer->score($this->engine->intrabarSignal($watch, $price, intdiv((int) $watch['bar_close_ms'], 1000)));
                 $fresh[] = ['signal' => $signal, 'record' => $this->ledger->record($signal, 'watcher'), 'level' => (float) $watch['level'], 'volume_pace' => $pace];
-                unset($coins[$symbol]);
+                // One breakout per coin per candle: stop watching the opposite edge too.
+                $coins = array_filter($coins, fn (array $other, string|int $otherKey): bool => (string) ($other['symbol'] ?? $otherKey) !== $symbol, ARRAY_FILTER_USE_BOTH);
             } catch (Throwable $e) {
                 Log::warning("[BreakoutWatcher] {$symbol}: {$e->getMessage()}");
             }

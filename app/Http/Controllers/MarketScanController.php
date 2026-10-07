@@ -48,7 +48,8 @@ class MarketScanController extends Controller
         $mode = $this->modeManager->activeMode();
         $coins = [];
 
-        foreach ($watcher->watching() as $symbol => $watch) {
+        foreach ($watcher->watching() as $key => $watch) {
+            $symbol = (string) ($watch['symbol'] ?? $key);
             $price = $prices[$symbol] ?? (float) ($watch['price'] ?? 0);
             $trigger = $engine->triggerPrice($watch);
             $isLong = $watch['side'] === 'LONG';

@@ -174,7 +174,7 @@ class TradingDaemonCommand extends Command
                     'paused_reason' => $pausedReason ?? (! $account->is_running ? 'Auto-trading is stopped (open trades are still managed).' : null),
                     'open_trades' => Trade::where('status', 'OPEN')->count(),
                     'cycle_ms' => (int) round((microtime(true) - $passStarted) * 1000),
-                    'watching' => BreakoutWatcher::enabled() ? count($watcher->watching()) : 0,
+                    'watching' => BreakoutWatcher::enabled() ? $watcher->watchingCoins() : 0,
                     'next_scan_at' => $this->nextScanAt(MarketScanService::scanIntervals()),
                 ] + $stats);
 

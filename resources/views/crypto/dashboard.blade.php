@@ -662,8 +662,6 @@
             <!-- 2. TradingView Iframe Widget (Alternative mode) -->
             <div id="tradingview_futures_chart" class="hidden w-full h-full relative"></div>
 
-            <!-- Signal panel shown over the TradingView chart (its embedded widget cannot draw our markers) -->
-            <div id="tvSignalPanel" class="hidden absolute top-12 left-2 z-20 max-w-[19rem] p-2.5 rounded-xl bg-slate-950/95 border border-slate-700 text-[11px] text-slate-300 shadow-2xl pointer-events-auto"></div>
         </div>
     </div>
 
@@ -886,7 +884,6 @@
             tvTab.className = 'px-3 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white flex items-center space-x-1.5';
             algoContainer.classList.remove('hidden');
             tvContainer.classList.add('hidden');
-            document.getElementById('tvSignalPanel')?.classList.add('hidden');
             if (tooltip) tooltip.classList.remove('hidden');
             if (legend) legend.classList.remove('hidden');
 
@@ -899,7 +896,6 @@
             algoTab.className = 'px-3 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white flex items-center space-x-1.5';
             algoContainer.classList.add('hidden');
             tvContainer.classList.remove('hidden');
-            document.getElementById('tvSignalPanel')?.classList.remove('hidden');
             if (tooltip) tooltip.classList.add('hidden');
             if (legend) legend.classList.add('hidden');
 
@@ -1192,7 +1188,23 @@
         }
     }
 
+    // Coin and timeframe changes can both rebuild the widget at once; only the latest request may render,
+    // into a fresh inner container, so a slower earlier widget can't leave the wrong coin on screen.
+    let tvWidgetTimer = null;
+    let tvWidgetSeq = 0;
+
     function initTradingViewWidget(symbol) {
+        clearTimeout(tvWidgetTimer);
+        tvWidgetTimer = setTimeout(() => renderTradingViewWidget(symbol), 150);
+    }
+
+    function renderTradingViewWidget(symbol) {
+        const host = document.getElementById('tradingview_futures_chart');
+        if (!host || typeof TradingView === 'undefined') return;
+
+        const containerId = 'tradingview_widget_' + (++tvWidgetSeq);
+        host.innerHTML = `<div id="${containerId}" class="w-full h-full"></div>`;
+
         const tvSymbol = 'BINANCE:' + symbol + '.P';
         const tvInterval = mapIntervalToTv(activeInterval);
 
@@ -1208,7 +1220,8 @@
             "enable_publishing": false,
             "withdateranges": true,
             "hide_side_toolbar": false,
-            "allow_symbol_change": true,
+            // The coin buttons pick the symbol; TradingView's own search kept a different coin on screen.
+            "allow_symbol_change": false,
             "details": true,
             "hotlist": false,
             "calendar": false,
@@ -1216,7 +1229,7 @@
                 "MASimple@tv-basicstudies",
                 "RSI@tv-basicstudies"
             ],
-            "container_id": "tradingview_futures_chart"
+            "container_id": containerId
         });
     }
 

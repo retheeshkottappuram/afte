@@ -80,6 +80,22 @@ class BreakoutAlertsTest extends TestCase
         $this->assertStringContainsString('ENAUSDT', $messages[0]['text']);
     }
 
+    public function test_a_coin_watched_on_both_edges_is_one_line_with_both_levels(): void
+    {
+        $alerts = app(SignalAlerts::class);
+        $long = $this->watch('SOLUSDT', 'LONG', 100.0, 99.0) + ['bias' => 'SHORT'];
+        $short = $this->watch('SOLUSDT', 'SHORT', 97.0, 99.0) + ['bias' => 'SHORT'];
+
+        $this->assertTrue($alerts->breakoutWatchAlert(['SOLUSDT:LONG' => $long, 'SOLUSDT:SHORT' => $short]));
+
+        $text = $this->telegramMessages()[0]['text'];
+        $this->assertSame(1, substr_count($text, '<b>SOLUSDT</b>'));
+        $this->assertStringContainsString('▲ above <code>100', $text);
+        $this->assertStringContainsString('▼ below <code>97', $text);
+        $this->assertStringContainsString('leans down', $text);
+        $this->assertStringContainsString('can break either way', $text);
+    }
+
     public function test_no_breakout_alerts_when_alerts_are_switched_off(): void
     {
         Watchlist::setAlertsEnabled(false);
@@ -122,13 +138,27 @@ class BreakoutAlertsTest extends TestCase
         $this->assertStringContainsString('already 1 open', EarlyBreakoutGuard::blockReason('paper'));
 
         Trade::query()->update(['status' => 'CLOSED', 'closed_at' => now(), 'net_pnl' => 0.5]);
+        foreach (range(1, 6) as $i) {
+            $this->trade(['status' => 'CLOSED', 'net_pnl' => 0.5]);
+        }
+        $this->assertNull(EarlyBreakoutGuard::blockReason('paper'), '7 entries today are still allowed');
+
         $this->trade(['status' => 'CLOSED', 'net_pnl' => 0.5]);
-        $this->trade(['status' => 'CLOSED', 'net_pnl' => 0.5]);
-        $this->assertStringContainsString('daily limit of 3', EarlyBreakoutGuard::blockReason('paper'));
+        $this->assertStringContainsString('daily limit of 8', EarlyBreakoutGuard::blockReason('paper'));
+    }
+
+    public function test_early_breakouts_have_no_separate_pause_by_default(): void
+    {
+        foreach (range(1, 5) as $i) {
+            $this->trade(['status' => 'CLOSED', 'net_pnl' => -0.1, 'opened_at' => now()->subDays(2), 'closed_at' => now()->subMinutes($i)]);
+        }
+
+        $this->assertNull(EarlyBreakoutGuard::pauseReason('paper'), 'The account-wide 3-loss cooldown handles streaks');
     }
 
     public function test_five_losses_in_a_row_pause_early_breakouts_until_resumed(): void
     {
+        config(['trading.strategy.early_breakout.pause_after_losses' => 5]);
         foreach (range(1, 5) as $i) {
             $this->trade(['status' => 'CLOSED', 'net_pnl' => -0.1, 'opened_at' => now()->subDays(2), 'closed_at' => now()->subMinutes($i)]);
         }
