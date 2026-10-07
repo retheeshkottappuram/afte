@@ -74,10 +74,16 @@ class BacktestingEngine
                     $this->seed($symbol, $interval, $symbolTrades);
                 }
 
-                $trades = array_merge($trades, $symbolTrades);
+                // Full Signal objects are only needed for seeding; keeping ~550 per coin exhausted
+                // the 128MB shared-hosting memory limit on a 50-coin run.
+                foreach ($symbolTrades as $trade) {
+                    unset($trade['signal']);
+                    $trades[] = $trade;
+                }
                 if ($progress !== null) {
                     $progress($symbol, count($symbolTrades));
                 }
+                unset($base, $regime, $symbolTrades);
             } catch (Throwable $e) {
                 $errors[$symbol] = $e->getMessage();
             }
@@ -198,6 +204,7 @@ class BacktestingEngine
                 'mfe_r' => $result['mfe_r'],
                 'mae_r' => $result['mae_r'],
                 'sl_pct' => $signal->slPct(),
+                'passed_filters' => $signal->isTradable(),
                 'signal' => $signal,
             ];
         }
@@ -291,7 +298,7 @@ class BacktestingEngine
         $out = [];
         foreach (array_keys(StrategyEngine::SETUP_LABELS) as $setup) {
             $rows = array_filter($trades, fn (array $t): bool => $t['setup'] === $setup);
-            $filtered = array_filter($rows, fn (array $t): bool => $t['signal']->isTradable() || $t['is_shadow']);
+            $filtered = array_filter($rows, fn (array $t): bool => $t['passed_filters'] || $t['is_shadow']);
             $out[$setup] = array_merge(
                 ['label' => StrategyEngine::SETUP_LABELS[$setup], 'shadow' => ! in_array($setup, (array) config('trading.strategy.core_setups'), true)],
                 SetupStats::summarize(array_column($filtered, 'r_multiple')),

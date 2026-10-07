@@ -29,6 +29,11 @@ class BacktestCommand extends Command
 
     public function handle(BacktestingEngine $engine, SymbolAnalyzer $analyzer): int
     {
+        // Shared hosting defaults to 128MB; a 12-month, 50-coin run needs more headroom.
+        if (self::bytes((string) ini_get('memory_limit')) < 512 * 1024 * 1024) {
+            @ini_set('memory_limit', '512M');
+        }
+
         $interval = (string) $this->option('interval');
         $symbols = array_map('strtoupper', (array) $this->argument('symbols'));
 
@@ -103,5 +108,20 @@ class BacktestCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    protected static function bytes(string $limit): int
+    {
+        if ($limit === '-1') {
+            return PHP_INT_MAX;
+        }
+        $value = (int) $limit;
+
+        return match (strtolower(substr($limit, -1))) {
+            'g' => $value * 1024 ** 3,
+            'm' => $value * 1024 ** 2,
+            'k' => $value * 1024,
+            default => $value,
+        };
     }
 }
