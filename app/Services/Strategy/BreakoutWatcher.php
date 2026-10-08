@@ -107,7 +107,7 @@ class BreakoutWatcher
     /**
      * Check every watched coin against its live price and return the breakouts that triggered.
      *
-     * @return array<int, array{signal: Signal, record: CryptoSignal, level: float, volume_pace: float}>
+     * @return array<int, array{signal: Signal, record: CryptoSignal, level: float, volume_pace: float, watch: array<string, mixed>}>
      */
     public function check(): array
     {
@@ -142,7 +142,7 @@ class BreakoutWatcher
                 }
 
                 $signal = $this->scorer->score($this->engine->intrabarSignal($watch, $price, intdiv((int) $watch['bar_close_ms'], 1000)));
-                $fresh[] = ['signal' => $signal, 'record' => $this->ledger->record($signal, 'watcher'), 'level' => (float) $watch['level'], 'volume_pace' => $pace];
+                $fresh[] = ['signal' => $signal, 'record' => $this->ledger->record($signal, 'watcher'), 'level' => (float) $watch['level'], 'volume_pace' => $pace, 'watch' => $watch];
                 // One breakout per coin per candle: stop watching the opposite edge too.
                 $coins = array_filter($coins, fn (array $other, string|int $otherKey): bool => (string) ($other['symbol'] ?? $otherKey) !== $symbol, ARRAY_FILTER_USE_BOTH);
             } catch (Throwable $e) {

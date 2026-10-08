@@ -256,9 +256,12 @@ class StrategyEngine
         }
 
         $twoSided = (bool) ($this->config['early_breakout']['two_sided'] ?? true);
-        $bias = $this->boxBias($k, $c, $atr);
+        $lean = $this->boxBiasDetail($k, $c, $atr);
+        $bias = $lean['side'] ?? null;
         if ($twoSided) {
-            $sides = $bias === 'SHORT' ? ['SHORT', 'LONG'] : ['LONG', 'SHORT'];
+            // A leaning box is watched on its leaning side only, so a coin announced as BUY can't then
+            // break out as SELL. Without a lean both edges are watched and the confirmed break picks the side.
+            $sides = $bias !== null ? [$bias] : ['LONG', 'SHORT'];
         } else {
             // The 4h trend alone called the break direction right only ~50% of the time (12-month test);
             // price at the box edge + rising/falling highs and lows + volume balance agreeing was right ~78%.
@@ -314,7 +317,15 @@ class StrategyEngine
                 'indicators' => $indicators,
                 'confluences' => $this->confluences($indicators, $side, $context['daily'] ?? null),
                 'features' => $this->features('SQUEEZE_BREAKOUT', $side, $indicators, $slPct, (int) $c['closeTimes'][$k] + $barMs, $context),
+                'lean' => $lean,
+                'regime_side' => $regime['side'],
             ];
+
+            // The exact levels the bot would trade if price breaks now (same code path as the live entry).
+            $last = array_key_last($watches);
+            $entry = $this->triggerPrice($watches[$last]);
+            $plan = $this->intrabarSignal($watches[$last], $entry, intdiv((int) $c['closeTimes'][$k] + $barMs, 1000));
+            $watches[$last]['levels'] = ['entry' => $entry, 'sl' => $plan->stopLoss, 'tp1' => $plan->tp1, 'tp2' => $plan->tp2, 'tp3' => $plan->tp3];
         }
 
         return $watches;
@@ -327,6 +338,17 @@ class StrategyEngine
      * @param  array<string, array<int, float|int>>  $c
      */
     public function boxBias(int $k, array $c, float $atr): ?string
+    {
+        return $this->boxBiasDetail($k, $c, $atr)['side'] ?? null;
+    }
+
+    /**
+     * The three box-lean readings behind boxBias(), for alert explanations.
+     *
+     * @param  array<string, array<int, float|int>>  $c
+     * @return array{side: ?string, position: float, drift: float, volume_ratio: float}|null volume_ratio = up / down volume
+     */
+    public function boxBiasDetail(int $k, array $c, float $atr): ?array
     {
         if ($k < 19 || $atr <= 0) {
             return null;
@@ -357,7 +379,12 @@ class StrategyEngine
         }
         $volume = $upVolume > 1.2 * $downVolume ? 'LONG' : ($downVolume > 1.2 * $upVolume ? 'SHORT' : null);
 
-        return $edge !== null && $edge === $structure && $edge === $volume ? $edge : null;
+        return [
+            'side' => $edge !== null && $edge === $structure && $edge === $volume ? $edge : null,
+            'position' => round($position, 3),
+            'drift' => round($drift, 4),
+            'volume_ratio' => round($upVolume / max(1e-12, $downVolume), 2),
+        ];
     }
 
     /**

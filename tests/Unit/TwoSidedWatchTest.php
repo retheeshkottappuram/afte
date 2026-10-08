@@ -56,6 +56,34 @@ class TwoSidedWatchTest extends TestCase
         $this->assertTrue($watches[0]['filters']['volume_rank']['pass'], 'Rank 30 is inside the top 50 for early breakouts');
     }
 
+    public function test_a_leaning_box_is_watched_on_its_leaning_side_only_with_trade_levels(): void
+    {
+        $engine = new StrategyEngine(['early_breakout' => ['two_sided' => true, 'stop_mode' => 'mid', 'anticipate_pct' => 0.15]]);
+        $c = $this->coiledCandles();
+        // Last 20 hours: drifting up, closing near the top, buyers' candles carry more volume.
+        for ($i = 110; $i < 130; $i++) {
+            $base = 100 + ($i - 110) * 0.02;
+            $up = $i % 2 === 1;
+            $c['opens'][$i] = $up ? $base - 0.05 : $base + 0.05;
+            $c['closes'][$i] = $up ? $base + 0.15 : $base - 0.05;
+            $c['highs'][$i] = max($c['opens'][$i], $c['closes'][$i]) + 0.03;
+            $c['lows'][$i] = min($c['opens'][$i], $c['closes'][$i]) - 0.03;
+            $c['volumes'][$i] = $up ? 1500.0 : 700.0;
+        }
+        $series = (new ReflectionMethod($engine, 'computeSeries'))->invoke($engine, $c);
+        $this->assertSame('LONG', $engine->boxBias(129, $c, (float) $series['atr'][129]));
+
+        $watches = (new ReflectionMethod($engine, 'watchCandidates'))->invoke($engine, 'SOLUSDT', '1h', 129, $c, $series,
+            ['side' => 'NONE', 'adx' => 12.0, 'detail' => 'No clear 4h trend'], ['block_long' => false, 'block_short' => false, 'state' => 'BTC neutral', 'returns_24' => 0.0], []);
+
+        $this->assertSame(['LONG'], array_column($watches, 'side'), 'Only the leaning side');
+        $levels = $watches[0]['levels'];
+        $this->assertEqualsWithDelta($engine->triggerPrice($watches[0]), $levels['entry'], 1e-9);
+        $this->assertLessThan($levels['entry'], $levels['sl']);
+        $this->assertGreaterThan($levels['entry'], $levels['tp1']);
+        $this->assertGreaterThan($levels['tp1'], $levels['tp2']);
+    }
+
     public function test_one_sided_mode_still_needs_a_trend(): void
     {
         $this->assertSame([], $this->watches(['early_breakout' => ['two_sided' => false]]));

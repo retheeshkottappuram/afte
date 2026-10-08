@@ -63,6 +63,8 @@ class BreakoutAlertsTest extends TestCase
             'indicators' => ['rsi' => 60.0, 'adx' => 26.0, 'volume_ratio' => 1.2, 'atr_pct' => 0.8],
             'confluences' => ['Strong 4h trend'],
             'features' => ['setup' => 'SQUEEZE_BREAKOUT', 'side' => 1],
+            'bias' => $side, 'regime_side' => 'LONG',
+            'lean' => ['side' => $side, 'position' => $side === 'LONG' ? 0.9 : 0.1, 'drift' => $side === 'LONG' ? 0.05 : -0.05, 'volume_ratio' => $side === 'LONG' ? 1.6 : 0.5],
         ];
     }
 
@@ -75,25 +77,34 @@ class BreakoutAlertsTest extends TestCase
 
         $messages = $this->telegramMessages();
         $this->assertCount(1, $messages);
-        $this->assertStringContainsString('Coiled for a breakout', $messages[0]['text']);
+        $this->assertStringContainsString('Breakout setups', $messages[0]['text']);
         $this->assertStringContainsString('SOLUSDT', $messages[0]['text']);
         $this->assertStringContainsString('ENAUSDT', $messages[0]['text']);
     }
 
-    public function test_a_coin_watched_on_both_edges_is_one_line_with_both_levels(): void
+    public function test_setup_alert_names_one_direction_with_entry_stop_targets_and_reasons(): void
     {
-        $alerts = app(SignalAlerts::class);
-        $long = $this->watch('SOLUSDT', 'LONG', 100.0, 99.0) + ['bias' => 'SHORT'];
-        $short = $this->watch('SOLUSDT', 'SHORT', 97.0, 99.0) + ['bias' => 'SHORT'];
+        $watch = $this->watch('SOLUSDT', 'LONG', 100.0, 99.0) + ['levels' => ['entry' => 99.85, 'sl' => 98.5, 'tp1' => 101.9, 'tp2' => 103.9, 'tp3' => 105.9]];
 
-        $this->assertTrue($alerts->breakoutWatchAlert(['SOLUSDT:LONG' => $long, 'SOLUSDT:SHORT' => $short]));
+        $this->assertTrue(app(SignalAlerts::class)->breakoutWatchAlert(['SOLUSDT:LONG' => $watch]));
 
         $text = $this->telegramMessages()[0]['text'];
-        $this->assertSame(1, substr_count($text, '<b>SOLUSDT</b>'));
-        $this->assertStringContainsString('▲ above <code>100', $text);
-        $this->assertStringContainsString('▼ below <code>97', $text);
-        $this->assertStringContainsString('leans down', $text);
-        $this->assertStringContainsString('can break either way', $text);
+        $this->assertStringContainsString('🟢 <b>BUY SOLUSDT</b>', $text);
+        $this->assertStringContainsString('Entry above <code>99.85', $text);
+        $this->assertStringContainsString('Stop <code>98.5', $text);
+        $this->assertStringContainsString('TP1 <code>101.9', $text);
+        $this->assertStringContainsString('TP2 <code>103.9', $text);
+        $this->assertStringContainsString('Why: closing at the box top · higher lows · buy volume 1.6× sell · 4h trend up', $text);
+        $this->assertStringNotContainsString('SELL', $text);
+    }
+
+    public function test_boxes_without_a_lean_are_not_announced_before_they_break(): void
+    {
+        $long = ['bias' => null] + $this->watch('SOLUSDT', 'LONG', 100.0, 99.0);
+        $short = ['bias' => null] + $this->watch('SOLUSDT', 'SHORT', 97.0, 99.0);
+
+        $this->assertFalse(app(SignalAlerts::class)->breakoutWatchAlert(['SOLUSDT:LONG' => $long, 'SOLUSDT:SHORT' => $short]));
+        $this->assertSame([], $this->telegramMessages());
     }
 
     public function test_no_breakout_alerts_when_alerts_are_switched_off(): void
@@ -127,7 +138,8 @@ class BreakoutAlertsTest extends TestCase
         $this->assertNotNull($trade->meta['breakout_box']);
 
         $texts = implode("\n---\n", array_column($this->telegramMessages(), 'text'));
-        $this->assertStringContainsString('BREAKING OUT: SOLUSDT LONG', $texts);
+        $this->assertStringContainsString('BUY SOLUSDT: BREAKING OUT', $texts);
+        $this->assertStringContainsString('TP3', $texts);
         $this->assertStringContainsString('volume 2.1x pace', $texts);
         $this->assertStringContainsString('Auto-trader: [PAPER] taken', $texts);
     }

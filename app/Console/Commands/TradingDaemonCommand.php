@@ -149,7 +149,7 @@ class TradingDaemonCommand extends Command
 
                             $this->log(sprintf('[%s] BREAKOUT %s %s at %s (level %s, volume %.1fx pace)%s', strtoupper($mode), $signal->symbol, $signal->side, $signal->entry, $breakout['level'], $breakout['volume_pace'], $status ? ' · '.preg_replace('/^\[\w+\] /', '', $status) : ''));
                             if (BreakoutWatcher::alertsEnabled()) {
-                                $alerts->breakoutNowAlert($signal, $breakout['level'], $breakout['volume_pace'], $status);
+                                $alerts->breakoutNowAlert($signal, $breakout['level'], $breakout['volume_pace'], $status, $breakout['watch'] ?? null);
                             }
                         }
                     } catch (Throwable $e) {

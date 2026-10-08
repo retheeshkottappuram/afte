@@ -19,6 +19,12 @@ use Throwable;
  */
 class SignalAlerts
 {
+    /**
+     * Measured 2026-10-08 (12 months, top 50, 1h): of 1,312 leaning squeeze boxes that broke within 24 hours,
+     * 82.5% broke in the lean direction (82.4% in the last 4 months alone). Direction only, not profit.
+     */
+    public const LEAN_HIT_RATE_NOTE = 'In a 12-month test about 4 in 5 of these setups broke in the stated direction (not every break keeps going).';
+
     public function __construct(
         protected TelegramGateway $gateway,
         protected SetupStats $stats,
@@ -67,68 +73,102 @@ class SignalAlerts
             return false;
         }
 
-        // Group the box edges by coin (two-sided watches are keyed "SYMBOL:SIDE").
-        $coins = [];
+        // One direction per coin: only boxes that lean one way are announced (a box without a lean can
+        // break either way, so it is alerted only once it actually breaks, by breakoutNowAlert).
+        $rows = [];
         foreach ($watches as $key => $watch) {
             $price = (float) ($watch['price'] ?? 0);
-            if ($price <= 0) {
+            $entry = (float) ($watch['levels']['entry'] ?? $watch['level'] ?? 0);
+            if ($price <= 0 || $entry <= 0 || ($watch['bias'] ?? null) !== $watch['side']) {
                 continue;
             }
-            $symbol = (string) ($watch['symbol'] ?? $key);
-            $coins[$symbol]['symbol'] = $symbol;
-            $coins[$symbol]['price'] = $price;
-            $coins[$symbol]['bias'] = $watch['bias'] ?? null;
-            $coins[$symbol]['sides'][$watch['side']] = (float) $watch['level'];
-            $distance = abs((float) $watch['level'] - $price) / $price * 100;
-            $coins[$symbol]['distance_pct'] = min($coins[$symbol]['distance_pct'] ?? INF, $distance);
+            $rows[] = ['symbol' => (string) ($watch['symbol'] ?? $key)] + $watch + ['distance_pct' => abs($entry - $price) / $price * 100];
         }
-        usort($coins, fn (array $a, array $b): int => $a['distance_pct'] <=> $b['distance_pct']);
+        usort($rows, fn (array $a, array $b): int => $a['distance_pct'] <=> $b['distance_pct']);
 
-        $lines = [];
-        foreach ($coins as $coin) {
-            if (count($lines) >= 8 || ! Cache::add("tg:coiled:{$coin['symbol']}", true, now()->addHours(6))) {
+        $blocks = [];
+        foreach ($rows as $row) {
+            if (count($blocks) >= 6 || ! Cache::add("tg:coiled:{$row['symbol']}", true, now()->addHours(6))) {
                 continue;
             }
-            $levels = [];
-            if (isset($coin['sides']['LONG'])) {
-                $levels[] = '🟢 ▲ above <code>'.$this->fmt($coin['sides']['LONG']).'</code>';
+            $isLong = $row['side'] === 'LONG';
+            $levels = (array) ($row['levels'] ?? []);
+            $entry = (float) ($levels['entry'] ?? $row['level']);
+            $sl = (float) ($levels['sl'] ?? (((float) $row['box_high'] + (float) $row['box_low']) / 2));
+
+            $block = sprintf("%s <b>%s %s</b>: breakout setup (%s)\n", $isLong ? '🟢' : '🔴', $isLong ? 'BUY' : 'SELL', $row['symbol'], $row['interval'] ?? '1h')
+                .sprintf("Entry %s <code>%s</code> (now %s, %.1f%% away)\n", $isLong ? 'above' : 'below', $this->fmt($entry), $this->fmt((float) $row['price']), $row['distance_pct'])
+                .sprintf('Stop <code>%s</code> (−%.2f%%)', $this->fmt($sl), abs($entry - $sl) / $entry * 100);
+            if (isset($levels['tp1'], $levels['tp2'])) {
+                $block .= " · TP1 <code>{$this->fmt((float) $levels['tp1'])}</code> · TP2 <code>{$this->fmt((float) $levels['tp2'])}</code>";
             }
-            if (isset($coin['sides']['SHORT'])) {
-                $levels[] = '🔴 ▼ below <code>'.$this->fmt($coin['sides']['SHORT']).'</code>';
-            }
-            $lean = match ($coin['bias']) {
-                'LONG' => ' · leans up',
-                'SHORT' => ' · leans down',
-                default => '',
-            };
-            $lines[] = sprintf('<b>%s</b> now %s · %s%s', $coin['symbol'], $this->fmt($coin['price']), implode(' / ', $levels), $lean);
+            $blocks[] = $block."\nWhy: ".e(self::whyLine($row['side'], (array) ($row['lean'] ?? []), (array) ($row['indicators'] ?? []), $row['regime_side'] ?? null));
         }
 
-        if ($lines === []) {
+        if ($blocks === []) {
             return false;
         }
 
         $auto = (bool) config('trading.strategy.intrabar_breakouts', true)
-            ? 'The bot enters confirmed breakouts automatically (1% risk, max '.(int) config('trading.strategy.early_breakout.max_per_day', 3).'/day).'
+            ? 'The bot enters automatically when the break is confirmed (1% risk).'
             : 'The bot trades only the confirmed candle close.';
 
-        return $this->gateway->send("🔭 <b>Coiled for a breakout</b> (this 1h candle)\n".implode("\n", $lines)."\n\nA squeeze can break either way. The direction is confirmed only by the ⚡ BREAKING OUT alert (price through the level with volume). \"Leans\" marks the side the box tilts toward (price at that edge, highs/lows and volume agreeing). {$auto}") !== null;
+        return $this->gateway->send("🔭 <b>Breakout setups</b> (this 1h candle)\n\n".implode("\n\n", $blocks)
+            ."\n\nEnter only if price breaks the entry level; the ⚡ BREAKING OUT alert confirms it with volume. "
+            .self::LEAN_HIT_RATE_NOTE." {$auto}") !== null;
+    }
+
+    /**
+     * Plain-language reasons for the direction: box lean (edge, structure, volume), 4h trend, momentum.
+     *
+     * @param  array<string, mixed>  $lean  From StrategyEngine::boxBiasDetail()
+     * @param  array<string, mixed>  $indicators
+     */
+    public static function whyLine(string $side, array $lean, array $indicators, ?string $regimeSide): string
+    {
+        $isLong = $side === 'LONG';
+        $parts = [];
+        if (isset($lean['position']) && ($isLong ? (float) $lean['position'] >= 0.75 : (float) $lean['position'] <= 0.25)) {
+            $parts[] = $isLong ? 'closing at the box top' : 'closing at the box bottom';
+        }
+        if (isset($lean['drift']) && ($isLong ? (float) $lean['drift'] > 0.02 : (float) $lean['drift'] < -0.02)) {
+            $parts[] = $isLong ? 'higher lows' : 'lower highs';
+        }
+        $ratio = (float) ($lean['volume_ratio'] ?? 0);
+        if ($ratio > 0 && ($isLong ? $ratio > 1.2 : $ratio < 1 / 1.2)) {
+            $parts[] = $isLong ? sprintf('buy volume %.1f× sell', $ratio) : sprintf('sell volume %.1f× buy', 1 / $ratio);
+        }
+        if ($regimeSide === $side) {
+            $parts[] = $isLong ? '4h trend up' : '4h trend down';
+        } elseif (in_array($regimeSide, ['LONG', 'SHORT'], true)) {
+            $parts[] = 'against the 4h trend';
+        }
+        if (isset($indicators['rsi'])) {
+            $parts[] = sprintf('RSI %d', round((float) $indicators['rsi']));
+        }
+        if ((float) ($indicators['volume_ratio'] ?? 0) >= 1.5) {
+            $parts[] = sprintf('volume %.1f× average', (float) $indicators['volume_ratio']);
+        }
+
+        return $parts === [] ? 'squeeze breakout' : implode(' · ', $parts);
     }
 
     /**
      * Instant "breaking out now" alert from the minute watcher (priority: never rate-limited).
      */
-    public function breakoutNowAlert(Signal $signal, float $level, float $volumePace, ?string $autoTradeStatus): bool
+    public function breakoutNowAlert(Signal $signal, float $level, float $volumePace, ?string $autoTradeStatus, ?array $watch = null): bool
     {
         if (! Watchlist::alertsEnabled() || ! Cache::add("tg:breakout:{$signal->symbol}:{$signal->time}", true, now()->addHours(2))) {
             return false;
         }
 
         $isLong = $signal->isLong();
-        $html = sprintf("⚡ <b>BREAKING OUT: %s %s</b>\n", $signal->symbol, $signal->side)
-            .sprintf("Price %s %s %s · volume %.1fx pace\n", $this->fmt($signal->entry), $isLong ? 'at/above' : 'at/below', $this->fmt($level), $volumePace)
+        $why = self::whyLine($signal->side, (array) ($watch['lean'] ?? []), ['volume_ratio' => $volumePace] + $signal->indicators, $watch['regime_side'] ?? ($signal->indicators['regime'] ?? null));
+        $html = sprintf("⚡ %s <b>%s %s: BREAKING OUT</b>\n", $isLong ? '🟢' : '🔴', $isLong ? 'BUY' : 'SELL', $signal->symbol)
+            .sprintf("Price %s %s %s · volume %.1fx pace\n", $this->fmt($signal->entry), $isLong ? 'above' : 'below', $this->fmt($level), $volumePace)
             .sprintf("Entry ≈<code>%s</code> · Stop <code>%s</code> (−%.2f%%)\n", $this->fmt($signal->entry), $this->fmt($signal->stopLoss), $signal->slPct())
-            ."TP1 <code>{$this->fmt($signal->tp1)}</code> · TP2 <code>{$this->fmt($signal->tp2)}</code>\n"
+            ."TP1 <code>{$this->fmt($signal->tp1)}</code> · TP2 <code>{$this->fmt($signal->tp2)}</code> · TP3 <code>{$this->fmt($signal->tp3)}</code>\n"
+            .'Why: '.e($why)."\n"
             .'Early entry (before the candle closes): higher fake-out risk. Exit if the hourly candle closes back inside the box.';
 
         if ($autoTradeStatus) {
