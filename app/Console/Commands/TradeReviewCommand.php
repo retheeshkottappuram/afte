@@ -45,8 +45,8 @@ class TradeReviewCommand extends Command
         foreach ($trades as $trade) {
             $dir = $trade->side === 'LONG' ? 1 : -1;
             $risk = abs((float) $trade->entry_price - (float) $trade->initial_sl);
-            $signal = $signals->get($trade->meta['signal_id'] ?? null);
-            $edge = (float) (($signal?->features ?? [])['box_edge'] ?? 0);
+            $signal = $signals->get($trade->meta['signal_id'] ?? null) ?? $this->signalFor($trade);
+            $edge = (float) ($trade->meta['breakout_box'] ?? ($signal?->features ?? [])['box_edge'] ?? 0);
             $late = $edge > 0 && $risk > 0 ? ((float) $trade->entry_price - $edge) * $dir / $risk : null;
             $slip = $signal && (float) $signal->entry_price > 0 ? ((float) $trade->entry_price / (float) $signal->entry_price - 1) * 100 * $dir : null;
             $best = $dir > 0 ? (float) $trade->highest_price : (float) $trade->lowest_price;
@@ -78,7 +78,7 @@ class TradeReviewCommand extends Command
 
         $this->table(['Opened (UTC)', 'Mode', 'Symbol', 'Setup', 'Side', 'Grade', 'Entry', 'Past box', 'Slip', 'Stop', 'Best', 'Worst', 'Exit', 'R', 'Net $'], $rows);
         $this->line('Past box = entry beyond the breakout box edge, in R (stop distances). Above ~+0.3R is a late entry.');
-        $this->line('Slip = fill vs the signal price. Best/Worst = furthest price went for/against the trade.');
+        $this->line('Slip = fill vs the signal price (positive = worse fill). Best/Worst = furthest price went for/against the trade.');
 
         if ($results !== []) {
             $wins = count(array_filter($results, fn (float $r): bool => $r > 0));
@@ -88,6 +88,23 @@ class TradeReviewCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * The signal a trade came from when its id was not stored: same coin, setup and side, recorded just before the fill.
+     */
+    protected function signalFor(Trade $trade): ?CryptoSignal
+    {
+        if ($trade->opened_at === null) {
+            return null;
+        }
+
+        return CryptoSignal::where('symbol', $trade->symbol)
+            ->where('setup', $trade->setup_tag)
+            ->whereIn('side', $trade->side === 'LONG' ? ['LONG', 'BUY'] : ['SHORT', 'SELL'])
+            ->whereBetween('created_at', [$trade->opened_at->copy()->subMinutes(3), $trade->opened_at->copy()->addMinute()])
+            ->latest('created_at')
+            ->first(['id', 'entry_price', 'features']);
     }
 
     protected function num(float $value): string
