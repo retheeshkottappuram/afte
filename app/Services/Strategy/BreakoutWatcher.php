@@ -21,12 +21,6 @@ class BreakoutWatcher
     /** The candle must close in its top (long) or bottom (short) 30% at the moment of entry. */
     protected const MIN_CLOSE_POSITION = 0.7;
 
-    /** Volume so far must be on pace for 1.5x the 20-bar average. */
-    protected const VOLUME_PACE = 1.5;
-
-    /** Volume pace is judged on at least this share of the candle, so early spikes need real volume. */
-    protected const MIN_ELAPSED_SHARE = 0.25;
-
     public function __construct(
         protected BinanceClient $market,
         protected StrategyEngine $engine,
@@ -107,7 +101,7 @@ class BreakoutWatcher
     /**
      * Check every watched coin against its live price and return the breakouts that triggered.
      *
-     * @return array<int, array{signal: Signal, record: CryptoSignal, level: float, volume_pace: float, watch: array<string, mixed>}>
+     * @return array<int, array{signal: Signal, record: CryptoSignal, level: float, volume_pace: float, watch: array<string, mixed>, chase_r: float}>
      */
     public function check(): array
     {
@@ -136,13 +130,28 @@ class BreakoutWatcher
             }
 
             try {
+                // How far price already ran past the trigger, in stop distances measured from the trigger.
+                $time = intdiv((int) $watch['bar_close_ms'], 1000);
+                $planned = $this->engine->intrabarSignal($watch, $trigger, $time);
+                $chaseR = abs($price - $trigger) / max(1e-12, abs($trigger - $planned->stopLoss));
+                $maxChase = config('trading.strategy.early_breakout.max_chase_r');
+                if ($maxChase !== null && $chaseR > (float) $maxChase) {
+                    // Too late: the move already happened. Stop watching this coin for the rest of the candle.
+                    Log::info(sprintf('[BreakoutWatcher] %s %s late_skip: price %.2fR past the trigger (max %.2fR)', $symbol, $watch['side'], $chaseR, (float) $maxChase));
+                    $coins = array_filter($coins, fn (array $other, string|int $otherKey): bool => (string) ($other['symbol'] ?? $otherKey) !== $symbol, ARRAY_FILTER_USE_BOTH);
+                    $state['coins'] = $coins;
+                    Setting::putValue(self::WATCH_KEY, $state);
+
+                    continue;
+                }
+
                 $pace = $this->confirmed($watch, $price);
                 if ($pace === null) {
                     continue;
                 }
 
-                $signal = $this->scorer->score($this->engine->intrabarSignal($watch, $price, intdiv((int) $watch['bar_close_ms'], 1000)));
-                $fresh[] = ['signal' => $signal, 'record' => $this->ledger->record($signal, 'watcher'), 'level' => (float) $watch['level'], 'volume_pace' => $pace, 'watch' => $watch];
+                $signal = $this->scorer->score($this->engine->intrabarSignal($watch, $price, $time));
+                $fresh[] = ['signal' => $signal, 'record' => $this->ledger->record($signal, 'watcher'), 'level' => (float) $watch['level'], 'volume_pace' => $pace, 'watch' => $watch, 'chase_r' => round($chaseR, 2)];
                 // One breakout per coin per candle: stop watching the opposite edge too.
                 $coins = array_filter($coins, fn (array $other, string|int $otherKey): bool => (string) ($other['symbol'] ?? $otherKey) !== $symbol, ARRAY_FILTER_USE_BOTH);
             } catch (Throwable $e) {
@@ -177,10 +186,11 @@ class BreakoutWatcher
         $closePosition = ($price - $low) / max(1e-12, $high - $low);
         $holding = $watch['side'] === 'LONG' ? $closePosition >= self::MIN_CLOSE_POSITION : $closePosition <= 1 - self::MIN_CLOSE_POSITION;
 
+        $config = (array) config('trading.strategy.early_breakout', []);
         $span = max(1, (int) $watch['bar_close_ms'] - (int) $watch['bar_open_ms']);
-        $elapsed = min(1.0, max(self::MIN_ELAPSED_SHARE, (now()->getTimestampMs() - (int) $watch['bar_open_ms']) / $span));
+        $elapsed = min(1.0, max((float) ($config['min_elapsed_share'] ?? 0.25), (now()->getTimestampMs() - (int) $watch['bar_open_ms']) / $span));
         $pace = (float) $candles['volumes'][$last] / max(1e-12, (float) $watch['vol_sma'] * $elapsed);
 
-        return $holding && $pace >= self::VOLUME_PACE ? round($pace, 2) : null;
+        return $holding && $pace >= (float) ($config['volume_pace'] ?? 1.5) ? round($pace, 2) : null;
     }
 }

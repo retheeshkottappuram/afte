@@ -266,7 +266,13 @@ return [
             // 12-month test, top 50 (2026-10-07): trading every two-sided breakout = ~17/week, PF 0.70-1.07,
             // $5 -> $0.98-$6.14, max DD 36-81%. Only the trend + box-bias + top-10 subset: ~3/week, PF 1.39-1.58,
             // $5 -> $6.27-$6.87, max DD 5-7%. false = alert every breakout, trade only that subset.
-            'trade_all_breakouts' => (bool) env('STRATEGY_EARLY_TRADE_ALL', true),
+            // User's decision (2026-10-12): trade only the profitable subset; the others are alerted, not traded.
+            'trade_all_breakouts' => (bool) env('STRATEGY_EARLY_TRADE_ALL', false),
+            // Minute watcher confirmation: volume so far on pace for this x the 20-bar average, judged on at
+            // least this share of the candle. Skip the entry when price is already this many R past the trigger.
+            'volume_pace' => (float) env('STRATEGY_EARLY_VOLUME_PACE', 1.5),
+            'min_elapsed_share' => (float) env('STRATEGY_EARLY_MIN_ELAPSED_SHARE', 0.25),
+            'max_chase_r' => env('STRATEGY_EARLY_MAX_CHASE_R') !== null ? (float) env('STRATEGY_EARLY_MAX_CHASE_R') : null,
             'risk_pct' => (float) env('STRATEGY_EARLY_RISK_PCT', 1.0),
             'max_per_day' => (int) env('STRATEGY_EARLY_MAX_PER_DAY', 8),
             'max_open' => (int) env('STRATEGY_EARLY_MAX_OPEN', 1),

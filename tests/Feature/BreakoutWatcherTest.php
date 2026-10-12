@@ -93,6 +93,28 @@ class BreakoutWatcherTest extends TestCase
         $this->assertSame([], app(BreakoutWatcher::class)->watching());
     }
 
+    public function test_a_breakout_that_already_ran_too_far_is_skipped_not_chased(): void
+    {
+        // Trigger 99.85 (0.15% before the level), stop 1.2 ATR below it = 1.2 risk.
+        config(['trading.strategy.early_breakout.max_chase_r' => 1.0]);
+
+        $this->fakeMarket(102.0, 5000); // 1.79R past the trigger
+        app(BreakoutWatcher::class)->store('1h', ['SOLUSDT' => $this->watch()]);
+        $this->assertSame([], app(BreakoutWatcher::class)->check());
+        $this->assertSame([], app(BreakoutWatcher::class)->watching(), 'The coin is dropped for the rest of the candle');
+    }
+
+    public function test_a_breakout_inside_the_chase_limit_is_taken_and_reports_how_late_it_was(): void
+    {
+        config(['trading.strategy.early_breakout.max_chase_r' => 1.0]);
+
+        $this->fakeMarket(100.5, 900); // 0.54R past the trigger
+        app(BreakoutWatcher::class)->store('1h', ['SOLUSDT' => $this->watch()]);
+        $fresh = app(BreakoutWatcher::class)->check();
+        $this->assertCount(1, $fresh);
+        $this->assertEqualsWithDelta(0.54, $fresh[0]['chase_r'], 0.01);
+    }
+
     public function test_watch_list_expires_with_its_candle(): void
     {
         app(BreakoutWatcher::class)->store('1h', ['SOLUSDT' => $this->watch()]);
