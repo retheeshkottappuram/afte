@@ -479,7 +479,7 @@ class DynamicTradeManager
     protected function failedBreakoutClose(Trade $trade): ?float
     {
         $box = $trade->meta['breakout_box'] ?? null;
-        if ($box === null || $trade->tp1_hit || $trade->opened_at === null) {
+        if (! config('trading.strategy.early_breakout.failed_exit', false) || $box === null || $trade->tp1_hit || $trade->opened_at === null) {
             return null;
         }
 

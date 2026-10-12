@@ -182,8 +182,9 @@ class BreakoutAlertsTest extends TestCase
         $this->assertNull(EarlyBreakoutGuard::pauseReason('paper'));
     }
 
-    public function test_a_candle_closing_back_inside_the_box_exits_the_early_trade(): void
+    public function test_a_candle_closing_back_inside_the_box_exits_the_early_trade_when_enabled(): void
     {
+        config(['trading.strategy.early_breakout.failed_exit' => true]);
         $trade = $this->trade(['status' => 'OPEN', 'opened_at' => now()->subHours(2), 'meta' => ['breakout_box' => 100.0, 'interval' => '1h']]);
         $kline = fn (int $openMs, float $close): array => [$openMs, '100.2', '100.6', '99.5', (string) $close, '900', $openMs + 3_599_999];
         $hour = now()->startOfHour()->getTimestampMs();
@@ -197,6 +198,23 @@ class BreakoutAlertsTest extends TestCase
         app(DynamicTradeManager::class)->manageTrade($trade);
 
         $this->assertSame('FAILED_BREAKOUT', $trade->refresh()->exit_reason);
+    }
+
+    public function test_by_default_a_candle_back_inside_the_box_does_not_close_the_trade(): void
+    {
+        $trade = $this->trade(['status' => 'OPEN', 'opened_at' => now()->subHours(2), 'meta' => ['breakout_box' => 100.0, 'interval' => '1h']]);
+        $kline = fn (int $openMs, float $close): array => [$openMs, '100.2', '100.6', '99.5', (string) $close, '900', $openMs + 3_599_999];
+        $hour = now()->startOfHour()->getTimestampMs();
+        Http::swap(new Factory);
+        Http::fake([
+            '*klines*' => Http::response([$kline($hour - 7_200_000, 100.4), $kline($hour - 3_600_000, 99.8), $kline($hour, 99.9)]),
+            '*premiumIndex*' => Http::response(['markPrice' => '99.9']),
+            '*' => Http::response([]),
+        ]);
+
+        app(DynamicTradeManager::class)->manageTrade($trade);
+
+        $this->assertSame('OPEN', $trade->refresh()->status, 'Only the stop and trail manage it');
     }
 
     public function test_alert_log_shows_what_was_sent_and_why_the_rest_was_not(): void

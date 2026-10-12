@@ -273,6 +273,10 @@ return [
             'volume_pace' => (float) env('STRATEGY_EARLY_VOLUME_PACE', 1.5),
             'min_elapsed_share' => (float) env('STRATEGY_EARLY_MIN_ELAPSED_SHARE', 0.25),
             'max_chase_r' => env('STRATEGY_EARLY_MAX_CHASE_R') !== null ? (float) env('STRATEGY_EARLY_MAX_CHASE_R') : null,
+            // Exit when an hourly candle closes back inside the box. Live week to 2026-10-12: it closed 21 of 22
+            // trades, none reached TP1. 12-month test, proven subset: without it win 43.6% / +0.25R / $24 -> $29.02,
+            // with it win 25.8% / +0.20R / $24 -> $28.44. Off: the normal stop and trail manage the trade.
+            'failed_exit' => (bool) env('STRATEGY_EARLY_FAILED_EXIT', false),
             'risk_pct' => (float) env('STRATEGY_EARLY_RISK_PCT', 1.0),
             'max_per_day' => (int) env('STRATEGY_EARLY_MAX_PER_DAY', 8),
             'max_open' => (int) env('STRATEGY_EARLY_MAX_OPEN', 1),
