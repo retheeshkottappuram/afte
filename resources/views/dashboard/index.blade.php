@@ -335,21 +335,22 @@
                         <div class="text-xs text-slate-400">Wallet: <span id="stat-balance" class="font-mono text-slate-200">${{ number_format($account->balance, 2) }}</span> | Avail: <span id="stat-available-margin" class="font-mono text-cyan-300 font-semibold">${{ number_format($account->balance, 2) }}</span></div>
                     </div>
 
-                    <!-- Stage 1 Milestone ($25.00) & Progress to $500 -->
+                    <!-- Next balance milestone & progress to the final target -->
+                    @php($milestone = $account->milestone())
                     <div class="space-y-2">
                         <div class="flex items-center justify-between text-xs font-mono">
                             <span class="text-cyan-300 font-bold flex items-center">
                                 <span class="inline-block w-2 h-2 rounded-full bg-cyan-400 mr-1.5 animate-pulse"></span>
-                                STAGE 1 TARGET: $25.00
+                                NEXT MILESTONE: $<span id="stat-stage-target">{{ number_format($milestone['to'], 2) }}</span>
                             </span>
-                            <span id="stat-stage-progress-pct" class="text-cyan-400 font-bold">{{ number_format(min(100.0, max(0.0, ($account->equity / 25.0) * 100)), 1) }}%</span>
+                            <span id="stat-stage-progress-pct" class="text-cyan-400 font-bold">{{ number_format($milestone['pct'], 1) }}%</span>
                         </div>
                         <div class="w-full bg-cyber-900 rounded-full h-2.5 border border-cyan-500/30 overflow-hidden">
-                            <div id="stat-stage-progress-bar" class="bg-gradient-to-r from-cyan-500 via-blue-500 to-emerald-400 h-2.5 rounded-full transition-all duration-500" style="width: {{ min(100.0, max(0.0, ($account->equity / 25.0) * 100)) }}%"></div>
+                            <div id="stat-stage-progress-bar" class="bg-gradient-to-r from-cyan-500 via-blue-500 to-emerald-400 h-2.5 rounded-full transition-all duration-500" style="width: {{ $milestone['pct'] }}%"></div>
                         </div>
                         <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                            <span>Seed: <strong class="text-slate-300 font-mono">${{ number_format($account->initial_balance, 2) }}</strong></span>
-                            <span>Final: <strong class="text-emerald-400 font-mono">$500</strong> (<span id="stat-progress-pct">{{ number_format($account->target_progress, 1) }}%</span>)</span>
+                            <span>Start: <strong class="text-slate-300 font-mono">${{ number_format($account->initial_balance, 2) }}</strong></span>
+                            <span>Final: <strong class="text-emerald-400 font-mono">${{ number_format((float) config('trading.target_capital', 500.0), 0) }}</strong> (<span id="stat-progress-pct">{{ number_format($account->target_progress, 1) }}%</span>)</span>
                         </div>
                     </div>
 
@@ -821,7 +822,11 @@
                 unPnl.style.opacity = '1';
             }
 
-            // Stage 1 Milestone Progress Bar ($25.00 Target)
+            // Next balance milestone progress bar
+            const stageTargetEl = document.getElementById('stat-stage-target');
+            if (stageTargetEl && stats.stage_target !== undefined) {
+                stageTargetEl.textContent = Number(stats.stage_target).toFixed(2);
+            }
             const stageProgressPctEl = document.getElementById('stat-stage-progress-pct');
             const stageProgressBarEl = document.getElementById('stat-stage-progress-bar');
             if (stageProgressPctEl && stats.stage_progress_pct !== undefined) {

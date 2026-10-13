@@ -78,13 +78,15 @@ class SignalDispatcherTest extends TestCase
         $this->assertCount(0, $this->telegramMessages());
     }
 
-    public function test_alert_coins_send_every_signal_flagged_when_not_tradable(): void
+    public function test_alert_coins_skip_the_grade_gate_but_never_send_untradable_signals(): void
     {
         Watchlist::add('APTUSDT');
-        $filtered = $this->signal(['symbol' => 'APTUSDT', 'grade' => 'C', 'filters' => ['regime' => ['pass' => false, 'detail' => '4h trend unclear']]]);
+        $gradeC = $this->signal(['symbol' => 'APTUSDT', 'grade' => 'C']);
+        $filtered = $this->signal(['symbol' => 'APTUSDT', 'grade' => 'C', 'time' => 1_800_003_600, 'filters' => ['regime' => ['pass' => false, 'detail' => '4h trend unclear']]]);
 
-        $this->assertTrue(app(SignalAlerts::class)->announceSignal($filtered, app(SignalLedger::class)->record($filtered), null));
-        $this->assertStringContainsString('NOT tradable', $this->telegramMessages()[0]['text']);
+        $this->assertTrue(app(SignalAlerts::class)->announceSignal($gradeC, app(SignalLedger::class)->record($gradeC), null));
+        $this->assertFalse(app(SignalAlerts::class)->announceSignal($filtered, app(SignalLedger::class)->record($filtered), null));
+        $this->assertCount(1, $this->telegramMessages());
     }
 
     public function test_alerts_off_switch_stops_signal_alerts(): void

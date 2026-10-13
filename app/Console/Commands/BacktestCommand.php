@@ -17,7 +17,7 @@ class BacktestCommand extends Command
                             {--months=12 : History length in months}
                             {--interval=1h : Base timeframe}
                             {--top=20 : Number of top-volume symbols when none are given}
-                            {--balance=5.0 : Starting capital for the portfolio simulation}
+                            {--balance= : Starting capital for the portfolio simulation (default: TRADING_SEED_CAPITAL)}
                             {--seed : Store results as backtest signals so setup stats and the AI model have data from day one}
                             {--setups= : Comma-separated setups included in the portfolio simulation (default: core setups)}
                             {--intrabar : Squeeze breakouts enter when price trades through the level (minute watcher) instead of at the candle close}';
@@ -58,7 +58,7 @@ class BacktestCommand extends Command
             $interval,
             $startMs,
             $endMs,
-            (float) $this->option('balance'),
+            (float) ($this->option('balance') ?? config('trading.seed_capital', 24.0)),
             (bool) $this->option('seed'),
             fn (string $symbol, int $count) => $this->line("  {$symbol}: {$count} signals"),
             $this->option('setups') ? array_map('trim', explode(',', strtoupper((string) $this->option('setups')))) : null,

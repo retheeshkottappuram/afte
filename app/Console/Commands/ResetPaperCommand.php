@@ -15,21 +15,21 @@ class ResetPaperCommand extends Command
      *
      * @var string
      */
-    protected $signature = 'trade:reset-paper {--balance=5.0 : Initial seed capital to reset to}';
+    protected $signature = 'trade:reset-paper {--balance= : Initial seed capital to reset to (default: TRADING_SEED_CAPITAL)}';
 
     /**
      * The console command description.
      *
      * @var string
      */
-    protected $description = 'Reset paper trading account back to seed capital ($5.00) and clear paper history';
+    protected $description = 'Reset paper trading account back to its seed capital and clear paper history';
 
     /**
      * Execute the console command.
      */
     public function handle(): int
     {
-        $seed = (float) $this->option('balance');
+        $seed = (float) ($this->option('balance') ?? config('trading.seed_capital', 24.0));
 
         $account = TradingAccount::getForMode('paper');
         $account->initial_balance = $seed;

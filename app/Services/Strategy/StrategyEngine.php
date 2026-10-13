@@ -148,12 +148,19 @@ class StrategyEngine
             $watches = $this->watchCandidates($symbol, $interval, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context);
         }
 
+        // Possible top/bottom on the last closed candle (alert only), when its stop is not absurdly wide.
+        $reversal = $this->reversalAlertAt($lastIndex, $base, $s);
+        if ($reversal !== null && abs($reversal['entry'] - $reversal['sl']) / $reversal['entry'] * 100 > $this->maxSlPct('SQUEEZE_BREAKOUT')) {
+            $reversal = null;
+        }
+
         return [
             'signals' => $signals,
             'latest' => $latest,
             'state' => $this->currentState($symbol, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context, $latest),
             'series' => $s,
             'watches' => $watches,
+            'reversal' => $reversal === null ? null : $reversal + ['symbol' => $symbol, 'interval' => $interval, 'time' => intdiv((int) $base['closeTimes'][$lastIndex], 1000)],
         ];
     }
 
@@ -384,6 +391,64 @@ class StrategyEngine
             'position' => round($position, 3),
             'drift' => round($drift, 4),
             'volume_ratio' => round($upVolume / max(1e-12, $downVolume), 2),
+        ];
+    }
+
+    /**
+     * Possible top or bottom on closed candle k (alert only, never traded). Top: a new 24-bar high rejected
+     * (close in the bottom 40% of the candle) on 1.5x volume, or RSI turning down from 70+ on a red candle.
+     * Bottom: the mirror. Stop beyond the candle's wick + 0.2 ATR, targets from the exit plan.
+     *
+     * @param  array<string, array<int, float|int>>  $c
+     * @param  array<string, array<int, float|null>>  $s  From computeSeries()
+     * @return array{side: string, entry: float, sl: float, tp1: float, tp2: float, tp3: float, atr: float, reason: string, rsi: float, volume_ratio: float}|null
+     */
+    public function reversalAlertAt(int $k, array $c, array $s): ?array
+    {
+        $atr = (float) ($s['atr'][$k] ?? 0);
+        $volSma = (float) ($s['vol_sma'][$k - 1] ?? 0);
+        $rsi = $s['rsi'][$k] ?? null;
+        $rsiPrev = $s['rsi'][$k - 1] ?? null;
+        if ($k < 25 || $atr <= 0 || $volSma <= 0 || $rsi === null || $rsiPrev === null) {
+            return null;
+        }
+
+        $open = (float) $c['opens'][$k];
+        $high = (float) $c['highs'][$k];
+        $low = (float) $c['lows'][$k];
+        $close = (float) $c['closes'][$k];
+        $range = max(1e-12, $high - $low);
+        $closePos = ($close - $low) / $range;
+        $volumeRatio = (float) $c['volumes'][$k] / $volSma;
+        $priorHigh = max(array_slice($c['highs'], $k - 24, 22));
+        $priorLow = min(array_slice($c['lows'], $k - 24, 22));
+
+        $side = null;
+        $reason = '';
+        if ($high >= $priorHigh && $close < $priorHigh && $closePos <= 0.4 && $volumeRatio >= 1.5) {
+            [$side, $reason] = ['SHORT', sprintf('New 24h high rejected (closed in the bottom %d%% of the candle) on %.1fx volume', (int) round($closePos * 100), $volumeRatio)];
+        } elseif ($low <= $priorLow && $close > $priorLow && $closePos >= 0.6 && $volumeRatio >= 1.5) {
+            [$side, $reason] = ['LONG', sprintf('New 24h low rejected (closed in the top %d%% of the candle) on %.1fx volume', (int) round((1 - $closePos) * 100), $volumeRatio)];
+        } elseif ($rsiPrev >= 70 && $rsi < $rsiPrev && $close < $open) {
+            [$side, $reason] = ['SHORT', sprintf('RSI turned down from %.0f (overbought) on a red candle', $rsiPrev)];
+        } elseif ($rsiPrev <= 30 && $rsi > $rsiPrev && $close > $open) {
+            [$side, $reason] = ['LONG', sprintf('RSI turned up from %.0f (oversold) on a green candle', $rsiPrev)];
+        }
+        if ($side === null) {
+            return null;
+        }
+
+        $direction = $side === 'LONG' ? 1 : -1;
+        $sl = $side === 'LONG' ? $low - 0.2 * $atr : $high + 0.2 * $atr;
+        $minDistance = $close * (float) $this->config['min_sl_pct'] / 100;
+        if (($close - $sl) * $direction < $minDistance) {
+            $sl = $close - $direction * $minDistance;
+        }
+        $targets = $this->exitPlan->targets($side, $close, $sl);
+
+        return [
+            'side' => $side, 'entry' => $close, 'sl' => $sl, 'tp1' => $targets['tp1'], 'tp2' => $targets['tp2'], 'tp3' => $targets['tp3'],
+            'atr' => $atr, 'reason' => $reason, 'rsi' => round((float) $rsi, 1), 'volume_ratio' => round($volumeRatio, 2),
         ];
     }
 

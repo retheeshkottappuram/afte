@@ -115,8 +115,9 @@ class BreakoutAlertsTest extends TestCase
         $this->assertSame([], $this->telegramMessages());
     }
 
-    public function test_engine_auto_trades_an_early_breakout_at_half_risk_and_alerts_instantly(): void
+    public function test_engine_auto_trades_an_early_breakout_at_half_risk_and_alerts_instantly_when_enabled(): void
     {
+        config(['trading.strategy.intrabar_breakouts' => true]);
         TradingAccount::getForMode('paper')->update(['balance' => 100.0, 'peak_equity' => 100.0, 'is_running' => true]);
         $signal = app(StrategyEngine::class)->intrabarSignal($this->watch(), 100.0, intdiv(now()->startOfHour()->getTimestampMs() + 3_599_999, 1000))->withScore('B', null);
         $record = app(SignalLedger::class)->record($signal, 'watcher');
@@ -142,6 +143,29 @@ class BreakoutAlertsTest extends TestCase
         $this->assertStringContainsString('TP3', $texts);
         $this->assertStringContainsString('volume 2.1x pace', $texts);
         $this->assertStringContainsString('Auto-trader: [PAPER] taken', $texts);
+    }
+
+    public function test_by_default_an_early_breakout_is_alerted_but_not_traded(): void
+    {
+        TradingAccount::getForMode('paper')->update(['balance' => 100.0, 'peak_equity' => 100.0, 'is_running' => true]);
+        $signal = app(StrategyEngine::class)->intrabarSignal($this->watch(), 100.0, intdiv(now()->startOfHour()->getTimestampMs() + 3_599_999, 1000))->withScore('B', null);
+        $record = app(SignalLedger::class)->record($signal, 'watcher');
+
+        $this->mock(MarketScanService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('isScanDue')->andReturn(false);
+            $mock->shouldReceive('latestResults')->andReturn([]);
+        });
+        $this->mock(BreakoutWatcher::class, function (MockInterface $mock) use ($signal, $record): void {
+            $mock->shouldReceive('check')->once()->andReturn([['signal' => $signal, 'record' => $record, 'level' => 100.0, 'volume_pace' => 2.1]]);
+            $mock->shouldReceive('watching')->andReturn([]);
+        });
+
+        $this->artisan('trade:engine --once')->assertSuccessful();
+
+        $this->assertSame(0, Trade::count());
+        $texts = implode("\n---\n", array_column($this->telegramMessages(), 'text'));
+        $this->assertStringContainsString('BUY SOLUSDT: BREAKING OUT', $texts);
+        $this->assertStringContainsString('Alert only: not auto-traded', $texts);
     }
 
     public function test_daily_cap_and_open_limit_block_more_early_entries(): void

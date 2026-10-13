@@ -25,6 +25,16 @@ class SignalAlerts
      */
     public const LEAN_HIT_RATE_NOTE = 'In a 12-month test about 4 in 5 of these setups broke in the stated direction (not every break keeps going).';
 
+    /**
+     * Measured 2026-10-13 (12 months, top 50, 1h, StrategyEngine::reversalAlertAt): 14,272 alerts, 31.6% reached 2 ATR
+     * in the called direction before 1 ATR against (28.9% in the last 4 months). Traded with the exit plan: 34% wins,
+     * -0.10R average, PF 0.81. Alert only, never auto-traded (user's decision 2026-10-13).
+     */
+    public const REVERSAL_HIT_RATE_NOTE = 'Not auto-traded. In a 12-month test only about 1 in 3 of these turned (2 ATR before 1 ATR against); taking them all lost money.';
+
+    /** Most top/bottom alerts sent per hourly scan (strongest volume first); the rule fires ~39 times a day on 50 coins. */
+    public const MAX_REVERSAL_ALERTS_PER_SCAN = 3;
+
     public function __construct(
         protected TelegramGateway $gateway,
         protected SetupStats $stats,
@@ -40,10 +50,11 @@ class SignalAlerts
             return false;
         }
 
-        // Watchlist coins alert on every signal; others need a tradable signal of an alert grade.
+        // Only tradable signals are sent (a 15% stop or an ATR outside the band is noise, even on a watched coin).
+        // Watchlist coins skip only the grade gate.
         $watched = Watchlist::contains($signal->symbol);
         $gradeOk = in_array($signal->grade, (array) config('trading.strategy.telegram_grades', ['A', 'B']), true);
-        if (! $watched && (! $signal->isTradable() || ! $gradeOk)) {
+        if (! $signal->isTradable() || (! $watched && ! $gradeOk)) {
             return false;
         }
 
@@ -169,7 +180,7 @@ class SignalAlerts
             .sprintf("Entry ≈<code>%s</code> · Stop <code>%s</code> (−%.2f%%)\n", $this->fmt($signal->entry), $this->fmt($signal->stopLoss), $signal->slPct())
             ."TP1 <code>{$this->fmt($signal->tp1)}</code> · TP2 <code>{$this->fmt($signal->tp2)}</code> · TP3 <code>{$this->fmt($signal->tp3)}</code>\n"
             .'Why: '.e($why)."\n"
-            .'Early entry (before the candle closes): higher fake-out risk. Exit if the hourly candle closes back inside the box.';
+            .'Early entry (before the candle closes): higher fake-out risk.';
 
         if ($autoTradeStatus) {
             $html .= "\nAuto-trader: ".e($autoTradeStatus);
@@ -185,6 +196,45 @@ class SignalAlerts
         }
 
         return $this->gateway->send($html, null, priority: true) !== null;
+    }
+
+    /**
+     * "Possible top / possible bottom" alerts after an hourly scan. Alert only: the measured hit-rate is low and
+     * trading them lost, so the message says so. Strongest volume first, a few per scan, each coin+side once per 6h.
+     *
+     * @param  array<int, array<string, mixed>>  $reversals  From StrategyEngine::reversalAlertAt() via the scan
+     * @return int Messages sent
+     */
+    public function reversalAlert(array $reversals): int
+    {
+        if ($reversals === [] || ! Watchlist::alertsEnabled() || ! config('trading.strategy.topbottom_alerts', true)) {
+            return 0;
+        }
+
+        usort($reversals, fn (array $a, array $b): int => (float) $b['volume_ratio'] <=> (float) $a['volume_ratio']);
+        $sent = 0;
+        foreach ($reversals as $r) {
+            if ($sent >= self::MAX_REVERSAL_ALERTS_PER_SCAN) {
+                break;
+            }
+            if (! Cache::add("tg:reversal:{$r['symbol']}:{$r['side']}", true, now()->addHours(6))) {
+                continue;
+            }
+
+            $isBuy = $r['side'] === 'LONG';
+            $slPct = abs((float) $r['entry'] - (float) $r['sl']) / (float) $r['entry'] * 100;
+            $html = sprintf("%s <b>%s %s: possible %s</b> (%s)\n", $isBuy ? '🔺' : '🔻', $isBuy ? 'BUY' : 'SELL', e((string) $r['symbol']), $isBuy ? 'bottom' : 'top', e((string) $r['interval']))
+                .sprintf("Entry ≈<code>%s</code> · Stop <code>%s</code> (−%.2f%%)\n", $this->fmt((float) $r['entry']), $this->fmt((float) $r['sl']), $slPct)
+                ."TP1 <code>{$this->fmt((float) $r['tp1'])}</code> · TP2 <code>{$this->fmt((float) $r['tp2'])}</code>\n"
+                .'Why: '.e((string) $r['reason']).sprintf(' · RSI %.0f', (float) $r['rsi'])."\n"
+                .'⚠️ '.self::REVERSAL_HIT_RATE_NOTE;
+
+            if ($this->gateway->send($html) !== null) {
+                $sent++;
+            }
+        }
+
+        return $sent;
     }
 
     /**
@@ -204,7 +254,7 @@ class SignalAlerts
             ! $this->gateway->isEnabled() => 'Telegram is not configured or disabled',
             ! Watchlist::alertsEnabled() => 'Alerts are switched OFF',
             (bool) $record->is_shadow => 'Tracked setup (shadow), never alerted',
-            ! $record->passed_filters && ! Watchlist::contains($record->symbol) => 'Filters failed: '.($record->auto_trade_status ? preg_replace('/^\[\w+\] skipped: (Filters failed: )?/', '', (string) $record->auto_trade_status) : 'market filters'),
+            ! $record->passed_filters => 'Filters failed (not tradable): '.($record->auto_trade_status ? preg_replace('/^\[\w+\] skipped: (Filters failed: )?/', '', (string) $record->auto_trade_status) : 'market filters'),
             ! in_array($record->grade, (array) config('trading.strategy.telegram_grades', ['A', 'B']), true) && ! Watchlist::contains($record->symbol) => "Grade {$record->grade} is below the alert grade",
             $record->source === 'backtest' => 'Backtest record',
             ($features['tradable'] ?? true) === false => 'Not tradable when recorded',

@@ -79,10 +79,10 @@ class TradingAccount extends Model
         return static::firstOrCreate(
             ['mode' => $mode],
             [
-                'initial_balance' => (float) config('trading.seed_capital', 5.0),
-                'balance' => (float) config('trading.seed_capital', 5.0),
-                'equity' => (float) config('trading.seed_capital', 5.0),
-                'peak_equity' => (float) config('trading.seed_capital', 5.0),
+                'initial_balance' => (float) config('trading.seed_capital', 24.0),
+                'balance' => (float) config('trading.seed_capital', 24.0),
+                'equity' => (float) config('trading.seed_capital', 24.0),
+                'peak_equity' => (float) config('trading.seed_capital', 24.0),
                 'total_trades' => 0,
                 'winning_trades' => 0,
                 'losing_trades' => 0,
@@ -123,12 +123,12 @@ class TradingAccount extends Model
     }
 
     /**
-     * Return progress toward $500 target.
+     * Progress from this account's starting balance to the final target.
      */
     public function getTargetProgressAttribute(): float
     {
         $target = (float) config('trading.target_capital', 500.0);
-        $seed = (float) config('trading.seed_capital', 5.0);
+        $seed = (float) ($this->initial_balance ?: config('trading.seed_capital', 24.0));
 
         if ($target <= $seed) {
             return 100.0;
@@ -138,5 +138,32 @@ class TradingAccount extends Model
         $totalNeeded = $target - $seed;
 
         return min(100.0, round(($gain / $totalNeeded) * 100, 2));
+    }
+
+    /**
+     * The next balance milestone and progress toward it from the previous one (or the starting balance).
+     *
+     * @return array{from: float, to: float, pct: float}
+     */
+    public function milestone(?float $equity = null): array
+    {
+        $equity ??= (float) $this->equity;
+        $target = (float) config('trading.target_capital', 500.0);
+        $from = (float) ($this->initial_balance ?: config('trading.seed_capital', 24.0));
+        $to = $target;
+        foreach ((array) config('trading.milestones', [50.0, 100.0, 250.0]) as $milestone) {
+            $milestone = (float) $milestone;
+            if ($milestone >= $target) {
+                break;
+            }
+            if ($equity < $milestone) {
+                $to = $milestone;
+                break;
+            }
+            $from = max($from, $milestone);
+        }
+        $pct = $to > $from ? ($equity - $from) / ($to - $from) * 100 : 100.0;
+
+        return ['from' => round($from, 2), 'to' => round($to, 2), 'pct' => round(min(100.0, max(0.0, $pct)), 1)];
     }
 }

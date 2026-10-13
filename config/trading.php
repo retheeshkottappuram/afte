@@ -44,7 +44,9 @@ return [
     | Compounding Challenge ($5 to $500)
     |--------------------------------------------------------------------------
     */
-    'seed_capital' => (float) env('TRADING_SEED_CAPITAL', 5.0),
+    'seed_capital' => (float) env('TRADING_SEED_CAPITAL', 24.0),
+    // Dashboard milestones between the starting balance and target_capital.
+    'milestones' => [50.0, 100.0, 250.0],
     'target_capital' => (float) env('TRADING_TARGET_CAPITAL', 500.0),
 
     /*
@@ -248,9 +250,13 @@ return [
         ],
         // Minute breakout watcher: Telegram alerts ("coiled" after each scan, "breaking out" in real time).
         'breakout_alerts' => (bool) env('STRATEGY_BREAKOUT_ALERTS', true),
-        // Auto-trade early breakouts (before the candle closes). The user's decision: the 12-month backtest of
-        // early entries lost, so they trade as their own setup with half risk, a daily cap and an auto-pause.
-        'intrabar_breakouts' => (bool) env('STRATEGY_INTRABAR_BREAKOUTS', true),
+        // "Possible top / bottom" Telegram alerts, never auto-traded (user's decision 2026-10-13). 12-month test:
+        // about 1 in 3 turned, trading them all lost (-0.10R, PF 0.81). The message states this.
+        'topbottom_alerts' => (bool) env('STRATEGY_TOPBOTTOM_ALERTS', true),
+        // Auto-trade early breakouts (before the candle closes). Off (user's decision 2026-10-13): a 5m replay of the
+        // live watcher (12 months, 23 coins) lost with realistic fills, even on the proven subset (last 4 months
+        // PF 0.83). Breakout alerts still go to Telegram (breakout_alerts), marked "not auto-traded".
+        'intrabar_breakouts' => (bool) env('STRATEGY_INTRABAR_BREAKOUTS', false),
         'early_breakout' => [
             'stop_mode' => env('STRATEGY_EARLY_STOP_MODE', 'mid'), // atr | inside | mid: box midpoint tested best (PF 0.78 pessimistic to 1.17 optimistic)
             'anticipate_pct' => (float) env('STRATEGY_EARLY_ANTICIPATE_PCT', 0.15), // enter this % before the breakout level

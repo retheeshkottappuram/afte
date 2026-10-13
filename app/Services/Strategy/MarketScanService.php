@@ -260,8 +260,12 @@ class MarketScanService
         $rows = [];
         $fresh = [];
         $watches = [];
+        $reversals = [];
 
         foreach ($results as $symbol => $result) {
+            if (! empty($result['reversal'])) {
+                $reversals[] = $result['reversal'];
+            }
             /** @var Signal|null $latest */
             $latest = $result['latest'] ?? null;
             $record = null;
@@ -290,6 +294,7 @@ class MarketScanService
             $this->watcher->store($interval, $watches);
         } else {
             $watches = [];
+            $reversals = [];
         }
 
         Setting::putValue(self::resultsKey($interval), [
@@ -304,7 +309,7 @@ class MarketScanService
             'rows' => $rows,
         ]);
 
-        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), BreakoutWatcher::coinCount($watches)), 'fresh' => $fresh, 'rows' => $rows, 'watches' => $watches];
+        return ['scanned' => true, 'message' => sprintf('Scanned %d symbols, %d fresh signals, watching %d for an intrabar breakout.', count($results), count($fresh), BreakoutWatcher::coinCount($watches)), 'fresh' => $fresh, 'rows' => $rows, 'watches' => $watches, 'reversals' => $reversals];
     }
 
     /**

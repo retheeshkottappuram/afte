@@ -180,6 +180,7 @@ class SymbolAnalyzer
             'state' => $analysis['state'],
             'series' => $analysis['series'],
             'watches' => $analysis['watches'] ?? [],
+            'reversal' => $analysis['reversal'] ?? null,
             'candles' => $base,
             'regime_candles' => $regime,
         ];

@@ -121,9 +121,8 @@ class DashboardController extends Controller
         $marginUtilizationPct = $balance > 0 ? min(100.0, round(($usedMargin / $balance) * 100, 1)) : 0.0;
         $daemonStatus = $this->daemonManager->status($mode);
 
-        // Stage 1 Seed Milestone Target ($25.00)
-        $stage1Target = 25.0;
-        $stage1Progress = min(100.0, max(0.0, round(($currentEquity / $stage1Target) * 100, 1)));
+        // Next balance milestone, measured from the account's starting balance
+        $milestone = $account->milestone($currentEquity);
 
         // Cooldown and pause telemetry
         $isCooldownActive = $account->paused_until !== null && $account->paused_until->isFuture();
@@ -152,8 +151,8 @@ class DashboardController extends Controller
             'initial_balance' => round($account->initial_balance, 2),
             'target_balance' => (float) config('trading.target_capital', 500.0),
             'progress_pct' => $account->target_progress,
-            'stage_target' => $stage1Target,
-            'stage_progress_pct' => $stage1Progress,
+            'stage_target' => $milestone['to'],
+            'stage_progress_pct' => $milestone['pct'],
             'win_rate' => $account->win_rate,
             'total_trades' => $account->total_trades,
             'winning_trades' => $account->winning_trades,

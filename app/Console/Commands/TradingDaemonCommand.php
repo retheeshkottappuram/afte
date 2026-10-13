@@ -119,6 +119,9 @@ class TradingDaemonCommand extends Command
                             if ($scanInterval === $interval && BreakoutWatcher::alertsEnabled()) {
                                 $alerts->breakoutWatchAlert((array) ($scan['watches'] ?? []));
                             }
+                            if ($scanInterval === $interval) {
+                                $alerts->reversalAlert((array) ($scan['reversals'] ?? []));
+                            }
                         }
                     } catch (Throwable $e) {
                         $retry = $scanner->releaseScan($scanInterval);
@@ -145,6 +148,8 @@ class TradingDaemonCommand extends Command
                                     $stats['opened']++;
                                     $this->log("OPENED {$signal->symbol} {$signal->side} Early Breakout");
                                 }
+                            } else {
+                                $status = 'Alert only: not auto-traded (early entries lost in the realistic replay test)';
                             }
 
                             $this->log(sprintf('[%s] BREAKOUT %s %s at %s (level %s, volume %.1fx pace)%s', strtoupper($mode), $signal->symbol, $signal->side, $signal->entry, $breakout['level'], $breakout['volume_pace'], $status ? ' · '.preg_replace('/^\[\w+\] /', '', $status) : ''));
