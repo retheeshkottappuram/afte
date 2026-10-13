@@ -123,6 +123,17 @@ class TradingAccount extends Model
     }
 
     /**
+     * Restart progress tracking from a new starting balance (e.g. after a deposit). The old peak predates the
+     * deposit, so drawdown is measured from today's balance. Trade history is untouched.
+     */
+    public function setBaseline(float $amount): void
+    {
+        $this->initial_balance = $amount;
+        $this->peak_equity = max($amount, (float) $this->balance, (float) $this->equity);
+        $this->save();
+    }
+
+    /**
      * Progress from this account's starting balance to the final target.
      */
     public function getTargetProgressAttribute(): float

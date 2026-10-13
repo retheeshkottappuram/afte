@@ -250,8 +250,8 @@ return [
         ],
         // Minute breakout watcher: Telegram alerts ("coiled" after each scan, "breaking out" in real time).
         'breakout_alerts' => (bool) env('STRATEGY_BREAKOUT_ALERTS', true),
-        // "Possible top / bottom" Telegram alerts, never auto-traded (user's decision 2026-10-13). 12-month test:
-        // about 1 in 3 turned, trading them all lost (-0.10R, PF 0.81). The message states this.
+        // Swing BUY/SELL Telegram alerts (SuperTrend 10,3 flip on 1.5x volume), never auto-traded (user's decision
+        // 2026-10-13). 12-month test: 43.9% won, about breakeven (PF 0.98). The message states this.
         'topbottom_alerts' => (bool) env('STRATEGY_TOPBOTTOM_ALERTS', true),
         // Auto-trade early breakouts (before the candle closes). Off (user's decision 2026-10-13): a 5m replay of the
         // live watcher (12 months, 23 coins) lost with realistic fills, even on the proven subset (last 4 months

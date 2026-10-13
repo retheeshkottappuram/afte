@@ -213,6 +213,52 @@ class Indicators
     }
 
     /**
+     * SuperTrend matching Pine Script's ta.supertrend(factor, atrPeriod): direction 1 = up, -1 = down,
+     * and the trailing line (lower band in an uptrend, upper band in a downtrend).
+     *
+     * @param  array<int, float>  $highs
+     * @param  array<int, float>  $lows
+     * @param  array<int, float>  $closes
+     * @return array{dir: array<int, int>, line: array<int, float|null>}
+     */
+    public static function supertrend(array $highs, array $lows, array $closes, int $length = 10, float $factor = 3.0): array
+    {
+        $count = count($closes);
+        $atr = self::atr($highs, $lows, $closes, $length);
+        $dir = array_fill(0, $count, 1);
+        $line = array_fill(0, $count, null);
+        $upper = null;
+        $lower = null;
+
+        for ($i = 0; $i < $count; $i++) {
+            if ($atr[$i] === null) {
+                continue;
+            }
+
+            $mid = ((float) $highs[$i] + (float) $lows[$i]) / 2;
+            $u = $mid + $factor * $atr[$i];
+            $l = $mid - $factor * $atr[$i];
+            if ($upper !== null && $i > 0) {
+                $prevClose = (float) $closes[$i - 1];
+                $u = ($u < $upper || $prevClose > $upper) ? $u : $upper;
+                $l = ($l > $lower || $prevClose < $lower) ? $l : $lower;
+                $d = $dir[$i - 1];
+                if ($d === -1 && (float) $closes[$i] > $upper) {
+                    $d = 1;
+                } elseif ($d === 1 && (float) $closes[$i] < $lower) {
+                    $d = -1;
+                }
+                $dir[$i] = $d;
+            }
+            $upper = $u;
+            $lower = $l;
+            $line[$i] = $dir[$i] === 1 ? $l : $u;
+        }
+
+        return ['dir' => $dir, 'line' => $line];
+    }
+
+    /**
      * Directional Movement Index (DMI/ADX) matching Pine Script's ta.dmi().
      *
      * @param  array<int, float>  $highs

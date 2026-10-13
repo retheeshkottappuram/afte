@@ -23,7 +23,7 @@
 
     /** Chart display toggles, remembered per browser. */
     function loadToggles() {
-        const defaults = { results: true, filtered: true, shadow: false, levels: true };
+        const defaults = { results: true, filtered: true, shadow: false, levels: true, swings: true, sound: true };
         try {
             return Object.assign(defaults, JSON.parse(localStorage.getItem('sap_chart_toggles') || '{}'));
         } catch (e) {
@@ -269,6 +269,177 @@
         }
     }
 
+    /* ---------- Big BUY / SELL labels over the chart ---------- */
+
+    /** Signals that get a large label: swing BUY/SELL signals and the strategy's tradable signals. */
+    function labelSignals(data) {
+        const out = [];
+        if (state.toggles.swings) {
+            (data.swing_signals || []).forEach((s) => out.push({
+                time: s.time, side: s.side, price: s.entry, sl: s.sl, tp1: s.tp1, tp2: s.tp2, text: s.side === 'LONG' ? 'BUY' : 'SELL', kind: 'swing',
+                confirmed: s.confirmed !== false,
+                reason: s.confirmed === false ? `${s.reason}, stop ${s.sl_pct}%: unconfirmed (outside the measured set, no alert)` : s.reason,
+            }));
+        }
+        (data.signal_history || []).filter((h) => h.tradable && !h.is_shadow).forEach((h) => out.push({
+            time: h.time, side: h.side, price: h.entry, sl: h.sl, tp1: h.tp1, tp2: h.tp2,
+            text: `${h.side === 'LONG' ? 'BUY' : 'SELL'} ${h.grade || ''}`.trim(), reason: h.setup_label, kind: 'strategy', confirmed: true,
+        }));
+        return out.sort((a, b) => a.time - b.time);
+    }
+
+    function ensureLabelLayer() {
+        const container = el('signalalgo_canvas_chart');
+        if (!container) return null;
+        let layer = el('sap-label-layer');
+        if (!layer || layer.parentElement !== container.parentElement) {
+            if (layer) layer.remove();
+            container.parentElement.style.position = container.parentElement.style.position || 'relative';
+            layer = document.createElement('div');
+            layer.id = 'sap-label-layer';
+            layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:5;';
+            container.parentElement.appendChild(layer);
+        }
+        if (!state.labelHooked && state.chart) {
+            state.labelHooked = true;
+            state.chart.timeScale().subscribeVisibleLogicalRangeChange(() => layoutLabels());
+            window.addEventListener('resize', () => layoutLabels());
+            // Vertical zoom/scroll has no event: re-place labels a few times a second while visible.
+            setInterval(() => { if (document.visibilityState === 'visible') layoutLabels(); }, 400);
+        }
+        return layer;
+    }
+
+    function layoutLabels() {
+        const layer = el('sap-label-layer');
+        if (!layer || !state.chart || !state.candleSeries || !state.data) return;
+        const candles = state.data.candles || [];
+        const byTime = new Map(candles.map((c) => [c.time, c]));
+        const width = layer.clientWidth;
+        const items = labelSignals(state.data).filter((s) => byTime.has(s.time));
+        const visible = items.map((s) => ({ s, x: state.chart.timeScale().timeToCoordinate(s.time) }))
+            .filter((v) => v.x !== null && v.x >= 0 && v.x <= width)
+            .slice(-30);
+        const newest = items.length ? items[items.length - 1].time : null;
+
+        layer.innerHTML = visible.map(({ s, x }) => {
+            const c = byTime.get(s.time);
+            const isBuy = s.side === 'LONG';
+            const anchorY = state.candleSeries.priceToCoordinate(isBuy ? c.low : c.high);
+            if (anchorY === null) return '';
+            const bg = isBuy ? '#16a34a' : '#e11d48';
+            const top = isBuy ? anchorY + 18 : anchorY - 18 - 34;
+            const lineTop = isBuy ? anchorY + 2 : anchorY - 18;
+            const pulse = s.time === newest ? 'box-shadow:0 0 0 4px rgba(250,204,21,0.45);' : '';
+            const opacity = s.confirmed ? 1 : 0.45;
+            return `
+                <div style="position:absolute;left:${x - 0.5}px;top:${lineTop}px;width:1px;height:16px;background:${bg};"></div>
+                <div title="${esc(s.reason || '')} · SL ${fmt(s.sl)} · TP1 ${fmt(s.tp1)}" onclick="SignalAlgoPro.focusSignal(${s.time})"
+                     style="position:absolute;left:${x}px;top:${top}px;transform:translateX(-50%);pointer-events:auto;cursor:pointer;opacity:${opacity};
+                            background:${bg};color:#fff;border-radius:6px;padding:2px 7px;font:800 12px/1.25 ui-monospace,monospace;text-align:center;white-space:nowrap;${pulse}">
+                    ${isBuy ? '▲' : '▼'} ${esc(s.text)}${s.confirmed ? '' : '?'}<div style="font-weight:600;font-size:10px;opacity:0.9">${fmt(s.price)}</div>
+                </div>`;
+        }).join('');
+    }
+
+    /* ---------- Live notification when a new signal prints ---------- */
+
+    function beep(isBuy) {
+        if (state.toggles.sound === false) return;
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            [0, 0.18].forEach((delay, i) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.frequency.value = isBuy ? (i ? 880 : 660) : (i ? 440 : 660);
+                gain.gain.setValueAtTime(0.15, ctx.currentTime + delay);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.16);
+                osc.connect(gain).connect(ctx.destination);
+                osc.start(ctx.currentTime + delay);
+                osc.stop(ctx.currentTime + delay + 0.17);
+            });
+        } catch (e) { /* audio unavailable */ }
+    }
+
+    function signalToast(sig) {
+        let box = el('sap-signal-toasts');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'sap-signal-toasts';
+            box.style.cssText = 'position:fixed;top:16px;right:16px;z-index:70;display:flex;flex-direction:column;gap:8px;max-width:min(380px,calc(100vw - 32px));';
+            document.body.appendChild(box);
+        }
+        const isBuy = sig.side === 'LONG';
+        const card = document.createElement('div');
+        card.style.cssText = `background:${isBuy ? '#052e16' : '#4c0519'};border:2px solid ${isBuy ? '#22c55e' : '#f43f5e'};color:#fff;border-radius:12px;padding:12px 14px;font:13px/1.4 ui-monospace,monospace;box-shadow:0 10px 30px rgba(0,0,0,.5);`;
+        card.innerHTML = `
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+                <b style="font-size:15px">${isBuy ? '🟢 BUY' : '🔴 SELL'} ${esc(sig.symbol)} <span style="opacity:.7;font-size:12px">${esc(sig.interval || '')}</span></b>
+                <button type="button" data-close style="background:none;border:0;color:#cbd5e1;font-size:16px;cursor:pointer">✕</button>
+            </div>
+            <div>Entry <b>${fmt(sig.entry)}</b> · SL <b style="color:#fda4af">${fmt(sig.sl)}</b> · TP1 <b style="color:#86efac">${fmt(sig.tp1)}</b></div>
+            <div style="opacity:.8;font-size:11px;margin-top:2px">${esc(sig.reason || '')}</div>
+            ${sig.symbol !== (state.data && state.data.symbol) ? `<button type="button" data-open style="margin-top:8px;width:100%;padding:6px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;cursor:pointer;font-weight:700">Open ${esc(sig.symbol)} chart</button>` : ''}`;
+        card.querySelector('[data-close]').onclick = () => card.remove();
+        const open = card.querySelector('[data-open]');
+        if (open) open.onclick = () => { card.remove(); if (typeof window.selectSymbol === 'function') window.selectSymbol(sig.symbol); else window.location.href = `?symbol=${encodeURIComponent(sig.symbol)}`; };
+        box.prepend(card);
+        while (box.children.length > 5) box.lastChild.remove();
+    }
+
+    function announce(sig) {
+        signalToast(sig);
+        beep(sig.side === 'LONG');
+        if ('Notification' in window && Notification.permission === 'granted') {
+            try {
+                new Notification(`${sig.side === 'LONG' ? 'BUY' : 'SELL'} ${sig.symbol} ${sig.interval || ''}`, { body: `Entry ${fmt(sig.entry)} · SL ${fmt(sig.sl)} · TP1 ${fmt(sig.tp1)}\n${sig.reason || ''}`, tag: `${sig.symbol}-${sig.time}` });
+            } catch (e) { /* notifications unavailable */ }
+        }
+    }
+
+    /** New signal on the coin being viewed: compare with the last one this browser has seen. */
+    function checkNewChartSignal(data) {
+        const items = labelSignals(data).filter((s) => s.confirmed);
+        if (!items.length) return;
+        const newest = items[items.length - 1];
+        const key = `sap_last_sig_${data.symbol}_${data.interval}`;
+        let seen = null;
+        try { seen = Number(localStorage.getItem(key) || 0); } catch (e) { /* storage unavailable */ }
+        try { localStorage.setItem(key, String(newest.time)); } catch (e) { /* storage unavailable */ }
+        const fresh = Date.now() / 1000 - newest.time < 2 * 3600;
+        if (seen && newest.time > seen && fresh) {
+            announce(Object.assign({ symbol: data.symbol, interval: data.interval, entry: newest.price }, newest));
+            recentSeen[`${data.symbol}:${newest.time}`] = true;
+        }
+    }
+
+    /** Every coin's new swing signals from the hourly scan (the Telegram list), polled while the page is open. */
+    const recentSeen = {};
+    async function pollRecentSignals() {
+        let since = 0;
+        try { since = Number(localStorage.getItem('sap_recent_since') || 0); } catch (e) { /* storage unavailable */ }
+        try {
+            const res = await fetch(`/signals/recent?since=${since}`, { headers: { 'Accept': 'application/json' } });
+            if (!res.ok) return;
+            const json = await res.json();
+            const list = json.signals || [];
+            const first = !since;
+            list.forEach((s) => {
+                const k = `${s.symbol}:${s.time}`;
+                if (!first && !recentSeen[k]) announce(s);
+                recentSeen[k] = true;
+            });
+            if (json.now) { try { localStorage.setItem('sap_recent_since', String(json.now)); } catch (e) { /* storage unavailable */ } }
+        } catch (e) { /* offline */ }
+    }
+
+    function updateAlertButton() {
+        const btn = el('sap-alerts-btn');
+        if (!btn) return;
+        const granted = 'Notification' in window && Notification.permission === 'granted';
+        btn.textContent = `${state.toggles.sound === false ? '🔕' : '🔔'} ${granted ? 'Alerts on' : 'Enable alerts'}`;
+    }
+
     window.SignalAlgoPro = {
         /** Called by the page after each /dashboard/analyze response. */
         render(data, chart, candleSeries) {
@@ -278,14 +449,21 @@
                 ensureSeries(chart, candleSeries);
                 drawOverlays(data);
                 applyMarkers();
+                if (ensureLabelLayer()) layoutLabels();
             }
+            checkNewChartSignal(data);
+            if (!state.recentPoller) {
+                state.recentPoller = setInterval(() => { if (document.visibilityState === 'visible') pollRecentSignals(); }, 60000);
+                pollRecentSignals();
+            }
+            updateAlertButton();
             syncToggleInputs();
             renderStrip(data);
             renderInspector(data);
             renderAccuracyCard(data.all_setup_stats);
         },
 
-        /** Chart toggle checkbox handler: results / filtered / shadow / levels. */
+        /** Chart toggle checkbox handler: results / filtered / shadow / levels / swings. */
         setToggle(name, on) {
             state.toggles[name] = !!on;
             saveToggles();
@@ -293,6 +471,19 @@
                 drawOverlays(state.data);
             }
             applyMarkers();
+            layoutLabels();
+        },
+
+        /** "Enable alerts": ask for browser notifications once; afterwards the button mutes/unmutes the beep. */
+        async enableAlerts() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                try { await Notification.requestPermission(); } catch (e) { /* unsupported */ }
+            } else {
+                state.toggles.sound = state.toggles.sound === false;
+                saveToggles();
+            }
+            updateAlertButton();
+            if (state.toggles.sound !== false) beep(true);
         },
 
         focusSignal(time) {

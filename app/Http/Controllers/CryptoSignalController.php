@@ -10,6 +10,7 @@ use App\Services\Crypto\BinanceClient;
 use App\Services\Crypto\Indicators;
 use App\Services\Notifications\SignalAlerts;
 use App\Services\Strategy\ChartOverlayBuilder;
+use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Strategy\SignalLedger;
@@ -66,6 +67,22 @@ class CryptoSignalController extends Controller
             'monitoredCoins' => Watchlist::symbols(),
             'tradingMode' => $this->modeManager->activeMode(),
         ]);
+    }
+
+    /**
+     * Swing BUY/SELL signals from the latest hourly scan (all scanned coins), newer than `since` (unix seconds).
+     * The chart page polls this to pop a notification while the user is watching.
+     */
+    public function recentSignals(Request $request, MarketScanService $scanner): JsonResponse
+    {
+        $since = max(0, (int) $request->query('since', 0));
+        $signals = collect((array) ($scanner->latestResults()['reversals'] ?? []))
+            ->filter(fn ($s): bool => is_array($s) && (int) ($s['time'] ?? 0) > $since)
+            ->map(fn (array $s): array => array_intersect_key($s, array_flip(['symbol', 'interval', 'side', 'entry', 'sl', 'tp1', 'tp2', 'reason', 'time', 'volume_ratio'])))
+            ->sortByDesc('volume_ratio')
+            ->values();
+
+        return response()->json(['signals' => $signals, 'now' => now()->timestamp]);
     }
 
     /**

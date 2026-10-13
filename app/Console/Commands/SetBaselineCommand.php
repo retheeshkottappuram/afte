@@ -31,10 +31,7 @@ class SetBaselineCommand extends Command
         }
 
         $account = TradingAccount::getForMode($mode);
-        $account->initial_balance = $amount;
-        // The old peak predates the deposit: measure drawdown from today's balance.
-        $account->peak_equity = max($amount, (float) $account->balance, (float) $account->equity);
-        $account->save();
+        $account->setBaseline($amount);
 
         $this->info(sprintf('%s account: starting balance $%.2f, peak $%.2f. Trade history is unchanged.', ucfirst($mode), $amount, $account->peak_equity));
 

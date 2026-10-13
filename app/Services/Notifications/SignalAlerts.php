@@ -26,13 +26,13 @@ class SignalAlerts
     public const LEAN_HIT_RATE_NOTE = 'In a 12-month test about 4 in 5 of these setups broke in the stated direction (not every break keeps going).';
 
     /**
-     * Measured 2026-10-13 (12 months, top 50, 1h, StrategyEngine::reversalAlertAt): 14,272 alerts, 31.6% reached 2 ATR
-     * in the called direction before 1 ATR against (28.9% in the last 4 months). Traded with the exit plan: 34% wins,
-     * -0.10R average, PF 0.81. Alert only, never auto-traded (user's decision 2026-10-13).
+     * Measured 2026-10-13 (12 months, top 50, 1h, StrategyEngine::swingSignalAt): 1,911 signals, 34.9% reached 2 ATR in the
+     * called direction before 1 ATR against; traded with the exit plan 43.9% won, -0.01R average (PF 0.98). Unseen last
+     * 2 months: PF 1.25. Alert only, never auto-traded (user's decision 2026-10-13).
      */
-    public const REVERSAL_HIT_RATE_NOTE = 'Not auto-traded. In a 12-month test only about 1 in 3 of these turned (2 ATR before 1 ATR against); taking them all lost money.';
+    public const REVERSAL_HIT_RATE_NOTE = 'Not auto-traded. 12-month test: about 44% of these won with this stop and TP1; taking every one was about breakeven, so pick with care.';
 
-    /** Most top/bottom alerts sent per hourly scan (strongest volume first); the rule fires ~39 times a day on 50 coins. */
+    /** Most swing alerts sent per hourly scan (strongest volume first); the rule fires ~5 times a day on 50 coins. */
     public const MAX_REVERSAL_ALERTS_PER_SCAN = 3;
 
     public function __construct(
@@ -223,7 +223,7 @@ class SignalAlerts
 
             $isBuy = $r['side'] === 'LONG';
             $slPct = abs((float) $r['entry'] - (float) $r['sl']) / (float) $r['entry'] * 100;
-            $html = sprintf("%s <b>%s %s: possible %s</b> (%s)\n", $isBuy ? '🔺' : '🔻', $isBuy ? 'BUY' : 'SELL', e((string) $r['symbol']), $isBuy ? 'bottom' : 'top', e((string) $r['interval']))
+            $html = sprintf("%s <b>%s %s: swing %s</b> (%s)\n", $isBuy ? '🟢' : '🔴', $isBuy ? 'BUY' : 'SELL', e((string) $r['symbol']), $isBuy ? 'turn up' : 'turn down', e((string) $r['interval']))
                 .sprintf("Entry ≈<code>%s</code> · Stop <code>%s</code> (−%.2f%%)\n", $this->fmt((float) $r['entry']), $this->fmt((float) $r['sl']), $slPct)
                 ."TP1 <code>{$this->fmt((float) $r['tp1'])}</code> · TP2 <code>{$this->fmt((float) $r['tp2'])}</code>\n"
                 .'Why: '.e((string) $r['reason']).sprintf(' · RSI %.0f', (float) $r['rsi'])."\n"

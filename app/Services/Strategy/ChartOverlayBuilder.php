@@ -12,7 +12,10 @@ use App\Services\Crypto\Indicators;
  */
 class ChartOverlayBuilder
 {
-    public function __construct(protected TradeSimulator $simulator) {}
+    public function __construct(protected TradeSimulator $simulator, protected ?StrategyEngine $engine = null)
+    {
+        $this->engine ??= app(StrategyEngine::class);
+    }
 
     /**
      * @param  array<string, array<int, float|int>>  $candles  Raw base candles (the last one may still be forming)
@@ -41,7 +44,8 @@ class ChartOverlayBuilder
 
         $closes = $candles['closes'];
         // Outcomes use closed candles only, so a label never changes while a candle is still forming.
-        $outcomes = $this->outcomes($signals, CandleSanitizer::onlyClosedCandles($candles), $interval, $time($start));
+        $closed = CandleSanitizer::onlyClosedCandles($candles);
+        $outcomes = $this->outcomes($signals, $closed, $interval, $time($start));
 
         return [
             'candles' => $chartCandles,
@@ -55,6 +59,8 @@ class ChartOverlayBuilder
             'markers' => $outcomes['markers'],
             'signal_history' => $outcomes['history'],
             'stats_strip' => $outcomes['strip'],
+            // Swing BUY/SELL labels (SuperTrend flip on volume), closed candles only so a label never moves.
+            'swing_signals' => $this->engine->swingSignals($closed, $start, includeUnconfirmed: true),
         ];
     }
 

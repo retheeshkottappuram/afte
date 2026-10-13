@@ -306,6 +306,7 @@ class MarketScanService
             'symbols_scanned' => count($results),
             'fresh_signals' => count($fresh),
             'watching' => BreakoutWatcher::coinCount($watches),
+            'reversals' => $reversals,
             'rows' => $rows,
         ]);
 

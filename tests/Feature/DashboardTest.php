@@ -212,6 +212,7 @@ class DashboardTest extends TestCase
         $response = $this->actingAs($user)->getJson('/api/positions?mode=paper');
         $response->assertStatus(200);
         $response->assertJsonFragment(['symbol' => 'SOLUSDT', 'stage' => 'ENTRY']);
+        $response->assertJsonFragment(['source' => 'auto']);
 
         $this->assertEquals('OPEN', $trade->fresh()->status);
     }
@@ -380,5 +381,29 @@ class DashboardTest extends TestCase
         $this->assertNull($account->paused_until);
         $this->assertEquals(0, $account->consecutive_losses);
         $this->assertTrue($account->is_running);
+    }
+
+    public function test_admin_sets_the_starting_balance_from_the_dashboard(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        TradingAccount::getForMode('paper')->update(['initial_balance' => 3.33, 'balance' => 24.0, 'equity' => 24.0, 'peak_equity' => 4.0]);
+
+        $this->actingAs($admin)->postJson('/api/baseline', ['mode' => 'paper', 'amount' => 24])
+            ->assertOk()
+            ->assertJson(['success' => true, 'initial_balance' => 24.0, 'milestone' => ['from' => 24.0, 'to' => 50.0]]);
+
+        $account = TradingAccount::getForMode('paper')->fresh();
+        $this->assertSame(24.0, (float) $account->initial_balance);
+        $this->assertSame(24.0, (float) $account->peak_equity);
+        $this->actingAs($admin)->get('/')->assertSee('id="stat-initial-balance"', false)->assertSee('24.00');
+    }
+
+    public function test_starting_balance_needs_an_admin_and_a_positive_amount(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $trader = User::factory()->create(['role' => 'trader']);
+
+        $this->actingAs($admin)->postJson('/api/baseline', ['mode' => 'paper', 'amount' => 0])->assertStatus(422);
+        $this->actingAs($trader)->postJson('/api/baseline', ['mode' => 'paper', 'amount' => 24])->assertStatus(403);
     }
 }

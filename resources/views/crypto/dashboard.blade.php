@@ -561,6 +561,8 @@
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-filtered" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('filtered', this.checked)"> Filtered</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-shadow" class="accent-emerald-500" onchange="SignalAlgoPro.setToggle('shadow', this.checked)"> Shadow</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-levels" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('levels', this.checked)"> Levels</label>
+                <label class="inline-flex items-center gap-1 cursor-pointer" title="SuperTrend flip on volume. 12-month test: ~44% won, about breakeven overall. Alert only, never auto-traded."><input type="checkbox" id="sapToggle-swings" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('swings', this.checked)"> Swing BUY/SELL</label>
+                <button type="button" id="sap-alerts-btn" onclick="SignalAlgoPro.enableAlerts()" class="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 font-bold" title="Pop-up, sound and browser notification when a new BUY/SELL prints (this coin and every scanned coin)">🔔 Enable alerts</button>
             </div>
 
             <!-- Indicator Color Legend -->
@@ -795,7 +797,7 @@
 
 <!-- TradingView & Lightweight Charts Scripts with Fail-Safe Fallback -->
 <script type="text/javascript" src="{{ asset('js/lightweight-charts.standalone.production.js') }}"></script>
-<script type="text/javascript" src="{{ asset('js/signalalgo-chart.js') }}?v=5"></script>
+<script type="text/javascript" src="{{ asset('js/signalalgo-chart.js') }}?v=7"></script>
 <script type="text/javascript">
     if (typeof LightweightCharts === 'undefined') {
         const s = document.createElement('script');
@@ -1596,6 +1598,11 @@
     window.loadSignalAt = function (time) {
         requestedSignalTime = time;
         loadFuturesChart(activeSymbol, false);
+    };
+
+    /** Used by the signal pop-up's "Open chart" button. */
+    window.selectSymbol = function (symbol) {
+        loadFuturesChart(String(symbol), true);
     };
 
     function loadFuturesChart(rawSymbol, autoScroll = true) {

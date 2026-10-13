@@ -54,6 +54,7 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/kill-switch', [DashboardController::class, 'toggleKillSwitch'])->name('api.kill_switch');
             Route::post('/toggle-auto-trading', [DashboardController::class, 'toggleAutoTrading'])->name('api.toggle_auto_trading');
             Route::post('/resume-cooldown', [DashboardController::class, 'resumeCooldown'])->name('api.resume_cooldown');
+            Route::post('/baseline', [DashboardController::class, 'setBaseline'])->name('api.baseline');
             Route::post('/trading/mode', [DashboardController::class, 'setTradingMode'])->name('api.trading_mode');
         });
 
@@ -72,6 +73,9 @@ Route::middleware('auth')->group(function (): void {
     Route::get('/signals', [CryptoSignalController::class, 'index'])
         ->middleware('permission:view_signals')
         ->name('signals.dashboard');
+    Route::get('/signals/recent', [CryptoSignalController::class, 'recentSignals'])
+        ->middleware('permission:view_signals')
+        ->name('signals.recent');
     Route::get('/signals/analyze', [CryptoSignalController::class, 'analyze'])
         ->middleware('permission:view_signals')
         ->name('signals.analyze');

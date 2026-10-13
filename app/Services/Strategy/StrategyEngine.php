@@ -148,11 +148,8 @@ class StrategyEngine
             $watches = $this->watchCandidates($symbol, $interval, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context);
         }
 
-        // Possible top/bottom on the last closed candle (alert only), when its stop is not absurdly wide.
-        $reversal = $this->reversalAlertAt($lastIndex, $base, $s);
-        if ($reversal !== null && abs($reversal['entry'] - $reversal['sl']) / $reversal['entry'] * 100 > $this->maxSlPct('SQUEEZE_BREAKOUT')) {
-            $reversal = null;
-        }
+        // Swing BUY/SELL on the last closed candle (chart label + Telegram, never auto-traded).
+        $swing = $this->swingSignalAt($lastIndex, $base, $s, self::supertrendOf($base));
 
         return [
             'signals' => $signals,
@@ -160,7 +157,7 @@ class StrategyEngine
             'state' => $this->currentState($symbol, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context, $latest),
             'series' => $s,
             'watches' => $watches,
-            'reversal' => $reversal === null ? null : $reversal + ['symbol' => $symbol, 'interval' => $interval, 'time' => intdiv((int) $base['closeTimes'][$lastIndex], 1000)],
+            'reversal' => $swing === null ? null : $swing + ['symbol' => $symbol, 'interval' => $interval],
         ];
     }
 
@@ -394,62 +391,88 @@ class StrategyEngine
         ];
     }
 
+    /** Swing signals: SuperTrend(10, 3) flip on at least 1.5x volume (chosen 2026-10-13 from 4 rules, see swingSignalAt). */
+    public const SWING_ST_LENGTH = 10;
+
+    public const SWING_ST_FACTOR = 3.0;
+
+    public const SWING_MIN_VOLUME = 1.5;
+
     /**
-     * Possible top or bottom on closed candle k (alert only, never traded). Top: a new 24-bar high rejected
-     * (close in the bottom 40% of the candle) on 1.5x volume, or RSI turning down from 70+ on a red candle.
-     * Bottom: the mirror. Stop beyond the candle's wick + 0.2 ATR, targets from the exit plan.
+     * @param  array<string, array<int, float|int>>  $c
+     * @return array{dir: array<int, int>, line: array<int, float|null>}
+     */
+    public static function supertrendOf(array $c): array
+    {
+        return Indicators::supertrend($c['highs'], $c['lows'], $c['closes'], self::SWING_ST_LENGTH, self::SWING_ST_FACTOR);
+    }
+
+    /**
+     * Swing BUY/SELL on closed candle k, for the chart and Telegram (never auto-traded). The SuperTrend(10, 3) flips
+     * up (BUY) or down (SELL) on a candle with at least 1.5x its 20-bar volume. Stop at the SuperTrend line.
+     * 12-month test, top 50, 1h (2026-10-13): best of four rules picked on months 1-10 (rejected-high/low reversal,
+     * confirmed reversal, structure break). 1,911 signals, ~5 a day: 34.9% reached 2 ATR before 1 ATR against,
+     * 43.9% won with the exit plan, -0.01R average (PF 0.98, about breakeven). Unseen last 2 months: PF 1.25.
      *
      * @param  array<string, array<int, float|int>>  $c
      * @param  array<string, array<int, float|null>>  $s  From computeSeries()
-     * @return array{side: string, entry: float, sl: float, tp1: float, tp2: float, tp3: float, atr: float, reason: string, rsi: float, volume_ratio: float}|null
+     * @param  array{dir: array<int, int>, line: array<int, float|null>}  $st  From supertrendOf()
+     * @return array{side: string, entry: float, sl: float, tp1: float, tp2: float, tp3: float, atr: float, reason: string, rsi: float, volume_ratio: float, time: int, confirmed: bool, sl_pct: float}|null
      */
-    public function reversalAlertAt(int $k, array $c, array $s): ?array
+    public function swingSignalAt(int $k, array $c, array $s, array $st, bool $includeUnconfirmed = false): ?array
     {
         $atr = (float) ($s['atr'][$k] ?? 0);
         $volSma = (float) ($s['vol_sma'][$k - 1] ?? 0);
-        $rsi = $s['rsi'][$k] ?? null;
-        $rsiPrev = $s['rsi'][$k - 1] ?? null;
-        if ($k < 25 || $atr <= 0 || $volSma <= 0 || $rsi === null || $rsiPrev === null) {
+        $line = $st['line'][$k] ?? null;
+        if ($k < 25 || $atr <= 0 || $volSma <= 0 || $line === null || ($st['dir'][$k] ?? null) === ($st['dir'][$k - 1] ?? null)) {
             return null;
         }
 
-        $open = (float) $c['opens'][$k];
-        $high = (float) $c['highs'][$k];
-        $low = (float) $c['lows'][$k];
-        $close = (float) $c['closes'][$k];
-        $range = max(1e-12, $high - $low);
-        $closePos = ($close - $low) / $range;
         $volumeRatio = (float) $c['volumes'][$k] / $volSma;
-        $priorHigh = max(array_slice($c['highs'], $k - 24, 22));
-        $priorLow = min(array_slice($c['lows'], $k - 24, 22));
-
-        $side = null;
-        $reason = '';
-        if ($high >= $priorHigh && $close < $priorHigh && $closePos <= 0.4 && $volumeRatio >= 1.5) {
-            [$side, $reason] = ['SHORT', sprintf('New 24h high rejected (closed in the bottom %d%% of the candle) on %.1fx volume', (int) round($closePos * 100), $volumeRatio)];
-        } elseif ($low <= $priorLow && $close > $priorLow && $closePos >= 0.6 && $volumeRatio >= 1.5) {
-            [$side, $reason] = ['LONG', sprintf('New 24h low rejected (closed in the top %d%% of the candle) on %.1fx volume', (int) round((1 - $closePos) * 100), $volumeRatio)];
-        } elseif ($rsiPrev >= 70 && $rsi < $rsiPrev && $close < $open) {
-            [$side, $reason] = ['SHORT', sprintf('RSI turned down from %.0f (overbought) on a red candle', $rsiPrev)];
-        } elseif ($rsiPrev <= 30 && $rsi > $rsiPrev && $close > $open) {
-            [$side, $reason] = ['LONG', sprintf('RSI turned up from %.0f (oversold) on a green candle', $rsiPrev)];
-        }
-        if ($side === null) {
-            return null;
-        }
-
+        $side = $st['dir'][$k] === 1 ? 'LONG' : 'SHORT';
         $direction = $side === 'LONG' ? 1 : -1;
-        $sl = $side === 'LONG' ? $low - 0.2 * $atr : $high + 0.2 * $atr;
-        $minDistance = $close * (float) $this->config['min_sl_pct'] / 100;
-        if (($close - $sl) * $direction < $minDistance) {
-            $sl = $close - $direction * $minDistance;
+        $close = (float) $c['closes'][$k];
+        $sl = (float) $line;
+        $slPct = ($close - $sl) * $direction / $close * 100;
+        // Confirmed = the measured subset (volume and stop width). Others are chart-only, never alerted.
+        $confirmed = $volumeRatio >= self::SWING_MIN_VOLUME && $slPct >= 0.3 && $slPct <= $this->maxSlPct('SQUEEZE_BREAKOUT');
+        if (! $confirmed && ! $includeUnconfirmed) {
+            return null;
         }
         $targets = $this->exitPlan->targets($side, $close, $sl);
 
         return [
             'side' => $side, 'entry' => $close, 'sl' => $sl, 'tp1' => $targets['tp1'], 'tp2' => $targets['tp2'], 'tp3' => $targets['tp3'],
-            'atr' => $atr, 'reason' => $reason, 'rsi' => round((float) $rsi, 1), 'volume_ratio' => round($volumeRatio, 2),
+            'atr' => $atr, 'reason' => sprintf('SuperTrend(10,3) flipped %s on %.1fx volume', $side === 'LONG' ? 'up' : 'down', $volumeRatio),
+            'rsi' => round((float) ($s['rsi'][$k] ?? 50), 1), 'volume_ratio' => round($volumeRatio, 2),
+            'time' => intdiv((int) $c['closeTimes'][$k], 1000),
+            'confirmed' => $confirmed,
+            'sl_pct' => round($slPct, 2),
         ];
+    }
+
+    /**
+     * Every swing signal from bar $from on (for the chart), one per bar.
+     *
+     * @param  array<string, array<int, float|int>>  $c  Closed candles
+     * @return array<int, array<string, mixed>>
+     */
+    public function swingSignals(array $c, int $from = 0, bool $includeUnconfirmed = false): array
+    {
+        $n = count($c['closes'] ?? []);
+        if ($n < 60) {
+            return [];
+        }
+        $s = $this->computeSeries($c);
+        $st = self::supertrendOf($c);
+        $out = [];
+        for ($k = max(25, $from); $k < $n; $k++) {
+            if (($signal = $this->swingSignalAt($k, $c, $s, $st, $includeUnconfirmed)) !== null) {
+                $out[] = $signal;
+            }
+        }
+
+        return $out;
     }
 
     /**

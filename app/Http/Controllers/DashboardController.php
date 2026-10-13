@@ -240,6 +240,7 @@ class DashboardController extends Controller
                 'id' => $pos->id,
                 'symbol' => $pos->symbol,
                 'side' => $pos->side,
+                'source' => ($pos->meta['source'] ?? 'auto') === 'manual' ? 'manual' : 'auto',
                 'stage' => $pos->stage,
                 'entry_price' => $pos->entry_price,
                 'mark_price' => $markPrice,
@@ -648,6 +649,30 @@ class DashboardController extends Controller
             'message' => 'Circuit breaker cleared. Auto-trading resumes on the next engine cycle.',
             'mode' => $mode,
             'can_trade' => $account->canTrade(),
+        ]);
+    }
+
+    /**
+     * Set the starting balance that progress, milestones and drawdown are measured from (e.g. after a deposit).
+     */
+    public function setBaseline(Request $request): JsonResponse
+    {
+        if (! $request->user()?->isAdmin()) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized. Only administrators can change the starting balance.'], 403);
+        }
+
+        $amount = (float) $request->validate(['amount' => ['required', 'numeric', 'gt:0', 'max:10000000']])['amount'];
+        $mode = $this->viewMode($request);
+        $account = TradingAccount::getForMode($mode);
+        $account->setBaseline($amount);
+
+        return response()->json([
+            'success' => true,
+            'message' => sprintf('Starting balance set to $%.2f. Progress to $%s now counts from here.', $amount, number_format((float) config('trading.target_capital', 500.0), 0)),
+            'mode' => $mode,
+            'initial_balance' => round($amount, 2),
+            'progress_pct' => $account->target_progress,
+            'milestone' => $account->milestone(),
         ]);
     }
 

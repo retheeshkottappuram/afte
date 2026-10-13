@@ -2,16 +2,23 @@
 
 namespace Tests\Feature;
 
+use App\Models\Setting;
 use App\Models\Trade;
+use App\Models\User;
+use App\Services\Crypto\Indicators;
 use App\Services\Notifications\SignalAlerts;
+use App\Services\Strategy\ChartOverlayBuilder;
+use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\StrategyEngine;
 use App\Services\Strategy\Watchlist;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
-use ReflectionMethod;
 use Tests\TestCase;
 
+/**
+ * Swing BUY/SELL signals (SuperTrend flip on volume): chart labels, Telegram alerts and the live notification feed.
+ */
 class TopBottomAlertsTest extends TestCase
 {
     use RefreshDatabase;
@@ -32,113 +39,124 @@ class TopBottomAlertsTest extends TestCase
     }
 
     /**
-     * 60 calm candles oscillating around 100 (range ~1), volume 1000.
+     * 80 candles drifting down from 110 to ~94, then a strong green candle to 96.2 on the given volume.
      *
      * @return array<string, array<int, float|int>>
      */
-    protected function candles(): array
+    protected function downtrendThenRally(float $rallyVolume): array
     {
         $c = ['opens' => [], 'highs' => [], 'lows' => [], 'closes' => [], 'volumes' => [], 'closeTimes' => []];
-        for ($i = 0; $i < 60; $i++) {
-            $close = 100 + ($i % 2 ? 0.3 : -0.3);
-            $c['opens'][] = 100.0;
-            $c['highs'][] = max(100.0, $close) + 0.2;
-            $c['lows'][] = min(100.0, $close) - 0.2;
+        for ($i = 0; $i < 80; $i++) {
+            $close = 110 - $i * 0.2;
+            $c['opens'][] = $close + 0.15;
+            $c['highs'][] = $close + 0.3;
+            $c['lows'][] = $close - 0.15;
             $c['closes'][] = $close;
             $c['volumes'][] = 1000.0;
-            $c['closeTimes'][] = 1_800_000_000_000 + ($i + 1) * 3_600_000 - 1;
+            $c['closeTimes'][] = 1_700_000_000_000 + ($i + 1) * 3_600_000 - 1;
         }
+        $c['opens'][] = 94.2;
+        $c['highs'][] = 96.3;
+        $c['lows'][] = 94.0;
+        $c['closes'][] = 96.2;
+        $c['volumes'][] = $rallyVolume;
+        $c['closeTimes'][] = 1_700_000_000_000 + 81 * 3_600_000 - 1;
 
         return $c;
     }
 
-    /**
-     * @param  array<string, array<int, float|int>>  $c
-     * @return array<string, mixed>|null
-     */
-    protected function alertAtLast(array $c): ?array
+    public function test_a_supertrend_flip_up_on_volume_is_a_buy_with_the_stop_at_the_supertrend_line(): void
     {
-        $engine = app(StrategyEngine::class);
-        $series = (new ReflectionMethod($engine, 'computeSeries'))->invoke($engine, $c);
+        $c = $this->downtrendThenRally(3000.0);
+        $signals = app(StrategyEngine::class)->swingSignals($c);
 
-        return $engine->reversalAlertAt(count($c['closes']) - 1, $c, $series);
+        $this->assertNotEmpty($signals);
+        $last = end($signals);
+        $this->assertSame('LONG', $last['side']);
+        $this->assertSame(96.2, $last['entry']);
+        $this->assertSame(intdiv($c['closeTimes'][80], 1000), $last['time']);
+        $line = Indicators::supertrend($c['highs'], $c['lows'], $c['closes'], 10, 3.0)['line'][80];
+        $this->assertEqualsWithDelta($line, $last['sl'], 1e-9);
+        $this->assertGreaterThan($last['entry'], $last['tp1']);
+        $this->assertStringContainsString('SuperTrend(10,3) flipped up on 3.0x volume', $last['reason']);
     }
 
-    public function test_a_rejected_new_high_on_volume_is_a_possible_top_with_the_stop_above_the_wick(): void
+    public function test_a_flip_without_volume_is_not_a_signal(): void
     {
-        $c = $this->candles();
-        // Last candle spikes to a new 24h high (102) and closes near its low (100.2) on 2.5x volume.
-        $c['opens'][59] = 100.5;
-        $c['highs'][59] = 102.0;
-        $c['lows'][59] = 100.0;
-        $c['closes'][59] = 100.2;
-        $c['volumes'][59] = 2500.0;
+        $c = $this->downtrendThenRally(1200.0);
+        $signals = app(StrategyEngine::class)->swingSignals($c);
 
-        $alert = $this->alertAtLast($c);
+        $this->assertSame([], array_filter($signals, fn (array $s): bool => $s['time'] === intdiv(1_700_000_000_000 + 81 * 3_600_000 - 1, 1000)));
 
-        $this->assertNotNull($alert);
-        $this->assertSame('SHORT', $alert['side']);
-        $this->assertSame(100.2, $alert['entry']);
-        $this->assertGreaterThan(102.0, $alert['sl']);
-        $this->assertLessThan($alert['entry'], $alert['tp1']);
-        $this->assertStringContainsString('New 24h high rejected', $alert['reason']);
+        // The chart still labels it, marked unconfirmed (no alert, outside the measured set).
+        $chart = app(ChartOverlayBuilder::class)->build($c, [], '1h')['swing_signals'];
+        $this->assertSame('LONG', end($chart)['side']);
+        $this->assertFalse(end($chart)['confirmed']);
     }
 
-    public function test_rsi_turning_up_from_oversold_is_a_possible_bottom(): void
+    public function test_the_chart_payload_carries_the_swing_signals(): void
     {
-        $c = $this->candles();
-        // A steady slide drives RSI under 30, then a green candle turns it up.
-        for ($i = 40; $i < 59; $i++) {
-            $p = 100 - ($i - 39) * 0.8;
-            [$c['opens'][$i], $c['closes'][$i], $c['highs'][$i], $c['lows'][$i]] = [$p + 0.6, $p, $p + 0.7, $p - 0.1];
+        $c = $this->downtrendThenRally(3000.0);
+        // A forming candle after the rally: never labelled.
+        foreach (['opens' => 100.0, 'highs' => 100.5, 'lows' => 99.5, 'closes' => 100.2, 'volumes' => 10.0] as $k => $v) {
+            $c[$k][] = $v;
         }
-        $p = $c['closes'][58];
-        [$c['opens'][59], $c['closes'][59], $c['highs'][59], $c['lows'][59]] = [$p, $p + 0.3, $p + 0.35, $p - 0.05];
+        $c['closeTimes'][] = PHP_INT_MAX;
 
-        $alert = $this->alertAtLast($c);
+        $payload = app(ChartOverlayBuilder::class)->build($c, [], '1h');
 
-        $this->assertNotNull($alert);
-        $this->assertSame('LONG', $alert['side']);
-        $this->assertStringContainsString('RSI turned up', $alert['reason']);
-        $this->assertLessThan($alert['entry'], $alert['sl']);
-    }
-
-    public function test_an_ordinary_candle_in_the_middle_of_the_range_is_not_an_alert(): void
-    {
-        $this->assertNull($this->alertAtLast($this->candles()));
+        $this->assertSame('LONG', end($payload['swing_signals'])['side']);
+        $this->assertTrue(end($payload['swing_signals'])['confirmed']);
+        $this->assertSame(intdiv($c['closeTimes'][80], 1000), end($payload['swing_signals'])['time']);
     }
 
     /**
      * @return array<string, mixed>
      */
-    protected function reversal(string $symbol, float $volumeRatio, string $side = 'SHORT'): array
+    protected function swing(string $symbol, float $volumeRatio, string $side = 'SHORT', int $time = 1_800_000_000): array
     {
         return ['symbol' => $symbol, 'interval' => '1h', 'side' => $side, 'entry' => 100.2, 'sl' => 102.4, 'tp1' => 96.9, 'tp2' => 93.6, 'tp3' => 90.3,
-            'atr' => 1.0, 'reason' => 'New 24h high rejected (closed in the bottom 10% of the candle) on 2.5x volume', 'rsi' => 64.0, 'volume_ratio' => $volumeRatio];
+            'atr' => 1.0, 'reason' => 'SuperTrend(10,3) flipped down on 2.5x volume', 'rsi' => 44.0, 'volume_ratio' => $volumeRatio, 'time' => $time];
     }
 
-    public function test_top_bottom_alerts_are_labelled_capped_deduplicated_and_never_traded(): void
+    public function test_swing_alerts_are_labelled_capped_deduplicated_and_never_traded(): void
     {
         $alerts = app(SignalAlerts::class);
-        $list = [$this->reversal('AAAUSDT', 1.6), $this->reversal('BBBUSDT', 3.0), $this->reversal('CCCUSDT', 2.0), $this->reversal('DDDUSDT', 2.5)];
+        $list = [$this->swing('AAAUSDT', 1.6), $this->swing('BBBUSDT', 3.0), $this->swing('CCCUSDT', 2.0), $this->swing('DDDUSDT', 2.5)];
 
         $this->assertSame(3, $alerts->reversalAlert($list));
 
         $texts = array_column(Http::recorded(fn (Request $r): bool => str_contains($r->url(), 'api.telegram.org'))->map(fn (array $p): array => $p[0]->data())->values()->all(), 'text');
         $this->assertCount(3, $texts);
-        $this->assertStringContainsString('SELL BBBUSDT: possible top', $texts[0], 'Strongest volume first');
+        $this->assertStringContainsString('SELL BBBUSDT: swing turn down', $texts[0], 'Strongest volume first');
         $this->assertStringContainsString('Not auto-traded', $texts[0]);
-        $this->assertStringContainsString('1 in 3', $texts[0]);
+        $this->assertStringContainsString('about breakeven', $texts[0]);
         $this->assertStringNotContainsString('AAAUSDT', implode("\n", $texts), 'Weakest one is over the cap');
 
-        $this->assertSame(0, $alerts->reversalAlert([$this->reversal('BBBUSDT', 3.0)]), 'Same coin and side only once per 6 hours');
+        $this->assertSame(0, $alerts->reversalAlert([$this->swing('BBBUSDT', 3.0)]), 'Same coin and side only once per 6 hours');
         $this->assertSame(0, Trade::count());
     }
 
-    public function test_top_bottom_alerts_can_be_switched_off(): void
+    public function test_swing_alerts_can_be_switched_off(): void
     {
         config(['trading.strategy.topbottom_alerts' => false]);
 
-        $this->assertSame(0, app(SignalAlerts::class)->reversalAlert([$this->reversal('BBBUSDT', 3.0)]));
+        $this->assertSame(0, app(SignalAlerts::class)->reversalAlert([$this->swing('BBBUSDT', 3.0)]));
+    }
+
+    public function test_the_chart_page_feed_lists_new_swing_signals_from_the_latest_scan(): void
+    {
+        Setting::putValue(MarketScanService::RESULTS_KEY, ['reversals' => [
+            $this->swing('OLDUSDT', 2.0, 'LONG', 1_800_000_000),
+            $this->swing('NEARUSDT', 2.4, 'SHORT', 1_800_003_600),
+        ]]);
+        $user = User::factory()->create(['role' => 'admin']);
+
+        $json = $this->actingAs($user)->getJson('/signals/recent?since=1800000000')->assertOk()->json();
+
+        $this->assertSame(['NEARUSDT'], array_column($json['signals'], 'symbol'));
+        $this->assertSame('SHORT', $json['signals'][0]['side']);
+        $this->assertArrayHasKey('now', $json);
+        $this->get('/logout');
     }
 }

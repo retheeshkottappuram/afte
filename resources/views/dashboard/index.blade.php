@@ -349,7 +349,16 @@
                             <div id="stat-stage-progress-bar" class="bg-gradient-to-r from-cyan-500 via-blue-500 to-emerald-400 h-2.5 rounded-full transition-all duration-500" style="width: {{ $milestone['pct'] }}%"></div>
                         </div>
                         <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                            <span>Start: <strong class="text-slate-300 font-mono">${{ number_format($account->initial_balance, 2) }}</strong></span>
+                            <span class="flex items-center gap-1">
+                                Start: <strong class="text-slate-300 font-mono">$<span id="stat-initial-balance">{{ number_format($account->initial_balance, 2) }}</span></strong>
+                                @if (auth()->user()?->isAdmin())
+                                    <button type="button" onclick="toggleBaselineEditor()" title="Set the starting balance (e.g. after a deposit)" class="text-slate-500 hover:text-cyan-300">✏️</button>
+                                    <span id="baseline-editor" class="hidden items-center gap-1">
+                                        <input id="baseline-input" type="number" min="0.01" step="0.01" value="{{ number_format($account->initial_balance, 2, '.', '') }}" class="w-20 px-1 py-0.5 rounded bg-cyber-900 border border-cyber-border text-slate-100 text-[11px] font-mono">
+                                        <button type="button" onclick="saveBaseline()" class="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold">Save</button>
+                                    </span>
+                                @endif
+                            </span>
                             <span>Final: <strong class="text-emerald-400 font-mono">${{ number_format((float) config('trading.target_capital', 500.0), 0) }}</strong> (<span id="stat-progress-pct">{{ number_format($account->target_progress, 1) }}%</span>)</span>
                         </div>
                     </div>
@@ -424,7 +433,6 @@
                         </span>
                     </div>
                     <div id="exchange-error" class="hidden px-5 pb-2 text-[11px] font-mono text-rose-300"></div>
-                    <div id="exchange-positions" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 px-4 sm:px-5 pb-4"></div>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -842,6 +850,9 @@
             if (progressPctEl) progressPctEl.textContent = `${stats.progress_pct.toFixed(1)}%`;
             if (progressBarEl) progressBarEl.style.width = `${Math.min(100, Math.max(1, stats.progress_pct))}%`;
 
+            const initialEl = document.getElementById('stat-initial-balance');
+            if (initialEl && stats.initial_balance !== undefined) initialEl.textContent = Number(stats.initial_balance).toFixed(2);
+
             const mult = (stats.equity / Math.max(0.1, stats.initial_balance)).toFixed(2);
             const multEl = document.getElementById('stat-multiplier');
             if (multEl) multEl.textContent = `${mult}x`;
@@ -1100,10 +1111,17 @@
             if (barFree) barFree.style.width = `${Math.max(0, 100 - utilPct)}%`;
         }
 
+        /** One table for every open position: the bot's (AUTO) and the user's own Binance positions (MANUAL). */
+        function refreshPositionsCount() {
+            const manual = typeof manualExchangeKeys === 'function' ? manualExchangeKeys().length : 0;
+            const badge = document.getElementById('positions-count-badge');
+            if (badge) badge.textContent = activePositionsData.length + manual;
+            const empty = document.getElementById('positions-empty-row');
+            if (empty) empty.classList.toggle('hidden', manual > 0);
+        }
+
         function updatePositionsUI(data) {
             activePositionsData = Array.isArray(data) ? data : [];
-            const badge = document.getElementById('positions-count-badge');
-            if (badge) badge.textContent = activePositionsData.length;
 
             const btnCloseAll = document.getElementById('btn-close-all');
             if (btnCloseAll) {
@@ -1114,7 +1132,8 @@
             if (!tbody) return;
 
             if (activePositionsData.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-8 text-center text-slate-400">No active positions currently open in ${currentMode.toUpperCase()} mode.</td></tr>`;
+                tbody.innerHTML = `<tr id="positions-empty-row"><td colspan="8" class="px-5 py-8 text-center text-slate-400">No active positions currently open in ${currentMode.toUpperCase()} mode.</td></tr>`;
+                refreshPositionsCount();
                 return;
             }
 
@@ -1138,6 +1157,9 @@
                             <div class="flex items-center space-x-2">
                                 <span class="font-bold text-white">${pos.symbol}</span>
                                 <span class="px-1.5 py-0.5 rounded text-[10px] border ${sideColor}">${pos.side}</span>
+                                ${pos.source === 'manual'
+                                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700 text-slate-200 border border-slate-600" title="Opened by you from the chart; the bot manages its stop and targets.">MANUAL</span>'
+                                    : '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30" title="Opened by the bot">AUTO</span>'}
                             </div>
                             <span class="text-[10px] text-slate-400">${pos.opened_at || 'just now'}</span>
                             ${pos.ai_monitor && pos.ai_monitor.decision ? `
@@ -1189,6 +1211,7 @@
                     </tr>
                 `;
             }).join('');
+            refreshPositionsCount();
         }
 
         /* ------------------------------------------------------------------
@@ -1294,67 +1317,63 @@
             ensureExchangeStream();
         }
 
+        /** Binance positions the bot does not manage, as rows of the positions table (bot trades already have their own row). */
+        function manualExchangeKeys() {
+            return Object.keys(exchangeState.positions).filter(key => exchangeState.positions[key].managed_by !== 'bot');
+        }
+
         function renderExchangePositions() {
-            const grid = document.getElementById('exchange-positions');
             const count = document.getElementById('exchange-count');
-            const keys = Object.keys(exchangeState.positions);
-            if (count) count.textContent = keys.length;
-            if (!grid) return;
+            const keys = manualExchangeKeys();
+            if (count) count.textContent = Object.keys(exchangeState.positions).length;
 
-            if (keys.length === 0) {
-                grid.innerHTML = `<div class="col-span-full py-3 text-center text-[11px] font-mono text-slate-500">No open positions on your Binance futures account.</div>`;
-                return;
+            document.querySelectorAll('tbody[data-manual-pos]').forEach(el => el.remove());
+            const anchor = document.getElementById('positions-tbody');
+            if (anchor) {
+                const rows = keys.map(key => {
+                    const p = exchangeState.positions[key];
+                    const sideCls = p.side === 'LONG' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-rose-400 bg-rose-500/10 border-rose-500/30';
+                    const target = `symbol: '${p.symbol}', side: '${p.side}'`;
+                    const controls = canManageTrading ? `
+                        <button type="button" onclick="toggleProtectEditor('${key}')" class="px-2 py-1 text-[10px] bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 rounded transition">✏️ SL/TP</button>
+                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 25 }, 'book 25%')" class="px-2 py-1 text-[10px] bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded transition">Book 25%</button>
+                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 50 }, 'book 50%')" class="px-2 py-1 text-[10px] bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded transition">Book 50%</button>
+                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 100 }, 'close 100%')" class="px-2 py-1 text-[10px] bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded transition">Close</button>` : '';
+
+                    return `
+                        <tbody data-manual-pos data-k="${key}" class="divide-y divide-cyber-border/50 font-mono border-t border-cyber-border/50">
+                            <tr class="hover:bg-cyber-800/40 transition">
+                                <td class="px-5 py-3">
+                                    <div class="flex items-center space-x-2">
+                                        <span class="font-bold text-white">${p.symbol}</span>
+                                        <span class="px-1.5 py-0.5 rounded text-[10px] border ${sideCls}">${p.side}</span>
+                                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700 text-slate-200 border border-slate-600" title="Opened by you on Binance. The bot never moves its stop.">MANUAL</span>
+                                    </div>
+                                    <span class="text-[10px] text-slate-400">${p.leverage}x ${String(p.margin_type || '').toLowerCase()} · Binance</span>
+                                </td>
+                                <td class="px-4 py-3">
+                                    <span class="px-2 py-0.5 rounded text-[10px] bg-slate-700/60 text-slate-300 border border-slate-600">NOT MANAGED</span>
+                                    <span class="text-[10px] text-amber-300 block mt-1">Liq: <span data-f="liq">—</span></span>
+                                </td>
+                                <td class="px-4 py-3">
+                                    <span data-f="entry" class="text-slate-200 block font-mono">—</span>
+                                    <span class="text-[11px] text-cyan-400 font-mono">Mark: <span data-f="mark">—</span></span>
+                                </td>
+                                <td class="px-4 py-3"><span data-f="qty" class="text-white text-xs font-mono">—</span></td>
+                                <td class="px-4 py-3 font-mono"><span data-f="sl" class="text-rose-300 font-bold">—</span></td>
+                                <td class="px-4 py-3 font-mono"><span data-f="tp" class="text-emerald-300 text-[11px]">—</span></td>
+                                <td class="px-4 py-3 font-mono">
+                                    <span data-f="pnl" class="font-bold text-sm block">—</span>
+                                    <span data-f="roe" class="text-[11px]">—</span>
+                                </td>
+                                <td class="px-5 py-3 text-right space-x-1 font-mono whitespace-nowrap">${controls}</td>
+                            </tr>
+                            <tr><td colspan="8" class="px-5 p-0"><div data-editor class="hidden"></div></td></tr>
+                        </tbody>`;
+                }).join('');
+                anchor.insertAdjacentHTML('afterend', rows);
             }
-
-            grid.innerHTML = keys.map(key => {
-                const p = exchangeState.positions[key];
-                const isLong = p.side === 'LONG';
-                const sideCls = isLong ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' : 'text-rose-300 bg-rose-500/10 border-rose-500/30';
-                const owner = p.managed_by === 'bot'
-                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">BOT</span>'
-                    : '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700 text-slate-200 border border-slate-600" title="Opened outside the bot. The bot never moves its stop.">MANUAL</span>';
-                const target = p.trade_id ? `trade_id: ${p.trade_id}` : `symbol: '${p.symbol}', side: '${p.side}'`;
-                const cell = (label, field, cls = 'text-slate-200') => `
-                    <div class="min-w-0">
-                        <div class="text-[9px] uppercase tracking-wide text-slate-500">${label}</div>
-                        <div data-f="${field}" class="font-mono text-[12px] font-bold tabular-nums truncate ${cls}">—</div>
-                    </div>`;
-                const editButton = canManageTrading && p.managed_by !== 'bot' ? `
-                    <button type="button" onclick="toggleProtectEditor('${key}')" class="w-full mt-1.5 py-1.5 text-[10px] font-bold font-mono rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">✏️ Set / change SL &amp; TP</button>
-                    <div data-editor class="hidden"></div>` : '';
-                const actions = canManageTrading ? `
-                    <div class="grid grid-cols-3 gap-1.5 mt-2.5">
-                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 25 }, 'book 25%')" class="py-1.5 text-[10px] font-bold font-mono rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">Book 25%</button>
-                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 50 }, 'book 50%')" class="py-1.5 text-[10px] font-bold font-mono rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">Book 50%</button>
-                        <button type="button" onclick="exchangeAction(this, { ${target}, percent: 100 }, 'close 100%')" class="py-1.5 text-[10px] font-bold font-mono rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40">Close 100%</button>
-                    </div>` : '';
-
-                return `
-                    <div data-k="${key}" class="rounded-xl border border-cyber-border bg-cyber-900/70 p-3 min-w-0">
-                        <div class="flex items-center justify-between gap-2">
-                            <div class="flex items-center gap-1.5 min-w-0">
-                                <span class="font-bold text-white font-mono text-sm">${p.symbol}</span>
-                                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold border ${sideCls}">${p.side}</span>
-                                <span class="text-[10px] text-slate-400 font-mono">${p.leverage}x ${String(p.margin_type || '').toLowerCase()}</span>
-                                ${owner}
-                            </div>
-                            <div class="text-right shrink-0">
-                                <div data-f="pnl" class="font-mono font-black text-sm tabular-nums">—</div>
-                                <div data-f="roe" class="font-mono text-[10px] tabular-nums">—</div>
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-2 gap-y-1.5 mt-2">
-                            ${cell('Size', 'qty')}
-                            ${cell('Entry', 'entry')}
-                            ${cell('Mark', 'mark', 'text-cyan-300')}
-                            ${cell('Liq. price', 'liq', 'text-amber-300')}
-                            ${cell('Stop', 'sl', 'text-rose-300')}
-                            ${cell('Take profit', 'tp', 'text-emerald-300')}
-                        </div>
-                        ${actions}
-                        ${editButton}
-                    </div>`;
-            }).join('');
+            refreshPositionsCount();
 
             keys.forEach(updateExchangeFields);
             // Re-open editors that were open before the cards were rebuilt, keeping what was typed.
@@ -1365,7 +1384,7 @@
         function toggleProtectEditor(key) {
             if (exchangeState.editing[key]) {
                 delete exchangeState.editing[key];
-                const box = document.querySelector(`#exchange-positions [data-k="${key}"] [data-editor]`);
+                const box = document.querySelector(`tbody[data-k="${key}"] [data-editor]`);
                 if (box) { box.innerHTML = ''; box.classList.add('hidden'); }
                 return;
             }
@@ -1375,7 +1394,7 @@
         }
 
         function openProtectEditor(key) {
-            const box = document.querySelector(`#exchange-positions [data-k="${key}"] [data-editor]`);
+            const box = document.querySelector(`tbody[data-k="${key}"] [data-editor]`);
             const p = exchangeState.positions[key];
             const values = exchangeState.editing[key];
             if (!box || !p || !values) return;
@@ -1416,7 +1435,7 @@
             const price = Number(p.entry_price) * (1 + dir * pct / 100);
             const value = Number(price.toFixed(exchangeDecimals(p.entry_price)));
             exchangeState.editing[key][leg] = String(value);
-            const el = document.querySelector(`#exchange-positions [data-k="${key}"] [data-in="${leg}"]`);
+            const el = document.querySelector(`tbody[data-k="${key}"] [data-in="${leg}"]`);
             if (el) el.value = value;
             updateProtectPreview(key);
         }
@@ -1425,7 +1444,7 @@
         function updateProtectPreview(key) {
             const p = exchangeState.positions[key];
             const values = exchangeState.editing[key];
-            const card = document.querySelector(`#exchange-positions [data-k="${key}"]`);
+            const card = document.querySelector(`tbody[data-k="${key}"]`);
             if (!p || !values || !card) return;
             const dir = p.side === 'LONG' ? 1 : -1;
             const mark = Number(p.mark_price) || Number(p.entry_price);
@@ -1473,7 +1492,20 @@
 
         function updateExchangeFields(key) {
             const p = exchangeState.positions[key];
-            const card = document.querySelector(`#exchange-positions [data-k="${key}"]`);
+            if (p && p.managed_by === 'bot' && p.trade_id) {
+                // The bot's own row: live mark price and PnL from the exchange stream.
+                const d = exchangeDecimals(p.entry_price);
+                const up = p.unrealized_pnl >= 0;
+                const cls = up ? 'text-emerald-400' : 'text-rose-400';
+                const markEl = document.getElementById(`pos-mark-${p.trade_id}`);
+                const pnlEl = document.getElementById(`pos-pnl-${p.trade_id}`);
+                const roeEl = document.getElementById(`pos-roe-${p.trade_id}`);
+                if (markEl) markEl.textContent = `Mark: $${fmtEx(p.mark_price, d)}`;
+                if (pnlEl) { pnlEl.textContent = `${up ? '+' : '−'}$${Math.abs(p.unrealized_pnl).toFixed(2)}`; pnlEl.className = `${cls} font-bold text-sm block`; }
+                if (roeEl) { roeEl.textContent = `ROE: ${up ? '+' : ''}${Number(p.roe_pct).toFixed(2)}%`; roeEl.className = `${cls} text-[11px]`; }
+                return;
+            }
+            const card = document.querySelector(`tbody[data-k="${key}"]`);
             if (!p || !card) return;
             const d = exchangeDecimals(p.entry_price);
             const set = (field, text, cls) => {
@@ -2022,6 +2054,37 @@
                 }
             } else {
                 banner.classList.add('hidden');
+            }
+        }
+
+        function toggleBaselineEditor() {
+            const editor = document.getElementById('baseline-editor');
+            if (!editor) return;
+            editor.classList.toggle('hidden');
+            editor.classList.toggle('inline-flex');
+            if (!editor.classList.contains('hidden')) document.getElementById('baseline-input')?.focus();
+        }
+
+        async function saveBaseline() {
+            const amount = Number(document.getElementById('baseline-input')?.value);
+            if (!(amount > 0)) {
+                showToast('Enter a starting balance above 0.', false);
+                return;
+            }
+            try {
+                const res = await fetch('/api/baseline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                    body: JSON.stringify({ mode: currentMode, amount })
+                });
+                const data = await res.json();
+                showToast(data.message || 'Could not save the starting balance.', !!data.success);
+                if (data.success) {
+                    toggleBaselineEditor();
+                    liveSync();
+                }
+            } catch (e) {
+                showToast('Could not save the starting balance.', false);
             }
         }
 
