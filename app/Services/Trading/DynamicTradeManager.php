@@ -62,6 +62,10 @@ class DynamicTradeManager
                 return ['status' => 'error', 'message' => 'Invalid mark price.'];
             }
 
+            if ($trade->setup_tag === SwingSarTrader::SETUP) {
+                return $this->manageSwingSar($trade, $price);
+            }
+
             // Early breakout: the hourly candle closed back inside the squeeze box, so the breakout failed.
             if (($failedClose = $this->failedBreakoutClose($trade)) !== null) {
                 return $this->closeTradeUnlocked($trade, $trade->mode === 'live' ? $price : $failedClose, 'FAILED_BREAKOUT');
@@ -424,6 +428,46 @@ class DynamicTradeManager
         if (! $wasBeLocked && $trade->be_locked && ! $trade->tp1_hit) {
             $this->notifier->notifyBreakevenLocked($trade, $newSl);
         }
+    }
+
+    /**
+     * Swing SAR: no TP1, breakeven or time stop. The stop sits at the SuperTrend line (SwingSarTrader stores the
+     * latest closed-candle value in meta.sar_trail) and only moves in the trade's favour; the opposite flip closes.
+     *
+     * @return array{status: string, message: string}
+     */
+    protected function manageSwingSar(Trade $trade, float $price): array
+    {
+        $trade->highest_price = max((float) ($trade->highest_price ?? $price), $price);
+        $trade->lowest_price = min((float) ($trade->lowest_price ?? $price), $price);
+        $moved = abs((float) $trade->current_sl - (float) $trade->initial_sl) > 1e-12;
+
+        $stopHit = $trade->isLong() ? $price <= (float) $trade->current_sl : $price >= (float) $trade->current_sl;
+        if ($stopHit) {
+            $exitPrice = $trade->mode === 'live' ? $price : $this->paperExitPrice($trade, (float) $trade->current_sl, $price);
+
+            return $this->closeTradeUnlocked($trade, $exitPrice, $moved ? 'TRAILING_STOP' : 'STOP_LOSS');
+        }
+
+        $trail = $trade->meta['sar_trail'] ?? null;
+        if ($trail !== null && ($trade->isLong() ? (float) $trail < $price : (float) $trail > $price)) {
+            $before = (float) $trade->current_sl;
+            $this->applyStop($trade, ['current_sl' => (float) $trail, 'be_locked' => false]);
+            $notified = (float) ($trade->meta['sar_notified_sl'] ?? $trade->initial_sl);
+            if (abs((float) $trade->current_sl - $before) > 1e-12
+                && abs((float) $trade->current_sl - $notified) / $price * 100 >= (float) config('trading.swing_sar.trail_notify_pct', 0.5)) {
+                $meta = $trade->meta;
+                $meta['sar_notified_sl'] = (float) $trade->current_sl;
+                $trade->meta = $meta;
+                $this->notifier->notifyStopTrailed($trade, (float) $trade->current_sl, $price);
+            }
+            if ((float) $trade->current_sl !== $before && $trade->stage === 'ENTRY') {
+                $trade->stage = 'TRAILING';
+            }
+        }
+        $trade->save();
+
+        return ['status' => 'managed', 'message' => "Swing SAR {$trade->id} {$trade->symbol} at {$price}, stop {$trade->current_sl}."];
     }
 
     protected function isTrailing(Trade $trade): bool

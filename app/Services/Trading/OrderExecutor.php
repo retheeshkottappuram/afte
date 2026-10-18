@@ -48,7 +48,9 @@ class OrderExecutor
 
         $slPct = abs($referencePrice - $structuralSl) / $referencePrice * 100;
         $minSlPct = (float) config('trading.strategy.min_sl_pct', 0.6);
-        $maxSlPct = StrategyEngine::configuredMaxSlPct(isset($signal['setup']) ? (string) $signal['setup'] : null);
+        $setup = isset($signal['setup']) ? (string) $signal['setup'] : null;
+        $isSar = $setup === SwingSarTrader::SETUP;
+        $maxSlPct = $isSar ? (float) config('trading.swing_sar.max_order_sl_pct', 6.0) : StrategyEngine::configuredMaxSlPct($setup);
         if ($slPct > $maxSlPct + 0.0001) {
             return $this->rejected(sprintf('Stop-loss %.2f%% is wider than the %.2f%% limit. Trade skipped instead of widening risk.', $slPct, $maxSlPct));
         }
@@ -63,12 +65,14 @@ class OrderExecutor
 
         try {
             $account = TradingAccount::getForMode($mode);
-            $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $direction, $isManual);
+            $canOpen = $this->riskManager->canOpenTrade($account, $symbol, $direction, $isManual, $setup);
             if (! $canOpen['allowed']) {
                 return $this->rejected($canOpen['reason']);
             }
 
-            $sizing = $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl, isset($signal['risk_pct']) ? (float) $signal['risk_pct'] : null);
+            $sizing = isset($signal['fixed_margin'])
+                ? $this->riskManager->fixedMarginSize($account, $symbol, $referencePrice, $structuralSl, (float) $signal['fixed_margin'], (int) ($signal['fixed_leverage'] ?? 5))
+                : $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl, isset($signal['risk_pct']) ? (float) $signal['risk_pct'] : null);
             if (! $sizing['allowed']) {
                 return $this->rejected($sizing['reason']);
             }
@@ -157,13 +161,16 @@ class OrderExecutor
         }
 
         $tpRef = null;
-        try {
-            $tpQty = $client->formatQuantity($symbol, (float) $sizing['quantity'] * $exitPlan->tp1CloseRatio());
-            if ($tpQty > 0) {
-                $tpRef = $this->exchangeOrders->placeTakeProfit($symbol, $direction, $targets['tp1'], $tpQty);
+        // Swing SAR has no take-profit: it exits on the opposite flip or the trailing stop.
+        if (($signal['setup'] ?? null) !== SwingSarTrader::SETUP) {
+            try {
+                $tpQty = $client->formatQuantity($symbol, (float) $sizing['quantity'] * $exitPlan->tp1CloseRatio());
+                if ($tpQty > 0) {
+                    $tpRef = $this->exchangeOrders->placeTakeProfit($symbol, $direction, $targets['tp1'], $tpQty);
+                }
+            } catch (Throwable $e) {
+                Log::warning("[OrderExecutor] TP1 order not placed for {$symbol}; software will book TP1 instead: {$e->getMessage()}");
             }
-        } catch (Throwable $e) {
-            Log::warning("[OrderExecutor] TP1 order not placed for {$symbol}; software will book TP1 instead: {$e->getMessage()}");
         }
 
         $client->clearAccountCache();

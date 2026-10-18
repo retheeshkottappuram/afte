@@ -9,6 +9,7 @@ use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\OpportunityScorer;
 use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
+use App\Services\Strategy\StrategyEngine;
 use App\Services\Strategy\Watchlist;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
@@ -20,10 +21,11 @@ use Throwable;
 class SignalAlerts
 {
     /**
-     * Measured 2026-10-08 (12 months, top 50, 1h): of 1,312 leaning squeeze boxes that broke within 24 hours,
-     * 82.5% broke in the lean direction (82.4% in the last 4 months alone). Direction only, not profit.
+     * Measured 2026-10-18 (12 months, top 50, 1h, bt_setup_alerts.php), only the alerted subset (top-10 coin, 4h trend
+     * agrees, stop <= 4%, entry <= 1.5% away), entered on a stop order during the alerted candle: ~1 a day, about half
+     * filled, ~40% won, PF 1.03 in months 1-10 and 2.91 in the last 2. (The old "4 in 5" figure was direction only.)
      */
-    public const LEAN_HIT_RATE_NOTE = 'In a 12-month test about 4 in 5 of these setups broke in the stated direction (not every break keeps going).';
+    public const LEAN_HIT_RATE_NOTE = '12-month test of this exact alert: about half trigger; of those about 4 in 10 won (about breakeven in older months, better recently). Use the stop.';
 
     /**
      * Measured 2026-10-13 (12 months, top 50, 1h, StrategyEngine::swingSignalAt): 1,911 signals, 34.9% reached 2 ATR in the
@@ -86,6 +88,10 @@ class SignalAlerts
 
         // One direction per coin: only boxes that lean one way are announced (a box without a lean can
         // break either way, so it is alerted only once it actually breaks, by breakoutNowAlert).
+        // Only the measured subset (see config trading.strategy.setup_alerts): entry close, stop within the
+        // limit, and (by default) top-10 coin with the 4h trend agreeing.
+        $config = (array) config('trading.strategy.setup_alerts', []);
+        $maxSlPct = StrategyEngine::configuredMaxSlPct('EARLY_BREAKOUT');
         $rows = [];
         foreach ($watches as $key => $watch) {
             $price = (float) ($watch['price'] ?? 0);
@@ -93,7 +99,14 @@ class SignalAlerts
             if ($price <= 0 || $entry <= 0 || ($watch['bias'] ?? null) !== $watch['side']) {
                 continue;
             }
-            $rows[] = ['symbol' => (string) ($watch['symbol'] ?? $key)] + $watch + ['distance_pct' => abs($entry - $price) / $price * 100];
+            $distancePct = abs($entry - $price) / $price * 100;
+            $sl = (float) ($watch['levels']['sl'] ?? 0);
+            $slPct = $sl > 0 ? abs($entry - $sl) / $entry * 100 : 0.0;
+            if ($distancePct > (float) ($config['max_distance_pct'] ?? 1.5) || $slPct > $maxSlPct + 1e-9
+                || (($config['proven_only'] ?? true) && ! ($watch['proven_subset'] ?? false))) {
+                continue;
+            }
+            $rows[] = ['symbol' => (string) ($watch['symbol'] ?? $key)] + $watch + ['distance_pct' => $distancePct];
         }
         usort($rows, fn (array $a, array $b): int => $a['distance_pct'] <=> $b['distance_pct']);
 

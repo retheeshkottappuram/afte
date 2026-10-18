@@ -14,6 +14,7 @@ use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SignalAlgoTrader;
+use App\Services\Trading\SwingSarTrader;
 use App\Services\Trading\TradingDaemonManager;
 use App\Services\Trading\TradingModeManager;
 use App\Services\Trading\TradingTargetManager;
@@ -240,7 +241,7 @@ class DashboardController extends Controller
                 'id' => $pos->id,
                 'symbol' => $pos->symbol,
                 'side' => $pos->side,
-                'source' => ($pos->meta['source'] ?? 'auto') === 'manual' ? 'manual' : 'auto',
+                'source' => $pos->setup_tag === SwingSarTrader::SETUP ? 'sar' : (($pos->meta['source'] ?? 'auto') === 'manual' ? 'manual' : 'auto'),
                 'stage' => $pos->stage,
                 'entry_price' => $pos->entry_price,
                 'mark_price' => $markPrice,
@@ -266,7 +267,6 @@ class DashboardController extends Controller
                 'exchange_tp_price' => $tpAlgo ? (float) ($tpAlgo['triggerPrice'] ?? 0) : null,
                 'opened_at' => $pos->opened_at?->diffForHumans(),
                 'setup' => $pos->meta['setup_label'] ?? $pos->setup_tag,
-                'source' => $pos->meta['source'] ?? 'auto',
                 'risk_usd' => $pos->meta['risk_usd'] ?? null,
                 'close_failed_reason' => $pos->meta['close_failed_reason'] ?? null,
                 'initial_sl' => $pos->initial_sl,

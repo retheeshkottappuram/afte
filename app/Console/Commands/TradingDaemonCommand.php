@@ -14,6 +14,7 @@ use App\Services\Strategy\Signal;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\SignalAlgoTrader;
+use App\Services\Trading\SwingSarTrader;
 use App\Services\Trading\TradingDaemonManager;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Console\Command;
@@ -55,7 +56,8 @@ class TradingDaemonCommand extends Command
         MarketScanService $scanner,
         SignalAlgoTrader $trader,
         SignalAlerts $alerts,
-        BreakoutWatcher $watcher
+        BreakoutWatcher $watcher,
+        SwingSarTrader $sar
     ): int {
         @set_time_limit(120);
 
@@ -131,6 +133,25 @@ class TradingDaemonCommand extends Command
                     }
 
                     break;
+                }
+
+                // 3a. Swing SAR: once per closed candle (30s after the close, like the scan). Closes always run;
+                //     new entries follow the same pause / stop / breaker state as the main bot.
+                if (SwingSarTrader::enabled() && time() % 3600 >= 30 && Cache::add('engine:swing-sar:'.intdiv(time(), 3600), true, 7200)) {
+                    try {
+                        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
+                        foreach ($sar->run($mode, $entriesAllowed) as $row) {
+                            if ($row['action'] !== 'none') {
+                                $this->log("[{$mode}] SWING SAR {$row['symbol']} {$row['action']}: {$row['message']}");
+                            }
+                            if (in_array($row['action'], ['opened', 'reversed'], true)) {
+                                $stats['opened']++;
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        $this->recordError($stats, 'Swing SAR: '.$e->getMessage());
+                        Log::warning("[TradeEngine] Swing SAR: {$e->getMessage()}");
+                    }
                 }
 
                 // 3b. Intrabar breakout watcher, once a minute

@@ -92,8 +92,9 @@ class RiskManager
      *
      * @return array{allowed: bool, reason: string}
      */
-    public function canOpenTrade(TradingAccount $account, string $symbol, ?string $side = null, bool $isManual = false): array
+    public function canOpenTrade(TradingAccount $account, string $symbol, ?string $side = null, bool $isManual = false, ?string $setup = null): array
     {
+        $isSar = $setup === SwingSarTrader::SETUP;
         if ($account->mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return ['allowed' => false, 'reason' => 'Live trading is disabled on this server (ALLOW_LIVE_TRADING=false).'];
         }
@@ -128,9 +129,11 @@ class RiskManager
             return ['allowed' => false, 'reason' => "A trade on {$symbol} is already open."];
         }
 
-        $maxPositions = $this->maxPositions((float) $account->balance);
+        // Swing SAR trades have their own slots and never block (or count toward) the main bot's positions.
+        $openTrades = $openTrades->filter(fn (Trade $t): bool => ($t->setup_tag === SwingSarTrader::SETUP) === $isSar);
+        $maxPositions = $isSar ? (int) config('trading.swing_sar.max_open', 2) : $this->maxPositions((float) $account->balance);
         if ($openTrades->count() >= $maxPositions) {
-            return ['allowed' => false, 'reason' => "Max open positions ({$maxPositions}) reached for this account size."];
+            return ['allowed' => false, 'reason' => ($isSar ? 'Swing SAR' : 'Max open')." positions ({$maxPositions}) reached".($isSar ? '.' : ' for this account size.')];
         }
 
         if ($side !== null) {
@@ -258,6 +261,51 @@ class RiskManager
             'risk_pct' => $equity > 0 ? round($riskUsd / $equity * 100, 2) : 0.0,
             'notional' => round($notional, 2),
             'reason' => 'Sized by stop distance and equity at risk.',
+        ];
+    }
+
+    /**
+     * Fixed-margin size (Swing SAR): margin x leverage of notional, whatever the stop distance. The risk this
+     * puts on (quantity x stop distance) is reported, not capped; the stop width is capped by the caller.
+     *
+     * @return array{allowed: bool, quantity: float, margin: float, amount_added: float, leverage: int, risk_usd: float, risk_pct: float, notional: float, reason: string}
+     */
+    public function fixedMarginSize(TradingAccount $account, string $symbol, float $entryPrice, float $slPrice, float $marginUsd, int $leverage): array
+    {
+        $reject = fn (string $reason): array => [
+            'allowed' => false, 'quantity' => 0.0, 'margin' => 0.0, 'amount_added' => 0.0, 'leverage' => 0,
+            'risk_usd' => 0.0, 'risk_pct' => 0.0, 'notional' => 0.0, 'reason' => $reason,
+        ];
+
+        if ($entryPrice <= 0 || $marginUsd <= 0 || $leverage < 1) {
+            return $reject('Invalid fixed-margin sizing inputs.');
+        }
+
+        $leverage = min($leverage, (int) config('trading.sizing.max_leverage', 10));
+        $availMargin = $this->getAvailableBalance($account);
+        if ($availMargin < $marginUsd) {
+            return $reject(sprintf('Free margin $%.2f is below the $%.2f this trade needs.', $availMargin, $marginUsd));
+        }
+
+        $quantity = $this->client->formatQuantity($symbol, $marginUsd * $leverage / $entryPrice);
+        $notional = $quantity * $entryPrice;
+        if ($quantity <= 0 || $notional < max(5.0, $this->client->getMinNotional($symbol))) {
+            return $reject(sprintf('$%.2f at %dx is below the Binance minimum order size for %s.', $marginUsd, $leverage, $symbol));
+        }
+
+        $equity = max(0.0, (float) $account->balance);
+        $riskUsd = round($quantity * abs($entryPrice - $slPrice), 4);
+
+        return [
+            'allowed' => true,
+            'quantity' => $quantity,
+            'margin' => round($notional / $leverage, 4),
+            'amount_added' => round($notional / $leverage, 4),
+            'leverage' => $leverage,
+            'risk_usd' => $riskUsd,
+            'risk_pct' => $equity > 0 ? round($riskUsd / $equity * 100, 2) : 0.0,
+            'notional' => round($notional, 2),
+            'reason' => 'Fixed margin.',
         ];
     }
 

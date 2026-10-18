@@ -63,7 +63,7 @@ class BreakoutAlertsTest extends TestCase
             'indicators' => ['rsi' => 60.0, 'adx' => 26.0, 'volume_ratio' => 1.2, 'atr_pct' => 0.8],
             'confluences' => ['Strong 4h trend'],
             'features' => ['setup' => 'SQUEEZE_BREAKOUT', 'side' => 1],
-            'bias' => $side, 'regime_side' => 'LONG',
+            'bias' => $side, 'regime_side' => 'LONG', 'proven_subset' => true,
             'lean' => ['side' => $side, 'position' => $side === 'LONG' ? 0.9 : 0.1, 'drift' => $side === 'LONG' ? 0.05 : -0.05, 'volume_ratio' => $side === 'LONG' ? 1.6 : 0.5],
         ];
     }
@@ -96,6 +96,22 @@ class BreakoutAlertsTest extends TestCase
         $this->assertStringContainsString('TP2 <code>103.9', $text);
         $this->assertStringContainsString('Why: closing at the box top · higher lows · buy volume 1.6× sell · 4h trend up', $text);
         $this->assertStringNotContainsString('SELL', $text);
+    }
+
+    public function test_far_entries_wide_stops_and_unproven_setups_are_not_announced(): void
+    {
+        $alerts = app(SignalAlerts::class);
+        $levels = ['entry' => 99.85, 'sl' => 98.5, 'tp1' => 101.9, 'tp2' => 103.9, 'tp3' => 105.9];
+
+        // Entry 2.5% away (the ZROUSDT case), a 5.3% stop, and a coin outside the measured subset.
+        $far = $this->watch('ZROUSDT', 'LONG', 100.0, 97.4) + ['levels' => $levels];
+        $wide = $this->watch('ENAUSDT', 'LONG', 100.0, 99.6) + ['levels' => ['sl' => 94.55] + $levels];
+        $unproven = ['proven_subset' => false] + $this->watch('WLDUSDT', 'LONG', 100.0, 99.6) + ['levels' => $levels];
+        $this->assertFalse($alerts->breakoutWatchAlert(['ZROUSDT:LONG' => $far, 'ENAUSDT:LONG' => $wide, 'WLDUSDT:LONG' => $unproven]));
+
+        config(['trading.strategy.setup_alerts.proven_only' => false]);
+        $this->assertTrue($alerts->breakoutWatchAlert(['WLDUSDT:LONG' => $unproven]));
+        $this->assertStringNotContainsString('4 in 5', $this->telegramMessages()[0]['text']);
     }
 
     public function test_boxes_without_a_lean_are_not_announced_before_they_break(): void

@@ -250,6 +250,14 @@ return [
         ],
         // Minute breakout watcher: Telegram alerts ("coiled" after each scan, "breaking out" in real time).
         'breakout_alerts' => (bool) env('STRATEGY_BREAKOUT_ALERTS', true),
+        // "Breakout setups" message (before the break). 12-month audit, top 50 (2026-10-18, bt_setup_alerts.php): all
+        // ~26/day as sent then: only ~33% went 2 ATR the right way first, PF 0.81 (months 1-10) / 1.18 (last 2).
+        // Entry > 1.5% away (PF 0.60-0.74) and stop > 4% (PF 0.74-0.88) were the worst. Top-10 coin + 4h trend agreeing
+        // + stop <= 4% + entry <= 1.5% away: ~1/day, PF 1.03 / 2.91, the only subset not losing in either period.
+        'setup_alerts' => [
+            'max_distance_pct' => (float) env('STRATEGY_SETUP_ALERT_MAX_DISTANCE_PCT', 1.5),
+            'proven_only' => (bool) env('STRATEGY_SETUP_ALERT_PROVEN_ONLY', true), // top-10 + 4h trend + box lean
+        ],
         // Swing BUY/SELL Telegram alerts (SuperTrend 10,3 flip on 1.5x volume), never auto-traded (user's decision
         // 2026-10-13). 12-month test: 43.9% won, about breakeven (PF 0.98). The message states this.
         'topbottom_alerts' => (bool) env('STRATEGY_TOPBOTTOM_ALERTS', true),
@@ -309,6 +317,35 @@ return [
         'manual_scan_max_symbols' => 200,
         'manual_scan_lookback_bars' => 6,
         'banned_symbols' => ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BTCDOMUSDT'],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Swing SAR (stop-and-reverse on the chart's swing BUY/SELL flips)
+    |--------------------------------------------------------------------------
+    | User's request (2026-10-18): buy on a swing BUY, hold until the opposite swing SELL, then reverse; the stop
+    | trails the SuperTrend(10,3) line every closed 1h candle. Only confirmed flips open trades ("BUY?"/"SELL?" and
+    | filtered signals never do; they only close). Fixed $10 margin at 5x, separate from the main bot's slots.
+    | Off by default: the user turns it on after seeing the 12-month test (SwingSarTrader docblock).
+    */
+    'swing_sar' => [
+        'enabled' => (bool) env('SWING_SAR_ENABLED', false),
+        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('SWING_SAR_SYMBOLS', 'BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,BNBUSDT,HYPEUSDT,SUIUSDT,NEARUSDT,ZECUSDT,SANDUSDT,WLDUSDT,TIAUSDT,FILUSDT,STRKUSDT'))))),
+        'interval' => '1h',
+        'margin_usd' => (float) env('SWING_SAR_MARGIN_USD', 10.0),
+        'leverage' => (int) env('SWING_SAR_LEVERAGE', 5),
+        'max_open' => (int) env('SWING_SAR_MAX_OPEN', 2),
+        'max_sl_pct' => (float) env('SWING_SAR_MAX_SL_PCT', 4.0), // SuperTrend line distance at the flip
+        'max_order_sl_pct' => (float) env('SWING_SAR_MAX_ORDER_SL_PCT', 6.0), // the placed stop (line + ATR buffer)
+        // true = only confirmed flips (>= 1.5x volume, stop <= 4%) open trades; any flip closes the open one.
+        'confirmed_only' => (bool) env('SWING_SAR_CONFIRMED_ONLY', true),
+        // Only enter when the 4h SuperTrend points the same way.
+        'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', true),
+        // Stop = SuperTrend line pushed out by this many ATR; trail = move it with the line every closed candle.
+        'stop_buffer_atr' => (float) env('SWING_SAR_STOP_BUFFER_ATR', 1.0),
+        'trail' => (bool) env('SWING_SAR_TRAIL', true),
+        // Telegram "stop moved" reply only when the stop moved at least this % of price since the last one.
+        'trail_notify_pct' => 0.5,
     ],
 
     /*

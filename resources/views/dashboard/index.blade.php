@@ -1159,6 +1159,8 @@
                                 <span class="px-1.5 py-0.5 rounded text-[10px] border ${sideColor}">${pos.side}</span>
                                 ${pos.source === 'manual'
                                     ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700 text-slate-200 border border-slate-600" title="Opened by you from the chart; the bot manages its stop and targets.">MANUAL</span>'
+                                    : pos.source === 'sar'
+                                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Swing SAR: opened on a swing flip, exits on the opposite flip; the stop follows the SuperTrend line.">SAR</span>'
                                     : '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30" title="Opened by the bot">AUTO</span>'}
                             </div>
                             <span class="text-[10px] text-slate-400">${pos.opened_at || 'just now'}</span>

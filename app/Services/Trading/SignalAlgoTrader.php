@@ -81,7 +81,8 @@ class SignalAlgoTrader
         // Opposite core signal: close any open trade on this symbol (both modes), no flip.
         $exitMessage = null;
         if ($signal->isTradable()) {
-            foreach (Trade::where('symbol', $signal->symbol)->where('status', 'OPEN')->get() as $openTrade) {
+            // Swing SAR trades follow their own flips only.
+            foreach (Trade::where('symbol', $signal->symbol)->where('status', 'OPEN')->where(fn ($q) => $q->whereNull('setup_tag')->orWhere('setup_tag', '!=', SwingSarTrader::SETUP))->get() as $openTrade) {
                 if ($openTrade->side !== $signal->side) {
                     $price = (float) $this->market->tickerPrice($signal->symbol) ?: $signal->entry;
                     $result = $this->tradeManager->closeTrade($openTrade, $price, 'OPPOSITE_SIGNAL');

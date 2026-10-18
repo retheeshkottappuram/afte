@@ -8,6 +8,7 @@ use App\Models\TradingAccount;
 use App\Services\Notifications\TelegramGateway;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\Watchlist;
+use App\Services\Trading\SwingSarTrader;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Console\Command;
 
@@ -116,15 +117,19 @@ class TradeHealthCommand extends Command
         $this->line(sprintf('  Risk %.1f%% per trade · seed $%.2f · early-breakout trading %s',
             (float) config('trading.sizing.risk_per_trade_pct', 2.0), (float) config('trading.seed_capital', 24.0),
             config('trading.strategy.intrabar_breakouts', false) ? 'ON' : 'off (alerts only)'));
+        $this->line(sprintf('  Swing SAR: %s · coins %s · $%.0f margin x %dx · open %d',
+            SwingSarTrader::enabled() ? 'ON' : 'off (SWING_SAR_ENABLED=false)', implode(',', SwingSarTrader::symbols()) ?: '-',
+            (float) config('trading.swing_sar.margin_usd', 10), (int) config('trading.swing_sar.leverage', 5),
+            Trade::where('mode', $mode)->where('status', 'OPEN')->where('setup_tag', SwingSarTrader::SETUP)->count()));
 
         // 6. Last 24 hours
         $signals = CryptoSignal::where('source', '!=', 'backtest')->where('sent_at', '>=', now()->subDay())
             ->get(['passed_filters', 'auto_trade_status', 'telegram_sent']);
+        $opened = Trade::where('opened_at', '>=', now()->subDay())->count();
         $this->newLine();
         $this->info('Last 24 hours');
         $this->line(sprintf('  Signals %d · passed filters %d · sent to Telegram %d · trades opened %d',
-            $signals->count(), $signals->where('passed_filters', true)->count(), $signals->where('telegram_sent', true)->count(),
-            Trade::where('opened_at', '>=', now()->subDay())->count()));
+            $signals->count(), $signals->where('passed_filters', true)->count(), $signals->where('telegram_sent', true)->count(), $opened));
         $skips = $signals->where('passed_filters', true)
             ->groupBy(fn (CryptoSignal $s): string => DiagnoseTradingCommand::decision($s->auto_trade_status, true))
             ->map->count()->sortDesc()->take(3);
@@ -134,7 +139,10 @@ class TradeHealthCommand extends Command
 
         $this->newLine();
         $this->info('LIKELY CAUSE');
-        foreach ($causes ?: ['Nothing is blocked. No setup qualified yet: about 1-2 trades and ~5 swing alerts a day are normal, and some days have none.'] as $cause) {
+        $allClear = $opened > 0
+            ? "Nothing is blocked. The bot is working: {$opened} trade(s) opened in the last 24 hours (php artisan trade:review --days=1 lists them)."
+            : 'Nothing is blocked. No setup qualified yet: about 1-2 trades and ~5 swing alerts a day are normal, and some days have none.';
+        foreach ($causes ?: [$allClear] as $cause) {
             $this->line('  • '.$cause);
         }
 

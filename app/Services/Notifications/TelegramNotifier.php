@@ -3,6 +3,7 @@
 namespace App\Services\Notifications;
 
 use App\Models\Trade;
+use App\Services\Trading\SwingSarTrader;
 
 /**
  * Trade lifecycle messages, tagged [PAPER] / [LIVE]. Follow-ups (breakeven, TP1, close)
@@ -51,7 +52,9 @@ class TelegramNotifier
             .'Setup: '.e($setupLabel)."\n"
             ."Entry: <code>{$this->fmt($trade->entry_price)}</code>\n"
             ."Stop: <code>{$this->fmt($trade->initial_sl)}</code>\n"
-            ."TP1: <code>{$this->fmt($trade->tp1_price)}</code> · TP2: <code>{$this->fmt($trade->tp2_price)}</code>\n"
+            .($trade->setup_tag === SwingSarTrader::SETUP
+                ? "Exit: on the opposite swing flip; the stop follows the SuperTrend line each hour\n"
+                : "TP1: <code>{$this->fmt($trade->tp1_price)}</code> · TP2: <code>{$this->fmt($trade->tp2_price)}</code>\n")
             ."Size: \${$notional} at {$trade->leverage}x, margin \${$trade->margin_used}"
             .($risk !== null ? "\nRisk: \${$risk} (".($trade->meta['risk_pct'] ?? '?').'% of equity)' : '');
 
@@ -69,6 +72,13 @@ class TelegramNotifier
     public function notifyBreakevenLocked(Trade $trade, float $stopPrice): void
     {
         $this->reply($trade, "🛡 {$this->tag($trade)} {$trade->symbol}: stop moved to breakeven <code>{$this->fmt($stopPrice)}</code>. This trade can no longer lose money (fees covered).");
+    }
+
+    public function notifyStopTrailed(Trade $trade, float $stopPrice, float $price): void
+    {
+        $locked = ($stopPrice - (float) $trade->entry_price) * ($trade->isLong() ? 1 : -1) >= 0;
+        $this->reply($trade, "↗️ {$this->tag($trade)} {$trade->symbol}: stop moved to <code>{$this->fmt($stopPrice)}</code> (SuperTrend line, price {$this->fmt($price)})."
+            .($locked ? ' Profit is now locked in.' : ''));
     }
 
     public function notifyTp1Hit(Trade $trade, float $closedQty, float $pnl): void
