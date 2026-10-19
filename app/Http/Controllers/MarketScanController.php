@@ -13,6 +13,7 @@ use App\Services\Strategy\Watchlist;
 use App\Services\Trading\EarlyBreakoutGuard;
 use App\Services\Trading\TradingModeManager;
 use Carbon\Carbon;
+use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Throwable;
 
@@ -28,6 +29,14 @@ class MarketScanController extends Controller
         protected BinanceClient $market,
         protected TradingModeManager $modeManager
     ) {}
+
+    /**
+     * The Whole-Market Scanner page (moved off the Signals & Charts page).
+     */
+    public function page(): View
+    {
+        return view('scanner.index');
+    }
 
     public function start(): JsonResponse
     {

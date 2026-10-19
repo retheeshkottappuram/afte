@@ -161,8 +161,8 @@ class OrderExecutor
         }
 
         $tpRef = null;
-        // Swing SAR has no take-profit: it exits on the opposite flip or the trailing stop.
-        if (($signal['setup'] ?? null) !== SwingSarTrader::SETUP) {
+        // Swing SAR books TP1 only when swing_sar.take_profit is on; otherwise it exits on the flip or the trailing stop.
+        if (($signal['setup'] ?? null) !== SwingSarTrader::SETUP || config('trading.swing_sar.take_profit', true)) {
             try {
                 $tpQty = $client->formatQuantity($symbol, (float) $sizing['quantity'] * $exitPlan->tp1CloseRatio());
                 if ($tpQty > 0) {

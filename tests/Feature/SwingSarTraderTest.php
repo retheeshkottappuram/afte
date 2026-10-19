@@ -6,6 +6,7 @@ use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Crypto\BinanceClient;
 use App\Services\Strategy\StrategyEngine;
+use App\Services\Strategy\Watchlist;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SwingSarTrader;
@@ -118,8 +119,9 @@ class SwingSarTraderTest extends TestCase
         $this->assertSame('SHORT', Trade::where('status', 'OPEN')->where('setup_tag', SwingSarTrader::SETUP)->sole()->side);
     }
 
-    public function test_an_unconfirmed_flip_closes_but_never_opens(): void
+    public function test_with_confirmed_only_an_unconfirmed_flip_closes_but_never_opens(): void
     {
+        config(['trading.swing_sar.confirmed_only' => true]);
         $long = $this->sarTrade('LONG');
         $this->flips = [$this->flip('SHORT', confirmed: false, sl: 5.15)];
 
@@ -129,6 +131,74 @@ class SwingSarTraderTest extends TestCase
         $this->assertSame('CLOSED', $long->fresh()->status);
         $this->assertSame(0, Trade::where('status', 'OPEN')->count());
         Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'No new trade'));
+    }
+
+    public function test_by_default_every_flip_trades_including_unconfirmed_ones(): void
+    {
+        $this->flips = [$this->flip('LONG', confirmed: false)];
+
+        $row = $this->runSar()[0];
+
+        $this->assertSame('opened', $row['action'], $row['message']);
+        Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'unconfirmed flip'));
+    }
+
+    public function test_a_wide_stop_is_capped_instead_of_skipped(): void
+    {
+        $this->flips = [$this->flip('LONG', confirmed: false, sl: 4.5)]; // 10% away
+
+        $this->assertSame('opened', $this->runSar()[0]['action']);
+
+        $trade = Trade::where('setup_tag', SwingSarTrader::SETUP)->sole();
+        $this->assertEqualsWithDelta(4.0, ((float) $trade->entry_price - (float) $trade->initial_sl) / (float) $trade->entry_price * 100, 0.05);
+    }
+
+    public function test_a_skipped_flip_is_reported_on_telegram(): void
+    {
+        $this->flips = [$this->flip('SHORT', sl: 5.15)];
+
+        $this->assertSame('skipped', $this->runSar(entriesAllowed: false)[0]['action']);
+
+        Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'not traded'));
+    }
+
+    public function test_tp1_books_half_moves_the_stop_to_breakeven_and_the_flip_reverses_the_rest(): void
+    {
+        $trade = $this->sarTrade('LONG');
+        $manager = app(DynamicTradeManager::class);
+
+        $manager->manageTrade($trade, 5.21);
+        $trade->refresh();
+        $this->assertTrue((bool) $trade->tp1_hit);
+        $this->assertEqualsWithDelta(5.0, (float) $trade->remaining_quantity, 1e-9);
+        $this->assertGreaterThan(5.0, (float) $trade->current_sl);
+        $this->assertLessThan(5.01, (float) $trade->current_sl);
+        $this->assertGreaterThan(0, (float) $trade->realized_pnl);
+
+        $this->flips = [$this->flip('SHORT', sl: 5.15)];
+        $this->assertSame('reversed', $this->runSar()[0]['action']);
+        $this->assertSame('OPPOSITE_SIGNAL', $trade->fresh()->exit_reason);
+    }
+
+    public function test_the_coins_default_to_the_monitored_alert_coins(): void
+    {
+        config(['trading.swing_sar.symbols' => ['WATCHLIST']]);
+        Watchlist::add('NEARUSDT');
+
+        $this->assertSame(Watchlist::symbols(), SwingSarTrader::symbols());
+        $this->assertContains('NEARUSDT', SwingSarTrader::symbols());
+    }
+
+    public function test_sar_check_lists_each_chart_flip_and_why_it_was_not_traded(): void
+    {
+        $this->flips = [array_merge($this->flip('LONG', confirmed: false), ['time' => time() - 600])];
+        $this->sarTrade('LONG', ['symbol' => 'SUIUSDT', 'opened_at' => Carbon::now()->subHours(3)]);
+        $this->sarTrade('SHORT', ['symbol' => 'DOGEUSDT', 'opened_at' => Carbon::now()->subHours(3)]);
+
+        $this->artisan('trade:sar-check', ['--hours' => 24])
+            ->expectsOutputToContain('every flip')
+            ->expectsOutputToContain('skipped: all 2 SAR slots were in use')
+            ->assertSuccessful();
     }
 
     public function test_stopped_auto_trading_still_closes_on_the_flip(): void
@@ -157,7 +227,8 @@ class SwingSarTraderTest extends TestCase
         $trade = $this->sarTrade('LONG', ['meta' => ['interval' => '1h', 'atr' => 0.06, 'sar_trail' => 4.95]]);
         $manager = app(DynamicTradeManager::class);
 
-        // +2R would book TP1 / breakeven on a normal trade; a SAR trade only moves its stop to the line.
+        // With profit booking off, +2R only moves the stop to the line.
+        config(['trading.swing_sar.take_profit' => false]);
         $manager->manageTrade($trade, 5.30);
         $trade->refresh();
         $this->assertEqualsWithDelta(4.95, (float) $trade->current_sl, 1e-9);

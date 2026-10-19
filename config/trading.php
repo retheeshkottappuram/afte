@@ -330,17 +330,22 @@ return [
     */
     'swing_sar' => [
         'enabled' => (bool) env('SWING_SAR_ENABLED', false),
-        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('SWING_SAR_SYMBOLS', 'BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,BNBUSDT,HYPEUSDT,SUIUSDT,NEARUSDT,ZECUSDT,SANDUSDT,WLDUSDT,TIAUSDT,FILUSDT,STRKUSDT'))))),
+        // WATCHLIST = the monitored alert coins on the Signals page (Watchlist::symbols()); or a comma list.
+        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('SWING_SAR_SYMBOLS', 'WATCHLIST'))))),
         'interval' => '1h',
         'margin_usd' => (float) env('SWING_SAR_MARGIN_USD', 10.0),
         'leverage' => (int) env('SWING_SAR_LEVERAGE', 5),
         'max_open' => (int) env('SWING_SAR_MAX_OPEN', 2),
-        'max_sl_pct' => (float) env('SWING_SAR_MAX_SL_PCT', 4.0), // SuperTrend line distance at the flip
-        'max_order_sl_pct' => (float) env('SWING_SAR_MAX_ORDER_SL_PCT', 6.0), // the placed stop (line + ATR buffer)
-        // true = only confirmed flips (>= 1.5x volume, stop <= 4%) open trades; any flip closes the open one.
-        'confirmed_only' => (bool) env('SWING_SAR_CONFIRMED_ONLY', true),
+        // The placed stop (line + ATR buffer) is capped at this % from entry, so a wide "?" flip risks at most ~$2 + fees.
+        'max_sl_pct' => (float) env('SWING_SAR_MAX_SL_PCT', 4.0),
+        'max_order_sl_pct' => (float) env('SWING_SAR_MAX_ORDER_SL_PCT', 6.0),
+        // false = every chart flip opens a trade, "BUY?"/"SELL?" too (user's choice 2026-10-19; every flip on the
+        // 8 watch coins tested PF 0.85-0.88 in months 1-10, 1.11-1.25 in the last 2). true = confirmed flips only.
+        'confirmed_only' => (bool) env('SWING_SAR_CONFIRMED_ONLY', false),
         // Only enter when the 4h SuperTrend points the same way.
-        'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', true),
+        'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', false),
+        // Book half at TP1 (exits.tp1_r = 1.5R, beat 1R in the test), stop to breakeven + fees, the rest trails.
+        'take_profit' => (bool) env('SWING_SAR_TAKE_PROFIT', true),
         // Stop = SuperTrend line pushed out by this many ATR; trail = move it with the line every closed candle.
         'stop_buffer_atr' => (float) env('SWING_SAR_STOP_BUFFER_ATR', 1.0),
         'trail' => (bool) env('SWING_SAR_TRAIL', true),

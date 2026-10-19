@@ -121,7 +121,10 @@ Route::middleware('auth')->group(function (): void {
             ->name('daemon.monitored-coins.mode');
     });
 
-    // 7. Whole-Market Scan API
+    // 7. Whole-Market Scanner page + API
+    Route::get('/scanner', [MarketScanController::class, 'page'])
+        ->middleware('permission:view_signals')
+        ->name('scanner.index');
     Route::prefix('market-scan')->group(function (): void {
         Route::get('/status', [MarketScanController::class, 'status'])->name('market-scan.status');
         Route::get('/watch', [MarketScanController::class, 'watch'])->name('market-scan.watch');

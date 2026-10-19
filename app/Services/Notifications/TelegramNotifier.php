@@ -53,7 +53,8 @@ class TelegramNotifier
             ."Entry: <code>{$this->fmt($trade->entry_price)}</code>\n"
             ."Stop: <code>{$this->fmt($trade->initial_sl)}</code>\n"
             .($trade->setup_tag === SwingSarTrader::SETUP
-                ? "Exit: on the opposite swing flip; the stop follows the SuperTrend line each hour\n"
+                ? (config('trading.swing_sar.take_profit', true) ? "TP1: <code>{$this->fmt($trade->tp1_price)}</code> (half, then stop to breakeven)\n" : '')
+                    ."Exit: on the opposite swing flip; the stop follows the SuperTrend line each hour\n"
                 : "TP1: <code>{$this->fmt($trade->tp1_price)}</code> · TP2: <code>{$this->fmt($trade->tp2_price)}</code>\n")
             ."Size: \${$notional} at {$trade->leverage}x, margin \${$trade->margin_used}"
             .($risk !== null ? "\nRisk: \${$risk} (".($trade->meta['risk_pct'] ?? '?').'% of equity)' : '');

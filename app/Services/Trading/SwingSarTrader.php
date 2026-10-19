@@ -8,16 +8,18 @@ use App\Services\Crypto\CandleSanitizer;
 use App\Services\Notifications\TelegramGateway;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\StrategyEngine;
+use App\Services\Strategy\Watchlist;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
  * Swing SAR: stop-and-reverse on the chart's swing BUY/SELL flips (SuperTrend(10,3), StrategyEngine::swingSignalAt).
- * After every closed 1h candle, for each configured coin:
- *  - an opposite flip (any flip, confirmed or not) closes the open SAR trade;
- *  - a confirmed flip (>= 1.5x volume, stop <= 4%; never "BUY?"/"SELL?") opens the new side with a fixed margin;
- *  - otherwise the stop trails the SuperTrend line (DynamicTradeManager::manageSwingSar applies it).
+ * After every closed 1h candle, for each SAR coin (default: the monitored alert coins):
+ *  - an opposite flip closes the open SAR trade;
+ *  - the flip opens the new side with a fixed margin (every flip incl. "BUY?"/"SELL?" unless confirmed_only);
+ *    the stop sits 1 ATR beyond the SuperTrend line, capped at max_sl_pct from entry;
+ *  - otherwise the stop trails the line; half is booked at TP1 (DynamicTradeManager::manageSwingSar).
  *
  * 12-month test, 1h, top 20 + NEAR + SUI, $10 x 5x, fees + slippage, at most 2 open (2026-10-18, bt_swing_sar*.php):
  *  - confirmed flips, exit on the opposite flip, no stop:  PF 1.05 (months 1-10) / 1.10 (last 2)
@@ -25,7 +27,11 @@ use Throwable;
  *  - stop trailing AT the line (intrabar): PF 0.91 / 1.66
  *  - DEFAULT: confirmed + 4h SuperTrend agrees, stop trailing 1 ATR beyond the line: PF 1.18 / 1.80,
  *    +$20.8 in 10 months and +$16 in 2, ~4-5 trades a week, max drawdown $25 (months 1-10) / $10.
- * NEAR + SUI alone with the 4h filter: under 1 trade a week, so the default list is the tested liquid coins.
+ * NEAR + SUI alone with the 4h filter: under 1 trade a week.
+ * 2026-10-19 (bt_sar_tp.php), every flip incl. "?", 8 watch coins, 2 slots, stop capped at 4%:
+ *  - no TP: PF 0.88 / 1.25; TP1 1R half: 0.86 / 1.11; TP1 1.5R half: 0.85 / 1.20, ~8-9 trades a week,
+ *    max drawdown $53 in months 1-10 (more than the $24 account; the daily stop / loss-streak pause cut it short).
+ *  The user chose every flip with TP1 anyway.
  */
 class SwingSarTrader
 {
@@ -51,7 +57,12 @@ class SwingSarTrader
      */
     public static function symbols(): array
     {
-        return array_values(array_unique(array_map(fn (string $s): string => TradingTargetManager::normalizeSymbol($s), (array) config('trading.swing_sar.symbols', []))));
+        $symbols = (array) config('trading.swing_sar.symbols', []);
+        if ($symbols === [] || in_array('WATCHLIST', $symbols, true)) {
+            $symbols = array_merge(array_diff($symbols, ['WATCHLIST']), Watchlist::symbols());
+        }
+
+        return array_values(array_unique(array_map(fn (string $s): string => TradingTargetManager::normalizeSymbol($s), $symbols)));
     }
 
     /**
@@ -115,25 +126,25 @@ class SwingSarTrader
             $closedNote = "Closed {$open->side}: {$result['message']}";
         }
 
+        $label = sprintf('%s swing %s%s', $symbol, $flip['side'] === 'LONG' ? 'BUY' : 'SELL', $flip['confirmed'] ? '' : '?');
         $skip = $this->entryBlock($symbol, $flip, $entriesAllowed, $nowMs);
         if ($skip !== null) {
-            if ($closedNote !== null) {
-                $this->telegram->send(sprintf('🔁 <b>%s swing %s%s</b> (%s): the %s was closed. No new trade: %s',
-                    e($symbol), $flip['side'] === 'LONG' ? 'BUY' : 'SELL', $flip['confirmed'] ? '' : '?', $interval, $open->side, e($skip)));
-            }
+            $this->telegram->send($closedNote !== null
+                ? sprintf('🔁 <b>%s</b> (%s): the %s was closed. No new trade: %s', e($label), $interval, $open->side, e($skip))
+                : sprintf('⏭ <b>%s</b> (%s) not traded: %s', e($label), $interval, e($skip)));
 
             return ['action' => $closedNote !== null ? 'closed' : 'skipped', 'message' => trim(($closedNote ?? '').' New entry skipped: '.$skip)];
         }
 
         $price = $this->price($symbol, (float) $flip['entry']);
-        $sl = $this->stopFrom($flip['side'], (float) $flip['sl'], (float) $flip['atr']);
+        $sl = $this->cappedStop($flip['side'], $price, $this->stopFrom($flip['side'], (float) $flip['sl'], (float) $flip['atr']));
         $result = $this->executor->executeSignal([
             'symbol' => $symbol,
             'side' => $flip['side'],
             'price' => $price,
             'initial_sl' => $sl,
             'setup' => self::SETUP,
-            'setup_label' => self::LABEL,
+            'setup_label' => self::LABEL.($flip['confirmed'] ? '' : ' · unconfirmed flip "?"'),
             'interval' => $interval,
             'grade' => 'B',
             'indicators' => ['atr' => (float) $flip['atr'], 'rsi' => $flip['rsi'], 'volume_ratio' => $flip['volume_ratio']],
@@ -142,9 +153,9 @@ class SwingSarTrader
         ], $mode);
 
         if ($result['status'] !== 'opened') {
-            if ($closedNote !== null) {
-                $this->telegram->send(sprintf('🔁 <b>%s swing flip</b>: the %s was closed. New %s not opened: %s', e($symbol), $open->side, $flip['side'], e($result['message'])));
-            }
+            $this->telegram->send($closedNote !== null
+                ? sprintf('🔁 <b>%s</b>: the %s was closed. New %s not opened: %s', e($label), $open->side, $flip['side'], e($result['message']))
+                : sprintf('⏭ <b>%s</b> (%s) not traded: %s', e($label), $interval, e($result['message'])));
 
             return ['action' => $closedNote !== null ? 'closed' : 'skipped', 'message' => trim(($closedNote ?? '').' '.$result['message'])];
         }
@@ -157,16 +168,13 @@ class SwingSarTrader
      *
      * @param  array<string, mixed>  $flip  From StrategyEngine::swingSignalAt()
      */
-    protected function entryBlock(string $symbol, array $flip, bool $entriesAllowed, int $nowMs): ?string
+    public function entryBlock(string $symbol, array $flip, bool $entriesAllowed, int $nowMs): ?string
     {
         if (! $entriesAllowed) {
             return 'auto-trading is stopped or paused';
         }
         if (config('trading.swing_sar.confirmed_only', true) && ! $flip['confirmed']) {
             return sprintf('unconfirmed flip (volume %.1fx, stop %.2f%%; needs >= 1.5x and <= 4%%)', $flip['volume_ratio'], $flip['sl_pct']);
-        }
-        if ((float) $flip['sl_pct'] > (float) config('trading.swing_sar.max_sl_pct', 4.0)) {
-            return sprintf('stop %.2f%% is wider than %.1f%%', $flip['sl_pct'], (float) config('trading.swing_sar.max_sl_pct', 4.0));
         }
         if (config('trading.swing_sar.require_4h_trend', false)) {
             $h4 = CandleSanitizer::onlyClosedCandles($this->market->klines($symbol, '4h', 120), $nowMs);
@@ -188,6 +196,16 @@ class SwingSarTrader
         $buffer = (float) config('trading.swing_sar.stop_buffer_atr', 0.0) * $atr;
 
         return round($side === 'LONG' ? $line - $buffer : $line + $buffer, MarketScanService::priceDecimals($line) + 2);
+    }
+
+    /**
+     * Keep the stop at most max_sl_pct from entry (a wide "?" flip gets a tighter stop instead of being skipped).
+     */
+    protected function cappedStop(string $side, float $price, float $stop): float
+    {
+        $cap = $price * (1 + ($side === 'LONG' ? -1 : 1) * (float) config('trading.swing_sar.max_sl_pct', 4.0) / 100);
+
+        return $side === 'LONG' ? max($stop, $cap) : min($stop, $cap);
     }
 
     protected function price(string $symbol, float $fallback): float

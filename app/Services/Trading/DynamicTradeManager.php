@@ -378,6 +378,10 @@ class DynamicTradeManager
         $risk = abs($trade->entry_price - $trade->initial_sl);
         $lockR = (float) config('trading.exits.after_tp1_lock_r', 0.5);
         $target = $trade->entry_price + ($trade->isLong() ? 1 : -1) * $risk * $lockR;
+        if ($trade->setup_tag === SwingSarTrader::SETUP) {
+            // Swing SAR (as tested): breakeven + round-trip fees, then the SuperTrend trail takes over.
+            $target = $trade->entry_price * (1 + ($trade->isLong() ? 1 : -1) * 2 * $this->exitPlan->feeRate());
+        }
         if ($trade->isLong() ? $target > $state['current_sl'] : $target < $state['current_sl']) {
             $state['current_sl'] = $target;
         }
@@ -431,8 +435,9 @@ class DynamicTradeManager
     }
 
     /**
-     * Swing SAR: no TP1, breakeven or time stop. The stop sits at the SuperTrend line (SwingSarTrader stores the
-     * latest closed-candle value in meta.sar_trail) and only moves in the trade's favour; the opposite flip closes.
+     * Swing SAR: half is booked at TP1 (swing_sar.take_profit), then the stop goes to breakeven + fees. No time stop.
+     * The stop follows the SuperTrend line (SwingSarTrader stores the latest closed-candle value in meta.sar_trail)
+     * and only moves in the trade's favour; the opposite flip closes the rest.
      *
      * @return array{status: string, message: string}
      */
@@ -447,6 +452,11 @@ class DynamicTradeManager
             $exitPrice = $trade->mode === 'live' ? $price : $this->paperExitPrice($trade, (float) $trade->current_sl, $price);
 
             return $this->closeTradeUnlocked($trade, $exitPrice, $moved ? 'TRAILING_STOP' : 'STOP_LOSS');
+        }
+
+        $tp1 = (float) $trade->tp1_price;
+        if (! $trade->tp1_hit && $tp1 > 0 && config('trading.swing_sar.take_profit', true) && ($trade->isLong() ? $price >= $tp1 : $price <= $tp1)) {
+            $this->bookTp1($trade, $trade->mode === 'live' ? $price : $tp1);
         }
 
         $trail = $trade->meta['sar_trail'] ?? null;
