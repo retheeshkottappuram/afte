@@ -347,6 +347,41 @@ class DynamicTradeManager
         $this->afterTp1($trade);
     }
 
+    /**
+     * Swing SAR partial take-profit: close $quantity (rounded to the lot step) at market. Skipped when the lot is too
+     * small to split or the order fails (logged); the level is not retried.
+     */
+    protected function bookPartial(Trade $trade, float $price, float $quantity, float $atR): void
+    {
+        $closeQty = $this->client->formatQuantity($trade->symbol, $quantity);
+        if ($closeQty <= 0 || $closeQty >= (float) $trade->remaining_quantity) {
+            return;
+        }
+
+        if ($trade->mode === 'live') {
+            try {
+                $this->client->forMode('live')->placeOrder([
+                    'symbol' => $trade->symbol,
+                    'side' => $trade->isLong() ? 'SELL' : 'BUY',
+                    'type' => 'MARKET',
+                    'quantity' => $closeQty,
+                    'reduceOnly' => 'true',
+                ]);
+            } catch (Throwable $e) {
+                Log::error("[DynamicTradeManager] Swing SAR partial at +{$atR}R failed for {$trade->symbol}: {$e->getMessage()}");
+
+                return;
+            }
+        }
+
+        $gross = ($price - $trade->entry_price) * $closeQty * ($trade->isLong() ? 1 : -1);
+        $fee = $price * $closeQty * $this->exitPlan->feeRate();
+        $this->recordPartial($trade, $price, $closeQty, notify: false);
+        $trade->remaining_quantity = round((float) $trade->remaining_quantity - $closeQty, 8);
+        $trade->margin_used = round((float) $trade->remaining_quantity * $trade->entry_price / max(1, $trade->leverage), 4);
+        $this->notifier->notifyPartialBooked($trade, $closeQty, round($gross - $fee, 4), $atR);
+    }
+
     protected function recordPartial(Trade $trade, float $price, float $quantity, bool $notify = true): void
     {
         $gross = ($price - $trade->entry_price) * $quantity * ($trade->isLong() ? 1 : -1);
@@ -435,9 +470,10 @@ class DynamicTradeManager
     }
 
     /**
-     * Swing SAR, every tick: once price has run breakeven_r R the stop goes to breakeven + fees and then trails the
-     * best price by trail_atr ATR; it also follows the SuperTrend line (SwingSarTrader stores the latest closed-candle
-     * value in meta.sar_trail). The stop only moves in the trade's favour; the opposite flip closes the trade.
+     * Swing SAR, every tick, on the best price reached in R: book the configured partials (swing_sar.partials),
+     * step the stop up the ladder (swing_sar.ladder), and from trail_from_r R trail the best price by trail_atr ATR;
+     * it also follows the SuperTrend line (SwingSarTrader stores the latest closed-candle value in meta.sar_trail).
+     * The stop only moves in the trade's favour; the opposite flip closes the rest.
      * Optional: half booked at TP1 (swing_sar.take_profit). No time stop.
      *
      * @return array{status: string, message: string}
@@ -465,19 +501,38 @@ class DynamicTradeManager
         $risk = abs($entry - (float) $trade->initial_sl);
         $best = $trade->isLong() ? (float) $trade->highest_price : (float) $trade->lowest_price;
         $atr = (float) ($trade->meta['atr'] ?? 0);
-        $beR = (float) config('trading.swing_sar.breakeven_r', 1.0);
+        $bestR = $risk > 0 ? ($best - $entry) * $dir / $risk : 0.0;
+
+        // Partial profit booking, each level once (also marked when the lot is too small to split).
+        $done = (array) ($trade->meta['sar_partials'] ?? []);
+        foreach ((array) config('trading.swing_sar.partials', []) as $i => [$atR, $share]) {
+            if (in_array($i, $done, true) || $bestR < (float) $atR) {
+                continue;
+            }
+            $done[] = $i;
+            $meta = $trade->meta ?? [];
+            $meta['sar_partials'] = $done;
+            $trade->meta = $meta;
+            $this->bookPartial($trade, $trade->mode === 'live' ? $price : $entry + $dir * (float) $atR * $risk, (float) $trade->quantity * (float) $share, (float) $atR);
+        }
+
+        // Stop ladder (discrete steps) and the profit trail (moved in steps so a live stop is not replaced every 5s).
+        $better = fn (?float $a, float $b): float => $a === null ? $b : ($dir > 0 ? max($a, $b) : min($a, $b));
         $profitStop = null;
-        if ($beR > 0 && $risk > 0 && ($best - $entry) * $dir >= $beR * $risk) {
-            $profitStop = $entry * (1 + $dir * 2 * $this->exitPlan->feeRate());
-            if ($atr > 0) {
-                $chandelier = $best - $dir * (float) config('trading.swing_sar.trail_atr', 1.5) * $atr;
-                $profitStop = $dir > 0 ? max($profitStop, $chandelier) : min($profitStop, $chandelier);
+        foreach ((array) config('trading.swing_sar.ladder', []) as [$atR, $stopR]) {
+            if ($risk > 0 && $bestR >= (float) $atR) {
+                $profitStop = $better($profitStop, (float) $stopR == 0.0 ? $entry * (1 + $dir * 2 * $this->exitPlan->feeRate()) : $entry + $dir * (float) $stopR * $risk);
             }
-            // Move in steps (not every tick) so a live stop order is not replaced every 5 seconds.
-            $step = max($price * 0.0015, 0.2 * $atr);
-            if ($trade->be_locked && ($profitStop - (float) $trade->current_sl) * $dir < $step) {
-                $profitStop = null;
+        }
+        $trailFrom = (float) config('trading.swing_sar.trail_from_r', 1.5);
+        if ($trailFrom > 0 && $atr > 0 && $risk > 0 && $bestR >= $trailFrom) {
+            $chandelier = $best - $dir * (float) config('trading.swing_sar.trail_atr', 1.5) * $atr;
+            if (($chandelier - (float) $trade->current_sl) * $dir >= max($price * 0.0015, 0.2 * $atr)) {
+                $profitStop = $better($profitStop, $chandelier);
             }
+        }
+        if ($profitStop !== null && ($profitStop - (float) $trade->current_sl) * $dir <= 1e-12) {
+            $profitStop = null;
         }
 
         $trail = $trade->meta['sar_trail'] ?? null;
@@ -499,7 +554,7 @@ class DynamicTradeManager
                 $meta = $trade->meta;
                 $meta['sar_notified_sl'] = (float) $trade->current_sl;
                 $trade->meta = $meta;
-                $this->notifier->notifyStopTrailed($trade, (float) $trade->current_sl, $price);
+                $this->notifier->notifyStopTrailed($trade, (float) $trade->current_sl, $price, $trail === $profitStop ? 'protecting the profit' : 'SuperTrend line');
             }
             if ((float) $trade->current_sl !== $before && $trade->stage === 'ENTRY') {
                 $trade->stage = 'TRAILING';

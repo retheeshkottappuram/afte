@@ -355,9 +355,16 @@ return [
         'confirmed_only' => (bool) env('SWING_SAR_CONFIRMED_ONLY', true),
         // Only enter when the 4h SuperTrend points the same way.
         'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', false),
-        // Checked every 5s: at +breakeven_r R the stop goes to entry + fees, then trails the best price by
-        // trail_atr ATR (and the SuperTrend line), only ever toward profit.
-        'breakeven_r' => (float) env('SWING_SAR_BREAKEVEN_R', 1.0),
+        // Checked every 5s, best price in R (1R = the entry-to-stop distance). User's decision (2026-10-20):
+        //  - partials [at R, share of the original size]: book 1/3 at +0.75R and 1/3 at +1.5R;
+        //  - ladder [at R, stop at R] (0 = breakeven + fees): at +0.75R the stop goes to -0.25R, at +1.5R to +0.5R;
+        //  - from +trail_from_r R the stop also trails the best price by trail_atr ATR (0 = off).
+        // 12-month test (bt_sar_exits.php, 8 coins, 15m, 4 slots): "in profit >= 0.5R, then closed at a loss" fell from
+        // 21.5% to 16.5% of trades, wins 39% -> 43%, max drawdown $55 -> $49; PF 0.84 -> 0.82 (months 1-10) and
+        // 0.82 -> 0.77 (last 2). No variant made the strategy profitable.
+        'partials' => [[0.75, 0.33], [1.5, 0.33]],
+        'ladder' => [[0.75, -0.25], [1.5, 0.5]],
+        'trail_from_r' => (float) env('SWING_SAR_TRAIL_FROM_R', 1.5),
         'trail_atr' => (float) env('SWING_SAR_TRAIL_ATR', 1.5),
         // Book half at TP1 (exits.tp1_r) too. Off: in the 15m test it did not help (PF 0.84 / 0.77 vs 0.85 / 0.83).
         'take_profit' => (bool) env('SWING_SAR_TAKE_PROFIT', false),

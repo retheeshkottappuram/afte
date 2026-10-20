@@ -117,11 +117,13 @@ class TradeHealthCommand extends Command
         $this->line(sprintf('  Risk %.1f%% per trade · seed $%.2f · early-breakout trading %s',
             (float) config('trading.sizing.risk_per_trade_pct', 2.0), (float) config('trading.seed_capital', 24.0),
             config('trading.strategy.intrabar_breakouts', false) ? 'ON' : 'off (alerts only)'));
-        $this->line(sprintf('  Swing SAR: %s · %s · %s · TP1 %s · breakeven at %sR then %s ATR trail · coins %s · %d%% of the fund: $%.2f margin x %dx · open %d (details: php artisan trade:sar-check)',
+        $this->line(sprintf('  Swing SAR: %s · %s · %s · TP1 %s · %s · coins %s · %d%% of the fund: $%.2f margin x %dx · open %d (details: php artisan trade:sar-check)',
             SwingSarTrader::enabled() ? 'ON' : 'off (SWING_SAR_ENABLED=false)', SwingSarTrader::interval(),
             config('trading.swing_sar.confirmed_only', true) ? 'confirmed flips only' : 'every flip incl. "?"',
             config('trading.swing_sar.take_profit', false) ? 'on' : 'off',
-            (float) config('trading.swing_sar.breakeven_r', 1.0), (float) config('trading.swing_sar.trail_atr', 1.5),
+            'book '.implode(', ', array_map(fn (array $p): string => round($p[1] * 100).'% at +'.$p[0].'R', (array) config('trading.swing_sar.partials', [])))
+                .' · stop '.implode(', ', array_map(fn (array $l): string => '+'.$l[0].'R→'.($l[1] == 0 ? 'BE' : $l[1].'R'), (array) config('trading.swing_sar.ladder', [])))
+                .' · trail '.(float) config('trading.swing_sar.trail_atr', 1.5).' ATR from +'.(float) config('trading.swing_sar.trail_from_r', 1.5).'R',
             implode(',', SwingSarTrader::symbols()) ?: '-', (int) round(100 * (float) config('trading.swing_sar.fund_share', 0.5)),
             SwingSarTrader::marginPerTrade(TradingAccount::getForMode($mode)), (int) config('trading.swing_sar.leverage', 5),
             Trade::where('mode', $mode)->where('status', 'OPEN')->where('setup_tag', SwingSarTrader::SETUP)->count()));

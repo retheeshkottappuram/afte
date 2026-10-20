@@ -74,11 +74,18 @@ class TelegramNotifier
         $this->reply($trade, "🛡 {$this->tag($trade)} {$trade->symbol}: stop moved to breakeven <code>{$this->fmt($stopPrice)}</code>. This trade can no longer lose money (fees covered).");
     }
 
-    public function notifyStopTrailed(Trade $trade, float $stopPrice, float $price): void
+    public function notifyStopTrailed(Trade $trade, float $stopPrice, float $price, string $why = 'SuperTrend line'): void
     {
         $locked = ($stopPrice - (float) $trade->entry_price) * ($trade->isLong() ? 1 : -1) >= 0;
-        $this->reply($trade, "↗️ {$this->tag($trade)} {$trade->symbol}: stop moved to <code>{$this->fmt($stopPrice)}</code> (SuperTrend line, price {$this->fmt($price)})."
-            .($locked ? ' Profit is now locked in.' : ''));
+        $risk = abs((float) $trade->entry_price - $stopPrice) * (float) $trade->remaining_quantity;
+        $this->reply($trade, "↗️ {$this->tag($trade)} {$trade->symbol}: stop moved to <code>{$this->fmt($stopPrice)}</code> ({$why}, price {$this->fmt($price)})."
+            .($locked ? ' Profit is now locked in.' : sprintf(' Worst case now −$%.2f.', $risk)));
+    }
+
+    public function notifyPartialBooked(Trade $trade, float $closedQty, float $pnl, float $atR): void
+    {
+        $sign = $pnl >= 0 ? '+' : '';
+        $this->reply($trade, "🎯 {$this->tag($trade)} {$trade->symbol}: booked {$closedQty} at +{$atR}R for {$sign}\${$pnl}. Left: {$trade->remaining_quantity}.");
     }
 
     public function notifyTp1Hit(Trade $trade, float $closedQty, float $pnl): void
@@ -135,14 +142,15 @@ class TelegramNotifier
         $qty = (float) $trade->quantity;
         $risk = abs($entry - (float) $trade->initial_sl);
         $dir = $trade->isLong() ? 1 : -1;
-        $beR = (float) config('trading.swing_sar.breakeven_r', 1.0);
         $lines = sprintf("Stop loss: −\$%.2f (%.2f%%) if hit\n", $qty * $risk, $entry > 0 ? $risk / $entry * 100 : 0);
-        if (config('trading.swing_sar.take_profit', false)) {
-            $lines .= sprintf("TP1: <code>%s</code>, books +\$%.2f on half\n", $this->fmt((float) $trade->tp1_price), $qty / 2 * abs((float) $trade->tp1_price - $entry));
+        foreach ((array) config('trading.swing_sar.partials', []) as [$atR, $share]) {
+            $lines .= sprintf("Book %d%% at <code>%s</code> (+%sR, +\$%.2f)\n", round($share * 100), $this->fmt($entry + $dir * $atR * $risk), $atR, $qty * $share * $atR * $risk);
         }
-        if ($beR > 0) {
-            $lines .= sprintf("At <code>%s</code> (+\$%.2f, %sR) the stop moves to breakeven, then trails %s ATR behind the best price\n",
-                $this->fmt($entry + $dir * $beR * $risk), $qty * $beR * $risk, $beR, (float) config('trading.swing_sar.trail_atr', 1.5));
+        foreach ((array) config('trading.swing_sar.ladder', []) as [$atR, $stopR]) {
+            $lines .= sprintf("At +%sR the stop moves to %s\n", $atR, $stopR == 0 ? 'breakeven' : '<code>'.$this->fmt($entry + $dir * $stopR * $risk).'</code> ('.($stopR > 0 ? '+' : '').$stopR.'R)');
+        }
+        if ((float) config('trading.swing_sar.trail_from_r', 1.5) > 0) {
+            $lines .= sprintf("From +%sR the stop trails %s ATR behind the best price\n", (float) config('trading.swing_sar.trail_from_r', 1.5), (float) config('trading.swing_sar.trail_atr', 1.5));
         }
 
         return $lines.'Exit: the trailing stop or the opposite swing flip ('.SwingSarTrader::interval().")\n";

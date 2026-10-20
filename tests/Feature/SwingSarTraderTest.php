@@ -108,7 +108,7 @@ class SwingSarTraderTest extends TestCase
         $text = implode("\n", array_map(fn (array $pair): string => (string) ($pair[0]->data()['text'] ?? ''), Http::recorded()->all()));
         $this->assertStringContainsString('opposite swing flip', $text);
         $this->assertStringContainsString('Stop loss: −$', $text);
-        $this->assertStringContainsString('the stop moves to breakeven', $text);
+        $this->assertStringContainsString('the stop moves to', $text);
     }
 
     public function test_an_opposite_confirmed_flip_closes_and_reverses(): void
@@ -181,7 +181,7 @@ class SwingSarTraderTest extends TestCase
 
     public function test_tp1_books_half_moves_the_stop_to_breakeven_and_the_flip_reverses_the_rest(): void
     {
-        config(['trading.swing_sar.take_profit' => true, 'trading.swing_sar.breakeven_r' => 0.0]);
+        config(['trading.swing_sar.take_profit' => true, 'trading.swing_sar.ladder' => [], 'trading.swing_sar.partials' => [], 'trading.swing_sar.trail_from_r' => 0.0]);
         $trade = $this->sarTrade('LONG');
         $manager = app(DynamicTradeManager::class);
 
@@ -198,38 +198,62 @@ class SwingSarTraderTest extends TestCase
         $this->assertSame('OPPOSITE_SIGNAL', $trade->fresh()->exit_reason);
     }
 
-    public function test_breakeven_at_one_r_then_the_stop_trails_the_best_price(): void
+    public function test_partials_are_booked_and_the_stop_steps_up_then_trails(): void
     {
-        $trade = $this->sarTrade('LONG'); // entry 5.00, stop 4.85 (1R = 0.15), ATR 0.06
+        $trade = $this->sarTrade('LONG'); // entry 5.00, stop 4.85 (1R = 0.15), qty 10, ATR 0.06
         $manager = app(DynamicTradeManager::class);
 
         $manager->manageTrade($trade, 5.10);
-        $this->assertEqualsWithDelta(4.85, (float) $trade->fresh()->current_sl, 1e-9, 'Below +1R nothing moves');
+        $this->assertEqualsWithDelta(4.85, (float) $trade->fresh()->current_sl, 1e-9, 'Below +0.75R nothing moves');
+        $this->assertEqualsWithDelta(10.0, (float) $trade->fresh()->remaining_quantity, 1e-9);
 
-        $manager->manageTrade($trade->fresh(), 5.16);
+        // +0.8R: a third is booked and the stop goes to -0.25R.
+        $manager->manageTrade($trade->fresh(), 5.12);
         $trade->refresh();
+        $this->assertEqualsWithDelta(6.7, (float) $trade->remaining_quantity, 0.05);
+        $this->assertGreaterThan(0, (float) $trade->realized_pnl);
+        $this->assertEqualsWithDelta(5.0 - 0.25 * 0.15, (float) $trade->current_sl, 1e-6);
+        Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'at +0.75R'));
+
+        // A pullback never loosens the stop and never books twice.
+        $manager->manageTrade($trade->fresh(), 5.05);
+        $manager->manageTrade($trade->fresh(), 5.12);
+        $this->assertEqualsWithDelta(6.7, (float) $trade->fresh()->remaining_quantity, 0.05);
+        $this->assertEqualsWithDelta(4.9625, (float) $trade->fresh()->current_sl, 1e-6);
+
+        // +1.6R: the second third is booked, the stop trails 1.5 ATR behind the best price (above the +0.5R step).
+        $manager->manageTrade($trade->fresh(), 5.24);
+        $trade->refresh();
+        $this->assertEqualsWithDelta(3.4, (float) $trade->remaining_quantity, 0.05);
+        $this->assertEqualsWithDelta(5.24 - 1.5 * 0.06, (float) $trade->current_sl, 1e-6);
         $this->assertTrue((bool) $trade->be_locked);
-        $this->assertEqualsWithDelta(5.16 - 1.5 * 0.06, (float) $trade->current_sl, 1e-6);
-        Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'breakeven'));
 
-        $manager->manageTrade($trade->fresh(), 5.10);
-        $this->assertEqualsWithDelta(5.07, (float) $trade->fresh()->current_sl, 1e-6, 'A pullback never loosens the stop');
-
-        $manager->manageTrade($trade->fresh(), 5.40);
-        $this->assertEqualsWithDelta(5.31, (float) $trade->fresh()->current_sl, 1e-6);
-
-        $manager->manageTrade($trade->fresh(), 5.30);
+        // The last third closes on the trailing stop; the whole trade made money.
+        $manager->manageTrade($trade->fresh(), 5.14);
         $this->assertSame('TRAILING_STOP', $trade->fresh()->exit_reason);
         $this->assertGreaterThan(0, (float) $trade->fresh()->net_pnl);
     }
 
-    public function test_a_short_locks_breakeven_and_trails_down(): void
+    public function test_a_short_books_a_third_and_steps_its_stop_down(): void
     {
         $trade = $this->sarTrade('SHORT'); // entry 5.00, stop 5.15
 
-        app(DynamicTradeManager::class)->manageTrade($trade, 4.80);
+        app(DynamicTradeManager::class)->manageTrade($trade, 4.80); // +1.33R
 
-        $this->assertEqualsWithDelta(4.80 + 1.5 * 0.06, (float) $trade->fresh()->current_sl, 1e-6);
+        $trade->refresh();
+        $this->assertEqualsWithDelta(6.7, (float) $trade->remaining_quantity, 0.05);
+        $this->assertEqualsWithDelta(5.0 + 0.25 * 0.15, (float) $trade->current_sl, 1e-6);
+    }
+
+    public function test_the_open_message_lists_the_bookings_and_stop_steps(): void
+    {
+        $this->flips = [$this->flip('LONG')];
+
+        $this->runSar();
+
+        $text = implode("\n", array_map(fn (array $pair): string => (string) ($pair[0]->data()['text'] ?? ''), Http::recorded()->all()));
+        $this->assertStringContainsString('Book 33% at', $text);
+        $this->assertStringContainsString('At +0.75R the stop moves to', $text);
     }
 
     public function test_by_default_the_swing_coins_are_the_monitored_coins_and_the_chart_buttons(): void
@@ -345,7 +369,7 @@ class SwingSarTraderTest extends TestCase
         $manager = app(DynamicTradeManager::class);
 
         // With profit booking and the breakeven trail off, +2R only moves the stop to the line.
-        config(['trading.swing_sar.take_profit' => false, 'trading.swing_sar.breakeven_r' => 0.0]);
+        config(['trading.swing_sar.take_profit' => false, 'trading.swing_sar.ladder' => [], 'trading.swing_sar.partials' => [], 'trading.swing_sar.trail_from_r' => 0.0]);
         $manager->manageTrade($trade, 5.30);
         $trade->refresh();
         $this->assertEqualsWithDelta(4.95, (float) $trade->current_sl, 1e-9);
