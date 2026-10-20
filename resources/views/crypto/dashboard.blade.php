@@ -1121,7 +1121,7 @@
         // Relative URL: an absolute one can come out as http:// behind the host's SSL proxy and be blocked.
         fetch(`{{ route('signals.chart_trades', [], false) }}?symbol=${encodeURIComponent(symbol)}`, Object.assign({ headers: { 'Accept': 'application/json' } }, fetchOptions))
             .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-            .then(tr => { if (window.SignalAlgoPro && symbol === activeSymbol) window.SignalAlgoPro.setTrades(tr.symbol, tr.trades); })
+            .then(tr => { if (window.SignalAlgoPro && symbol === activeSymbol) window.SignalAlgoPro.setTrades(tr.symbol, tr.trades, tr); })
             .catch(err => {
                 if (err.name === 'AbortError' || !window.SignalAlgoPro) return;
                 console.warn('My trades layer:', err);

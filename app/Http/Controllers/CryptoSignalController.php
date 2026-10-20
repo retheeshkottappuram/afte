@@ -195,22 +195,23 @@ class CryptoSignalController extends Controller
     }
 
     /**
-     * The bot's own trades on this symbol (active mode, last 7 days) for the chart's "My trades" layer.
+     * The bot's own trades on this symbol (open, or closed in the last 7 days; paper and live) for the chart's
+     * "My trades" layer, with a few counts so an empty answer explains itself.
      */
     public function chartTrades(Request $request): JsonResponse
     {
-        $symbol = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) $request->query('symbol', 'BTCUSDT')));
-        $mode = $this->modeManager->activeMode();
+        $symbol = $this->normalizeSymbol(preg_replace('/[^A-Za-z0-9.]/', '', (string) $request->query('symbol', 'BTCUSDT')));
+        $symbols = array_values(array_unique([$symbol, $symbol.'.P', preg_replace('/USDT$/', '', $symbol).'USDT']));
 
-        $trades = Trade::where('mode', $mode)->where('symbol', $symbol)
+        $trades = Trade::whereIn('symbol', $symbols)
             ->where(fn ($q) => $q->where('status', 'OPEN')->orWhere('closed_at', '>=', now()->subDays(7)))
-            ->orderByDesc('id')->limit(50)->get()
+            ->orderByRaw("CASE WHEN status = 'OPEN' THEN 0 ELSE 1 END")->orderByDesc('id')->limit(50)->get()
             ->map(function (Trade $t): array {
                 $margin = (float) $t->quantity * (float) $t->entry_price / max(1, (int) $t->leverage);
                 $pnl = $t->isOpen() ? (float) $t->realized_pnl : (float) $t->net_pnl;
 
                 return [
-                    'id' => $t->id, 'side' => $t->side, 'status' => $t->status, 'setup' => $t->setup_tag,
+                    'id' => $t->id, 'mode' => $t->mode, 'side' => $t->side, 'status' => $t->status, 'setup' => $t->setup_tag,
                     'entry' => (float) $t->entry_price, 'exit' => $t->exit_price !== null ? (float) $t->exit_price : null,
                     'sl' => (float) $t->current_sl,
                     'opened_at' => $t->opened_at?->timestamp, 'closed_at' => $t->closed_at?->timestamp,
@@ -219,7 +220,13 @@ class CryptoSignalController extends Controller
                 ];
             })->values();
 
-        return response()->json(['symbol' => $symbol, 'mode' => $mode, 'trades' => $trades]);
+        return response()->json([
+            'symbol' => $symbol,
+            'mode' => $this->modeManager->activeMode(),
+            'trades' => $trades,
+            'open_any' => Trade::where('status', 'OPEN')->count(),
+            'open_symbols' => Trade::where('status', 'OPEN')->distinct()->orderBy('symbol')->pluck('symbol')->all(),
+        ]);
     }
 
     /**

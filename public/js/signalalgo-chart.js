@@ -81,16 +81,19 @@
             const long = tr.side === 'LONG';
             const inAt = barAt(tr.opened_at);
             if (inAt || barAt(tr.closed_at)) shown++; else older++;
-            if (inAt) out.push({ time: inAt, position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: '#38bdf8', text: `IN #${tr.id} ${fmt(tr.entry)}`, size: 2 });
+            const tag = tr.mode === 'paper' ? '[P] ' : '';
+            if (inAt) out.push({ time: inAt, position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: '#38bdf8', text: `${tag}IN #${tr.id} ${fmt(tr.entry)}`, size: 2 });
             const outAt = tr.status === 'OPEN' ? null : barAt(tr.closed_at);
             if (outAt) {
                 const win = Number(tr.pnl) >= 0;
                 const roe = tr.roe === null ? '' : ` (${win ? '+' : ''}${Number(tr.roe).toFixed(1)}%)`;
-                out.push({ time: outAt, position: long ? 'aboveBar' : 'belowBar', shape: 'circle', color: win ? '#22c55e' : '#ef4444', text: `OUT #${tr.id} ${win ? '+' : '-'}$${Math.abs(Number(tr.pnl)).toFixed(2)}${roe}`, size: 2 });
+                out.push({ time: outAt, position: long ? 'aboveBar' : 'belowBar', shape: 'circle', color: win ? '#22c55e' : '#ef4444', text: `${tag}OUT #${tr.id} ${win ? '+' : '-'}$${Math.abs(Number(tr.pnl)).toFixed(2)}${roe}`, size: 2 });
             }
         });
         if (state.trades && state.data && state.trades.symbol === state.data.symbol) {
-            tradesNote(list.length === 0 ? 'none on this coin in 7 days'
+            const info = state.trades.info || {};
+            const others = (info.open_symbols || []).filter((s) => s !== state.data.symbol);
+            tradesNote(list.length === 0 ? `none for ${state.data.symbol} in 7 days${info.open_any !== undefined ? `; open trades: ${others.length ? others.join(', ') : 'none'}` : ''}`
                 : `${shown} shown${older ? `, ${older} older than the chart` : ''}`);
         }
         return out;
@@ -542,8 +545,8 @@
         },
 
         /** The bot's trades on {symbol} (from /signals/chart-trades), shown with the "My trades" toggle. */
-        setTrades(symbol, list) {
-            state.trades = { symbol, list: Array.isArray(list) ? list : [] };
+        setTrades(symbol, list, info) {
+            state.trades = { symbol, list: Array.isArray(list) ? list : [], info: info || {} };
             applyMarkers();
         },
 

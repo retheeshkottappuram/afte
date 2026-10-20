@@ -453,13 +453,16 @@ class SwingSarTraderTest extends TestCase
     {
         config(['trading.mode' => 'paper']);
         $admin = User::factory()->create(['role' => 'admin']);
-        $mine = $this->sarTrade('LONG');
+        $closed = $this->sarTrade('LONG', ['status' => 'CLOSED', 'closed_at' => now()->subDay(), 'exit_price' => 5.1]);
+        $live = $this->sarTrade('LONG', ['mode' => 'live']); // shown even though the active mode is paper
         $this->sarTrade('LONG', ['symbol' => 'SUIUSDT']);
-        $this->sarTrade('LONG', ['mode' => 'live']);
+        $this->sarTrade('LONG', ['status' => 'CLOSED', 'closed_at' => now()->subDays(9)]);
 
-        $res = $this->actingAs($admin)->getJson(route('signals.chart_trades', ['symbol' => 'NEARUSDT']))->assertOk();
+        $res = $this->actingAs($admin)->getJson(route('signals.chart_trades', ['symbol' => 'NEAR']))->assertOk();
 
-        $this->assertSame([$mine->id], array_column($res->json('trades'), 'id'));
+        $this->assertSame([$live->id, $closed->id], array_column($res->json('trades'), 'id'), 'Open first, then closed in the last 7 days');
+        $this->assertSame('live', $res->json('trades.0.mode'));
+        $this->assertSame(['NEARUSDT', 'SUIUSDT'], $res->json('open_symbols'));
         $this->actingAs($admin)->get('/signals')->assertSee('id="sapToggle-trades"', false)
             ->assertSee('fetch(`/signals/chart-trades?symbol=', false)
             ->assertDontSee(route('signals.chart_trades'), false);
