@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\CryptoSignal;
+use App\Models\TradingAccount;
 use App\Services\Notifications\TelegramGateway;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\Watchlist;
@@ -47,9 +48,29 @@ class DaemonController extends Controller
             'last_alert_at' => CryptoSignal::where('telegram_sent', true)->max('sent_at'),
             'watchlist_count' => count(Watchlist::symbols()),
             'cron_command' => PhpCliResolver::resolve().' '.base_path('artisan').' schedule:run >> /dev/null 2>&1',
+            'trading' => $this->tradingPause(),
         ];
 
         return response()->json(['success' => true, 'is_running' => $isRunning, 'sentinel_enabled' => $alertsOn, 'stats' => $stats]);
+    }
+
+    /**
+     * Why the active account takes no new trades right now (null when it can trade).
+     *
+     * @return array{mode: string, kind: string, reason: string, until: ?string}|null
+     */
+    protected function tradingPause(): ?array
+    {
+        $mode = $this->modeManager->activeMode();
+        $account = TradingAccount::getForMode($mode);
+        $paused = $account->paused_until !== null && $account->paused_until->isFuture();
+
+        return match (true) {
+            (bool) $account->kill_switch => ['mode' => $mode, 'kind' => 'kill_switch', 'reason' => 'Kill switch is on'.($account->pause_reason ? " ({$account->pause_reason})" : '').'. Reset it on the Dashboard after reviewing.', 'until' => null],
+            $paused => ['mode' => $mode, 'kind' => 'paused', 'reason' => 'New trades paused: '.($account->pause_reason ?: 'risk limit reached').'. Resumes automatically '.$account->paused_until->diffForHumans().' ('.$account->paused_until->format('M d H:i').' UTC).', 'until' => $account->paused_until->toIso8601String()],
+            ! $account->is_running => ['mode' => $mode, 'kind' => 'stopped', 'reason' => 'Auto-trading is stopped: no new trades.', 'until' => null],
+            default => null,
+        };
     }
 
     public function start(): JsonResponse

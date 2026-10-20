@@ -2034,24 +2034,23 @@
                     resumeBtn.innerHTML = '<span>⚡</span><span>Deactivate Kill Switch & Resume</span>';
                     resumeBtn.onclick = toggleKillSwitch;
                 }
-            } else if (stats.is_cooldown_active) {
+            } else if (stats.is_cooldown_active || !stats.is_running) {
+                const stopped = !stats.is_cooldown_active;
                 banner.classList.remove('hidden');
                 banner.className = 'rounded-xl p-4 border border-amber-500/50 bg-amber-950/30 shadow-lg shadow-amber-950/30';
                 if (iconContainer) iconContainer.className = 'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-xl border border-amber-500/40 bg-amber-500/20 text-amber-300';
-                if (icon) icon.textContent = '🛡️';
-                if (title) title.textContent = 'CIRCUIT BREAKER: REVENGE TRADING DEFENSE ACTIVE';
+                if (icon) icon.textContent = stopped ? '⏸️' : '🛡️';
+                if (title) title.textContent = stopped ? 'AUTO-TRADING STOPPED: NO NEW TRADES' : 'AUTO-TRADING PAUSED: NO NEW TRADES';
                 if (badge) {
-                    badge.textContent = `COOLDOWN: ${stats.cooldown_remaining_minutes}M REMAINING`;
+                    badge.textContent = stopped ? 'STOPPED' : `RESUMES IN ${stats.cooldown_remaining_human || (stats.cooldown_remaining_minutes + 'M')}`;
                     badge.className = 'px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse';
                 }
                 if (message) {
-                    const remainingMins = stats.cooldown_remaining_minutes || 0;
-                    const maxLoss = stats.max_consecutive_losses || 2;
-                    const untilTime = stats.cooldown_until_time ? ` (until ${stats.cooldown_until_time})` : '';
-                    message.innerHTML = `Auto-trading is temporarily paused after <strong class="text-white font-mono">${stats.consecutive_losses}/${maxLoss} consecutive losses</strong> to eliminate emotional revenge trading and protect capital. Cooldown expires in <strong class="text-amber-300 font-mono">${remainingMins} minutes</strong>${untilTime}. Capital is safeguarded. If you have analyzed market conditions and wish to resume auto-trading immediately, click below.`;
+                    message.textContent = (stats.paused_reason || 'New entries are paused.')
+                        + ' Open trades are still managed. Click the button to reset the pause and resume auto-trading now.';
                 }
                 if (resumeBtn) {
-                    resumeBtn.innerHTML = '<span>⚡</span><span>Reset Cooldown & Resume Trading Now</span>';
+                    resumeBtn.innerHTML = '<span>⚡</span><span>Reset & Resume Auto-Trading Now</span>';
                     resumeBtn.onclick = resumeCooldown;
                 }
             } else {

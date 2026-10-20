@@ -111,6 +111,12 @@
                     <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800">Alerts sent 24h: <strong id="daemonAlerts24h" class="text-indigo-300">--</strong></span>
                     <span class="bg-slate-950/60 px-2.5 py-1 rounded-md border border-slate-800 col-span-2 sm:col-span-1">Telegram: <strong id="daemonTelegram" class="text-slate-200">--</strong></span>
                 </div>
+                <div id="tradingPauseBar" class="hidden mt-3 p-2.5 rounded-lg bg-amber-950/40 border border-amber-700/60 text-[11px] sm:text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center gap-2">
+                    <span id="tradingPauseText" class="flex-1"></span>
+                    @if (Auth::user()?->isAdmin())
+                        <button type="button" id="tradingPauseBtn" onclick="resumeAutoTrading()" class="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-200 font-bold whitespace-nowrap">⚡ Reset & Resume Auto-Trading</button>
+                    @endif
+                </div>
                 <div id="daemonCronHint" class="hidden mt-3 p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/60 text-[11px] text-rose-200">
                     The engine is not running. Add this to your hosting panel's cron jobs (every minute):
                     <code id="daemonCronCommand" class="block mt-1 p-2 rounded bg-slate-950 text-slate-200 font-mono break-all select-all"></code>
@@ -1672,6 +1678,22 @@
     // ==========================================
     // 24/7 Sentinel Background Watcher Functions
     // ==========================================
+    function resumeAutoTrading() {
+        const bar = document.getElementById('tradingPauseBar');
+        if (!confirm('Reset the pause and let the bot open new trades again now?')) return;
+        fetch('{{ route('api.resume_cooldown') }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' },
+            body: JSON.stringify({ mode: bar ? bar.dataset.mode : undefined })
+        })
+        .then(res => res.json())
+        .then(data => {
+            showToast(data.message || (data.success ? 'Auto-trading resumed.' : 'Could not resume.'), !!data.success);
+            pollDaemonStatus();
+        })
+        .catch(() => showToast('Network error while resuming auto-trading.', false));
+    }
+
     function pollDaemonStatus() {
         fetch('{{ route('daemon.status') }}', { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
         .then(res => res.json())
@@ -1712,6 +1734,16 @@
             const tgEl = document.getElementById('daemonTelegram');
             if (tgEl) tgEl.title = st.telegram_problem || '';
             set('daemonCoinCountBadge', st.watchlist_count ?? 0);
+
+            const pause = st.trading || null;
+            const pauseBar = document.getElementById('tradingPauseBar');
+            if (pauseBar) {
+                pauseBar.classList.toggle('hidden', !pause);
+                pauseBar.dataset.mode = pause ? pause.mode : '';
+                set('tradingPauseText', pause ? `⏸️ [${pause.mode.toUpperCase()}] ${pause.reason}` : '');
+                const pauseBtn = document.getElementById('tradingPauseBtn');
+                if (pauseBtn) pauseBtn.classList.toggle('hidden', !pause || pause.kind === 'kill_switch');
+            }
 
             const hint = document.getElementById('daemonCronHint');
             if (hint) hint.classList.toggle('hidden', !!engineOk);
