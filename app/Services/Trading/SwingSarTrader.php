@@ -146,13 +146,20 @@ class SwingSarTrader
         $flip = $this->engine->swingSignals($c, $k, true)[0] ?? null;
 
         if ($flip === null || ($open !== null && $open->side === $flip['side'])) {
-            if ($open !== null && $line !== null && config('trading.swing_sar.trail', true)) {
+            if ($open !== null) {
+                // Last swing: low / high of the last 2 closed candles (used once the trade is well in profit).
                 $meta = $open->meta ?? [];
-                $meta['sar_trail'] = $this->stopFrom((string) $open->side, (float) $line, (float) ($meta['atr'] ?? 0));
+                $meta['sar_swing_low'] = min($c['lows'][$k], $c['lows'][$k - 1]);
+                $meta['sar_swing_high'] = max($c['highs'][$k], $c['highs'][$k - 1]);
+                if ($line !== null && config('trading.swing_sar.trail', true)) {
+                    $meta['sar_trail'] = $this->stopFrom((string) $open->side, (float) $line, (float) ($meta['atr'] ?? 0));
+                }
                 $open->meta = $meta;
                 $open->save();
 
-                return ['action' => 'trail', 'message' => "Stop target {$meta['sar_trail']} (SuperTrend line)."];
+                if (isset($meta['sar_trail'])) {
+                    return ['action' => 'trail', 'message' => "Stop target {$meta['sar_trail']} (SuperTrend line)."];
+                }
             }
 
             return ['action' => 'none', 'message' => 'No flip.'];

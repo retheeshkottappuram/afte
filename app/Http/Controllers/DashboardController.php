@@ -270,6 +270,7 @@ class DashboardController extends Controller
                 'risk_usd' => $pos->meta['risk_usd'] ?? null,
                 'close_failed_reason' => $pos->meta['close_failed_reason'] ?? null,
                 'initial_sl' => $pos->initial_sl,
+                'manual_sl' => $pos->meta['manual_sl']['price'] ?? null,
             ];
         }
 
@@ -479,6 +480,17 @@ class DashboardController extends Controller
             'success' => $moved,
             'message' => $moved ? "Stop moved to breakeven for {$trade->symbol}." : 'Stop is already at or beyond breakeven, or the exchange rejected the move.',
         ], $moved ? 200 : 422);
+    }
+
+    /**
+     * User-set stop-loss for an open trade (SAR or auto); the dynamic stop rules continue from it.
+     */
+    public function updateStopLoss(Request $request): JsonResponse
+    {
+        $data = $request->validate(['trade_id' => ['required', 'integer', 'exists:trades,id'], 'stop_loss' => ['required', 'numeric', 'gt:0']]);
+        $result = $this->tradeManager->setManualStop(Trade::findOrFail($data['trade_id']), (float) $data['stop_loss']);
+
+        return response()->json($result, $result['success'] ? 200 : 422);
     }
 
     /**

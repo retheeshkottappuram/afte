@@ -1191,6 +1191,7 @@
                         </td>
                         <td class="px-4 py-3 font-mono">
                             <span class="text-rose-300 font-bold">$${pos.current_sl}</span>
+                            ${pos.manual_sl && Math.abs(Number(pos.manual_sl) - Number(pos.current_sl)) < 1e-9 ? '<span class="text-[9px] text-sky-300 block" title="Stop set by you; the bot still moves it forward">✎ manual SL</span>' : ''}
                             ${pos.has_exchange_sl 
                                 ? `<span class="text-[9px] px-1.5 py-0.5 mt-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 block font-mono font-medium" title="Active STOP_MARKET conditional order on Binance exchange">🛡️ SL on Binance: $${pos.exchange_sl_price || pos.current_sl}</span>` 
                                 : (pos.be_locked ? '<span class="text-[10px] text-amber-400 block">Risk Free</span>' : '<span class="text-[10px] text-slate-400 block">Trailing Soft SL</span>')}
@@ -1207,6 +1208,7 @@
                         </td>
                         <td class="px-5 py-3 text-right space-x-1 font-mono">
                             ${!pos.be_locked ? `<button onclick="lockBreakeven(${pos.id})" class="px-2 py-1 text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded transition">Lock BE</button>` : ''}
+                            ${canManageTrading ? `<button onclick="editStopLoss(${pos.id})" class="px-2 py-1 text-[10px] bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 rounded transition">Edit SL</button>` : ''}
                             ${canManageTrading ? `<button onclick="exchangeAction(this, { trade_id: ${pos.id}, percent: 50 }, 'book 50%')" class="px-2 py-1 text-[10px] bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded transition">Book 50%</button>` : ''}
                             <button onclick="closePosition(${pos.id})" class="px-2 py-1 text-[10px] bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded transition">Close</button>
                         </td>
@@ -1919,6 +1921,29 @@
                     btnEl.innerHTML = originalHtml;
                     btnEl.disabled = false;
                 }
+            }
+        }
+
+        async function editStopLoss(tradeId) {
+            const pos = activePositionsData.find((p) => p.id === tradeId);
+            if (!pos) { showToast('Position not loaded yet, try again.', false); return; }
+            const input = prompt(`${pos.symbol} ${pos.side}\nEntry ${pos.entry_price} | Mark ${pos.mark_price} | Current SL ${pos.current_sl}\n\nNew stop-loss price:\n(The bot keeps moving it forward with its rules. If you loosen it after a lock level was reached, the bot moves it back to that level.)`, pos.current_sl);
+            if (input === null) return;
+            const sl = parseFloat(String(input).replace(',', '.'));
+            if (!(sl > 0)) { showToast('Enter a valid price.', false); return; }
+            const atStop = (sl - Number(pos.entry_price)) * Number(pos.quantity) * (pos.side === 'LONG' ? 1 : -1);
+            if (!confirm(`Set ${pos.symbol} stop to ${sl}?\nResult if hit: ${atStop >= 0 ? '+' : '-'}$${Math.abs(atStop).toFixed(2)} (before fees).`)) return;
+            try {
+                const res = await fetch('{{ route('api.update_stop_loss') }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                    body: JSON.stringify({ trade_id: tradeId, stop_loss: sl })
+                });
+                const data = await res.json();
+                showToast(data.message || (data.success ? 'Stop updated.' : 'Stop not changed.'), !!data.success);
+                if (data.success) liveSync();
+            } catch (err) {
+                showToast('Network error while changing the stop.', false);
             }
         }
 

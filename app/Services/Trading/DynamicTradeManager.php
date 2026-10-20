@@ -210,6 +210,75 @@ class DynamicTradeManager
     }
 
     /**
+     * User-set stop (dashboard "Edit SL"), tighter or looser. R (initial_sl) is kept, so the dynamic rules keep
+     * working: every later check still only moves the stop forward from this value.
+     *
+     * @return array{success: bool, message: string}
+     */
+    public function setManualStop(Trade $trade, float $stop): array
+    {
+        $lock = Cache::lock("trade-manage:{$trade->id}", 30);
+        if (! $lock->block(10)) {
+            return ['success' => false, 'message' => "Trade {$trade->id} is busy, try again."];
+        }
+
+        try {
+            $trade->refresh();
+            if (! $trade->isOpen()) {
+                return ['success' => false, 'message' => 'Trade is not open.'];
+            }
+
+            $mark = (float) $this->client->getMarkPrice($trade->symbol);
+            if ($mark <= 0) {
+                return ['success' => false, 'message' => 'Mark price unavailable, try again.'];
+            }
+
+            $dir = $trade->isLong() ? 1 : -1;
+            $entry = (float) $trade->entry_price;
+            if (($mark - $stop) * $dir < $mark * 0.001) {
+                return ['success' => false, 'message' => sprintf('Stop must be %s the mark price %s (at least 0.1%% away).', $dir > 0 ? 'below' : 'above', $mark)];
+            }
+            $maxPct = (float) config('trading.swing_sar.max_order_sl_pct', 6.0);
+            if (($entry - $stop) * $dir / $entry * 100 > $maxPct) {
+                return ['success' => false, 'message' => "Stop may not be more than {$maxPct}% from entry ({$entry})."];
+            }
+
+            if ($trade->mode === 'live') {
+                $stop = $this->client->formatPrice($trade->symbol, $stop);
+                if (! $this->exchangeOrders->replaceStop($trade, $stop)) {
+                    return ['success' => false, 'message' => 'Binance rejected the new stop; the previous stop is kept.'];
+                }
+            }
+
+            $previous = (float) $trade->current_sl;
+            $trade->current_sl = $stop;
+            $trade->be_locked = ($stop - $entry * (1 + $dir * 2 * $this->exitPlan->feeRate())) * $dir >= 0;
+            if ($trade->stage === 'ENTRY' && $trade->be_locked) {
+                $trade->stage = 'BE_LOCKED';
+            }
+            $meta = $trade->meta ?? [];
+            $meta['manual_sl'] = ['price' => $stop, 'previous' => $previous, 'at' => now()->toIso8601String()];
+            $meta['sar_trail'] = null; // an older SuperTrend target must not override the user's stop; the next candle sets it again
+            $meta['sar_notified_sl'] = $stop;
+            $trade->meta = $meta;
+            $trade->save();
+
+            $atStop = ($stop - $entry) * $dir * (float) $trade->remaining_quantity;
+            $result = sprintf('%s$%.2f', $atStop >= 0 ? '+' : '-', abs($atStop));
+            SystemLog::write('trade', sprintf('%s %s #%d: stop changed by user %s -> %s (at the stop %s).', strtoupper($trade->mode), $trade->symbol, $trade->id, $previous, $stop, $result));
+            $this->notifier->notifyStopEdited($trade, $stop, $atStop);
+
+            return ['success' => true, 'message' => "{$trade->symbol} stop set to {$stop} (at the stop {$result}). The bot keeps moving it forward from here."];
+        } catch (Throwable $e) {
+            Log::error("[DynamicTradeManager] Manual stop for trade {$trade->id} failed: {$e->getMessage()}");
+
+            return ['success' => false, 'message' => "Stop change failed: {$e->getMessage()}"];
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
      * @return array{status: string, message: string}
      */
     protected function closeTradeUnlocked(Trade $trade, float $exitPrice, string $reason): array
@@ -285,8 +354,9 @@ class DynamicTradeManager
         $liveQty = $amount * $expectedSign > 0 ? abs($amount) : 0.0;
 
         if ($liveQty <= 0) {
-            // Stop or target filled on the exchange.
-            $hint = $trade->tp1_hit ? 'TRAILING_STOP' : 'EXCHANGE_CLOSED';
+            // Stop or target filled on the exchange (a stop that was moved is a trailing / profit stop).
+            $moved = abs((float) $trade->current_sl - (float) $trade->initial_sl) > 1e-12;
+            $hint = $trade->tp1_hit || $moved ? 'TRAILING_STOP' : 'EXCHANGE_CLOSED';
 
             return $this->closeTradeUnlocked($trade, (float) $trade->current_sl, $hint);
         }
@@ -531,6 +601,37 @@ class DynamicTradeManager
                 $profitStop = $better($profitStop, $chandelier);
             }
         }
+
+        // Profit lock on peak ROE: keep a share of the best gain (never below breakeven + fees), and from
+        // swing_trail_from_roe also trail just past the last swing (low of the last 2 closed candles for a long).
+        $peakRoe = $entry > 0 ? ($best - $entry) * $dir / $entry * 100 * max(1, (int) $trade->leverage) : 0.0;
+        $keep = null;
+        foreach ((array) config('trading.swing_sar.profit_lock', []) as [$roe, $share]) {
+            if ($peakRoe >= (float) $roe) {
+                $keep = max((float) $keep, (float) $share);
+            }
+        }
+        $lockStop = null;
+        if ($keep !== null) {
+            $floor = $entry * (1 + $dir * 2 * $this->exitPlan->feeRate());
+            $lockStop = $better($floor, $entry + $dir * ($best - $entry) * $keep);
+            $swingFrom = (float) config('trading.swing_sar.swing_trail_from_roe', 10);
+            $swing = $trade->meta[$dir > 0 ? 'sar_swing_low' : 'sar_swing_high'] ?? null;
+            if ($swingFrom > 0 && $peakRoe >= $swingFrom && $swing !== null) {
+                $lockStop = $better($lockStop, (float) $swing - $dir * 0.1 * $atr);
+            }
+            // Price already back through the lock (sudden drop between checks): book the rest now.
+            if (($price - $lockStop) * $dir <= 0) {
+                $this->notifier->notifyRiskEvent($trade->mode, 'Profit lock', sprintf('%s #%d: price %s fell back through the profit lock %s (peak ROE %.1f%%). Closing the rest.', $trade->symbol, $trade->id, $price, round($lockStop, 8), $peakRoe));
+
+                return $this->closeTradeUnlocked($trade, $price, 'PROFIT_LOCK');
+            }
+            // Step limit as for the trail, except the first move into profit, which always goes through.
+            $inProfit = ((float) $trade->current_sl - $entry) * $dir > 0;
+            if (! $inProfit || ($lockStop - (float) $trade->current_sl) * $dir >= max($price * 0.0015, 0.2 * $atr)) {
+                $profitStop = $better($profitStop, $lockStop);
+            }
+        }
         if ($profitStop !== null && ($profitStop - (float) $trade->current_sl) * $dir <= 1e-12) {
             $profitStop = null;
         }
@@ -554,7 +655,7 @@ class DynamicTradeManager
                 $meta = $trade->meta;
                 $meta['sar_notified_sl'] = (float) $trade->current_sl;
                 $trade->meta = $meta;
-                $this->notifier->notifyStopTrailed($trade, (float) $trade->current_sl, $price, $trail === $profitStop ? 'protecting the profit' : 'SuperTrend line');
+                $this->notifier->notifyStopTrailed($trade, (float) $trade->current_sl, $price, $trail === $profitStop ? ($lockStop !== null && abs($profitStop - $lockStop) < 1e-12 ? sprintf('locking %d%% of the peak profit (peak ROE %.1f%%)', round($keep * 100), $peakRoe) : 'protecting the profit') : 'SuperTrend line');
             }
             if ((float) $trade->current_sl !== $before && $trade->stage === 'ENTRY') {
                 $trade->stage = 'TRAILING';

@@ -5,3 +5,5 @@ Check the server .env. .env.example had TRADING_LOSS_COOLDOWN_MINUTES=20 and TRA
 php artisan config:clear
 php artisan trade:backtest --top=50 --months=12 --seed
 After a few days, run php artisan trade:diagnose --days=3 and paste the output.
+
+php artisan trade:review --days=14

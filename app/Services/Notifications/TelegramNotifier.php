@@ -82,6 +82,13 @@ class TelegramNotifier
             .($locked ? ' Profit is now locked in.' : sprintf(' Worst case now −$%.2f.', $risk)));
     }
 
+    public function notifyStopEdited(Trade $trade, float $stopPrice, float $atStopUsd): void
+    {
+        $this->reply($trade, "✏️ {$this->tag($trade)} {$trade->symbol}: stop changed by you to <code>{$this->fmt($stopPrice)}</code>."
+            .($atStopUsd >= 0 ? sprintf(' Profit locked: +$%.2f at the stop.', $atStopUsd) : sprintf(' Worst case now −$%.2f.', abs($atStopUsd)))
+            .' The bot keeps moving it forward from here.');
+    }
+
     public function notifyPartialBooked(Trade $trade, float $closedQty, float $pnl, float $atR): void
     {
         $sign = $pnl >= 0 ? '+' : '';

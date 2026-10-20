@@ -45,6 +45,7 @@ Route::middleware('auth')->group(function (): void {
         Route::middleware('permission:manage_trading')->group(function (): void {
             Route::post('/execute-radar-trade', [DashboardController::class, 'executeRadarTrade'])->name('api.execute_radar_trade');
             Route::post('/lock-breakeven', [DashboardController::class, 'lockBreakeven'])->name('api.lock_breakeven');
+            Route::post('/update-stop-loss', [DashboardController::class, 'updateStopLoss'])->name('api.update_stop_loss');
             Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');
             Route::post('/close-all-positions', [DashboardController::class, 'closeAllPositions'])->name('api.close_all_positions');
             Route::post('/exchange/close', [ExchangeStreamController::class, 'close'])->name('api.exchange.close');
@@ -79,6 +80,9 @@ Route::middleware('auth')->group(function (): void {
     Route::get('/signals/analyze', [CryptoSignalController::class, 'analyze'])
         ->middleware('permission:view_signals')
         ->name('signals.analyze');
+    Route::get('/signals/chart-trades', [CryptoSignalController::class, 'chartTrades'])
+        ->middleware('permission:view_signals')
+        ->name('signals.chart_trades');
     Route::get('/dashboard/analyze', [CryptoSignalController::class, 'analyze'])
         ->middleware('permission:view_signals')
         ->name('dashboard.analyze');

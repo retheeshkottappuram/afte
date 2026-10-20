@@ -195,6 +195,34 @@ class CryptoSignalController extends Controller
     }
 
     /**
+     * The bot's own trades on this symbol (active mode, last 7 days) for the chart's "My trades" layer.
+     */
+    public function chartTrades(Request $request): JsonResponse
+    {
+        $symbol = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) $request->query('symbol', 'BTCUSDT')));
+        $mode = $this->modeManager->activeMode();
+
+        $trades = Trade::where('mode', $mode)->where('symbol', $symbol)
+            ->where(fn ($q) => $q->where('status', 'OPEN')->orWhere('closed_at', '>=', now()->subDays(7)))
+            ->orderByDesc('id')->limit(50)->get()
+            ->map(function (Trade $t): array {
+                $margin = (float) $t->quantity * (float) $t->entry_price / max(1, (int) $t->leverage);
+                $pnl = $t->isOpen() ? (float) $t->realized_pnl : (float) $t->net_pnl;
+
+                return [
+                    'id' => $t->id, 'side' => $t->side, 'status' => $t->status, 'setup' => $t->setup_tag,
+                    'entry' => (float) $t->entry_price, 'exit' => $t->exit_price !== null ? (float) $t->exit_price : null,
+                    'sl' => (float) $t->current_sl,
+                    'opened_at' => $t->opened_at?->timestamp, 'closed_at' => $t->closed_at?->timestamp,
+                    'pnl' => round($pnl, 4), 'roe' => $margin > 0 ? round($pnl / $margin * 100, 2) : null,
+                    'exit_reason' => $t->exit_reason,
+                ];
+            })->values();
+
+        return response()->json(['symbol' => $symbol, 'mode' => $mode, 'trades' => $trades]);
+    }
+
+    /**
      * Send the current signal for a symbol to Telegram on demand.
      */
     public function sendAlert(Request $request, SignalLedger $ledger, SignalAlerts $alerts): JsonResponse

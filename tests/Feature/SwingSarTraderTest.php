@@ -33,6 +33,8 @@ class SwingSarTraderTest extends TestCase
             'trading.swing_sar.symbols' => ['NEARUSDT'],
             'trading.swing_sar.require_4h_trend' => false,
             'trading.swing_sar.stop_buffer_atr' => 0.0,
+            // The ladder / trail tests run without the ROE profit lock; the lock has its own tests.
+            'trading.swing_sar.profit_lock' => [],
             'trading.telegram.enabled' => true,
             'trading.telegram.bot_token' => '123:SECRET',
             'trading.telegram.chat_id' => '999',
@@ -389,6 +391,76 @@ class SwingSarTraderTest extends TestCase
         // Price through the trailed stop closes it.
         $manager->manageTrade($trade->fresh(), 4.94);
         $this->assertSame('TRAILING_STOP', $trade->fresh()->exit_reason);
+    }
+
+    public function test_from_ten_percent_roe_the_stop_locks_half_of_the_peak_gain_and_follows_new_highs(): void
+    {
+        config(['trading.swing_sar.profit_lock' => [[10, 0.50], [20, 0.65], [30, 0.75]], 'trading.swing_sar.partials' => [], 'trading.swing_sar.ladder' => [], 'trading.swing_sar.trail_from_r' => 0.0]);
+        $trade = $this->sarTrade('LONG'); // entry 5.00, 5x: +2% price = 10% ROE
+        $manager = app(DynamicTradeManager::class);
+
+        $manager->manageTrade($trade, 5.09); // ROE 9%: nothing yet
+        $this->assertEqualsWithDelta(4.85, (float) $trade->fresh()->current_sl, 1e-9);
+
+        $manager->manageTrade($trade->fresh(), 5.11); // ROE 11%: keep 50% of +0.11
+        $this->assertEqualsWithDelta(5.055, (float) $trade->fresh()->current_sl, 1e-9);
+        $this->assertTrue((bool) $trade->fresh()->be_locked);
+
+        $manager->manageTrade($trade->fresh(), 5.22); // ROE 22%: keep 65% of +0.22
+        $this->assertEqualsWithDelta(5.143, (float) $trade->fresh()->current_sl, 1e-9);
+
+        $manager->manageTrade($trade->fresh(), 5.16); // pullback: the stop stays
+        $this->assertEqualsWithDelta(5.143, (float) $trade->fresh()->current_sl, 1e-9);
+
+        // Drop to the locked stop: the rest closes in profit.
+        $manager->manageTrade($trade->fresh(), 5.14);
+        $this->assertSame('TRAILING_STOP', $trade->fresh()->exit_reason);
+        $this->assertGreaterThan(0, (float) $trade->fresh()->net_pnl);
+
+        // Spike and sudden fall between two checks (stop not moved yet): booked at once, still in profit.
+        $spiked = $this->sarTrade('LONG', ['highest_price' => 5.22]);
+        $manager->manageTrade($spiked, 5.12);
+        $this->assertSame('PROFIT_LOCK', $spiked->fresh()->exit_reason);
+        $this->assertGreaterThan(0, (float) $spiked->fresh()->net_pnl);
+    }
+
+    public function test_after_ten_percent_roe_the_stop_trails_the_last_swing_low(): void
+    {
+        config(['trading.swing_sar.profit_lock' => [[10, 0.50]], 'trading.swing_sar.partials' => [], 'trading.swing_sar.ladder' => [], 'trading.swing_sar.trail_from_r' => 0.0]);
+        $trade = $this->sarTrade('LONG', ['meta' => ['interval' => '15m', 'atr' => 0.06, 'sar_swing_low' => 5.16]]);
+        $manager = app(DynamicTradeManager::class);
+
+        $manager->manageTrade($trade, 5.08); // ROE 8%: the swing low is not used yet
+        $this->assertEqualsWithDelta(4.85, (float) $trade->fresh()->current_sl, 1e-9);
+
+        $manager->manageTrade($trade->fresh(), 5.20); // ROE 20%: swing low 5.16 - 0.1 ATR beats 50% of the gain (5.10)
+        $this->assertEqualsWithDelta(5.154, (float) $trade->fresh()->current_sl, 1e-9);
+    }
+
+    public function test_a_closed_candle_stores_the_last_swing_low_and_high(): void
+    {
+        $trade = $this->sarTrade('LONG');
+        $this->flips = [];
+
+        $this->runSar();
+
+        $meta = $trade->fresh()->meta;
+        $this->assertArrayHasKey('sar_swing_low', $meta);
+        $this->assertLessThan((float) $meta['sar_swing_high'], (float) $meta['sar_swing_low']);
+    }
+
+    public function test_the_chart_lists_the_bots_trades_on_the_coin(): void
+    {
+        config(['trading.mode' => 'paper']);
+        $admin = User::factory()->create(['role' => 'admin']);
+        $mine = $this->sarTrade('LONG');
+        $this->sarTrade('LONG', ['symbol' => 'SUIUSDT']);
+        $this->sarTrade('LONG', ['mode' => 'live']);
+
+        $res = $this->actingAs($admin)->getJson(route('signals.chart_trades', ['symbol' => 'NEARUSDT']))->assertOk();
+
+        $this->assertSame([$mine->id], array_column($res->json('trades'), 'id'));
+        $this->actingAs($admin)->get('/signals')->assertSee('id="sapToggle-trades"', false);
     }
 
     public function test_sar_trades_have_their_own_slots(): void

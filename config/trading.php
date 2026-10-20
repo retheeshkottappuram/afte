@@ -369,6 +369,11 @@ return [
         'ladder' => [[0.75, -0.25], [1.5, 0.5]],
         'trail_from_r' => (float) env('SWING_SAR_TRAIL_FROM_R', 1.5),
         'trail_atr' => (float) env('SWING_SAR_TRAIL_ATR', 1.5),
+        // Profit lock on peak ROE (price move % x leverage), user's request 2026-10-20: [peak ROE %, share of the peak
+        // gain the stop keeps]. From 10% ROE the stop sits in profit (at least breakeven + fees) and only moves up.
+        'profit_lock' => [[10, 0.50], [20, 0.65], [30, 0.75]],
+        // From this peak ROE the stop also trails just past the last 2 closed candles' low (long) / high (short).
+        'swing_trail_from_roe' => (float) env('SWING_SAR_SWING_TRAIL_FROM_ROE', 10),
         // Book half at TP1 (exits.tp1_r) too. Off: in the 15m test it did not help (PF 0.84 / 0.77 vs 0.85 / 0.83).
         'take_profit' => (bool) env('SWING_SAR_TAKE_PROFIT', false),
         // Stop = SuperTrend line pushed out by this many ATR; trail = move it with the line every closed candle.

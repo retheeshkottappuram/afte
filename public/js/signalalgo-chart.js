@@ -23,7 +23,7 @@
 
     /** Chart display toggles, remembered per browser. */
     function loadToggles() {
-        const defaults = { results: true, filtered: true, shadow: false, levels: true, swings: true, sound: true };
+        const defaults = { results: true, filtered: true, shadow: false, levels: true, swings: true, trades: true, sound: true };
         try {
             return Object.assign(defaults, JSON.parse(localStorage.getItem('sap_chart_toggles') || '{}'));
         } catch (e) {
@@ -42,8 +42,59 @@
         const markers = (state.data.markers || [])
             .filter((m) => (m.kind !== 'result' || t.results) && (m.kind !== 'shadow' || t.shadow) && (m.kind !== 'filtered' || t.filtered))
             .map((m) => ({ time: m.time, position: m.position, shape: m.shape, color: m.color, text: m.text, size: m.size }))
+            .concat(t.trades ? tradeMarkers() : [])
             .sort((a, b) => a.time - b.time);
         state.candleSeries.setMarkers(markers);
+        drawTradeLines();
+    }
+
+    /* ---------- "My trades": the bot's own entries and exits on this coin ---------- */
+
+    /** Time of the candle that contains unix time t (null when it is before the loaded candles). */
+    function barAt(t) {
+        const candles = state.data.candles || [];
+        if (!t || !candles.length || t < candles[0].time) return null;
+        let lo = 0, hi = candles.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (candles[mid].time <= t) lo = mid; else hi = mid - 1;
+        }
+        return candles[lo].time;
+    }
+
+    function currentTrades() {
+        const tr = state.trades;
+        return tr && state.data && tr.symbol === state.data.symbol ? tr.list : [];
+    }
+
+    function tradeMarkers() {
+        const out = [];
+        currentTrades().forEach((tr) => {
+            const long = tr.side === 'LONG';
+            const inAt = barAt(tr.opened_at);
+            if (inAt) out.push({ time: inAt, position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: '#38bdf8', text: `IN #${tr.id} ${fmt(tr.entry)}`, size: 2 });
+            const outAt = tr.status === 'OPEN' ? null : barAt(tr.closed_at);
+            if (outAt) {
+                const win = Number(tr.pnl) >= 0;
+                const roe = tr.roe === null ? '' : ` (${win ? '+' : ''}${Number(tr.roe).toFixed(1)}%)`;
+                out.push({ time: outAt, position: long ? 'aboveBar' : 'belowBar', shape: 'circle', color: win ? '#22c55e' : '#ef4444', text: `OUT #${tr.id} ${win ? '+' : '-'}$${Math.abs(Number(tr.pnl)).toFixed(2)}${roe}`, size: 2 });
+            }
+        });
+        return out;
+    }
+
+    /** Entry and current stop lines of the open trade(s) on this coin. */
+    function drawTradeLines() {
+        (state.tradeLines || []).forEach((line) => { try { state.candleSeries.removePriceLine(line); } catch (e) { /* already gone */ } });
+        state.tradeLines = [];
+        if (!state.toggles.trades) return;
+        currentTrades().filter((tr) => tr.status === 'OPEN').forEach((tr) => {
+            state.tradeLines.push(state.candleSeries.createPriceLine({ price: tr.entry, color: 'rgba(56,189,248,0.9)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `#${tr.id} entry` }));
+            if (tr.sl > 0) {
+                const safe = (tr.sl - tr.entry) * (tr.side === 'LONG' ? 1 : -1) >= 0;
+                state.tradeLines.push(state.candleSeries.createPriceLine({ price: tr.sl, color: safe ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `#${tr.id} stop${safe ? ' (profit locked)' : ''}` }));
+            }
+        });
     }
 
     function syncToggleInputs() {
@@ -477,7 +528,13 @@
             layoutLabels();
         },
 
-        /** Chart toggle checkbox handler: results / filtered / shadow / levels / swings. */
+        /** The bot's trades on {symbol} (from /signals/chart-trades), shown with the "My trades" toggle. */
+        setTrades(symbol, list) {
+            state.trades = { symbol, list: Array.isArray(list) ? list : [] };
+            applyMarkers();
+        },
+
+        /** Chart toggle checkbox handler: results / filtered / shadow / levels / swings / trades. */
         setToggle(name, on) {
             state.toggles[name] = !!on;
             saveToggles();
