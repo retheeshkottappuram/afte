@@ -82,7 +82,9 @@ class AutoTradeVerdictTest extends TestCase
             entry: 100.0, stopLoss: 101.0, tp1: 98.5, tp2: 97.0, tp3: 95.5, atr: 0.8, isShadow: false,
             filters: ['regime' => ['pass' => true, 'detail' => 'not required']], confluences: ['Volume 2.1x'], features: ['proven_subset' => false], indicators: [],
         ));
-        $this->assertStringContainsString('Alert only', app(SignalScorer::class)->autoTradeDecision($againstTrend, 'live')['reason'], 'Only the profitable subset trades by default');
+        $this->assertTrue(app(SignalScorer::class)->autoTradeDecision($againstTrend, 'live')['allowed'], 'Every breakout trades by default (user decision 2026-10-20)');
+        config(['trading.strategy.early_breakout.trade_all_breakouts' => false]);
+        $this->assertStringContainsString('Alert only', app(SignalScorer::class)->autoTradeDecision($againstTrend, 'live')['reason'], 'With trade_all off only the profitable subset trades');
         config(['trading.strategy.early_breakout.trade_all_breakouts' => true]);
         $this->assertTrue(app(SignalScorer::class)->autoTradeDecision($againstTrend, 'live')['allowed']);
 

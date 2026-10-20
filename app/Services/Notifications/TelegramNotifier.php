@@ -53,8 +53,7 @@ class TelegramNotifier
             ."Entry: <code>{$this->fmt($trade->entry_price)}</code>\n"
             ."Stop: <code>{$this->fmt($trade->initial_sl)}</code>\n"
             .($trade->setup_tag === SwingSarTrader::SETUP
-                ? (config('trading.swing_sar.take_profit', true) ? "TP1: <code>{$this->fmt($trade->tp1_price)}</code> (half, then stop to breakeven)\n" : '')
-                    ."Exit: on the opposite swing flip; the stop follows the SuperTrend line each hour\n"
+                ? $this->sarPlan($trade)
                 : "TP1: <code>{$this->fmt($trade->tp1_price)}</code> · TP2: <code>{$this->fmt($trade->tp2_price)}</code>\n")
             ."Size: \${$notional} at {$trade->leverage}x, margin \${$trade->margin_used}"
             .($risk !== null ? "\nRisk: \${$risk} (".($trade->meta['risk_pct'] ?? '?').'% of equity)' : '');
@@ -125,6 +124,28 @@ class TelegramNotifier
 
         $replyTo = isset($trade->meta['telegram_message_id']) ? (int) $trade->meta['telegram_message_id'] : null;
         $this->gateway->send($html, $replyTo);
+    }
+
+    /**
+     * Swing SAR exit plan in dollars, so the stop and the profit lock can be compared.
+     */
+    protected function sarPlan(Trade $trade): string
+    {
+        $entry = (float) $trade->entry_price;
+        $qty = (float) $trade->quantity;
+        $risk = abs($entry - (float) $trade->initial_sl);
+        $dir = $trade->isLong() ? 1 : -1;
+        $beR = (float) config('trading.swing_sar.breakeven_r', 1.0);
+        $lines = sprintf("Stop loss: −\$%.2f (%.2f%%) if hit\n", $qty * $risk, $entry > 0 ? $risk / $entry * 100 : 0);
+        if (config('trading.swing_sar.take_profit', false)) {
+            $lines .= sprintf("TP1: <code>%s</code>, books +\$%.2f on half\n", $this->fmt((float) $trade->tp1_price), $qty / 2 * abs((float) $trade->tp1_price - $entry));
+        }
+        if ($beR > 0) {
+            $lines .= sprintf("At <code>%s</code> (+\$%.2f, %sR) the stop moves to breakeven, then trails %s ATR behind the best price\n",
+                $this->fmt($entry + $dir * $beR * $risk), $qty * $beR * $risk, $beR, (float) config('trading.swing_sar.trail_atr', 1.5));
+        }
+
+        return $lines.'Exit: the trailing stop or the opposite swing flip ('.SwingSarTrader::interval().")\n";
     }
 
     protected function tag(Trade $trade): string

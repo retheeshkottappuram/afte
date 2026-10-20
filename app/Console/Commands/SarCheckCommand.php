@@ -22,7 +22,7 @@ class SarCheckCommand extends Command
     /**
      * @var string
      */
-    protected $signature = 'trade:sar-check {--hours=48 : How far back to look}';
+    protected $signature = 'trade:sar-check {--hours=24 : How far back to look}';
 
     /**
      * @var string
@@ -36,9 +36,10 @@ class SarCheckCommand extends Command
         $since = now()->subHours($hours)->timestamp;
         $maxOpen = (int) config('trading.swing_sar.max_open', 2);
 
-        $this->info(sprintf('Swing SAR %s · mode %s · %s · config cached: %s',
-            SwingSarTrader::enabled() ? 'ON' : 'OFF (set SWING_SAR_ENABLED=true, then php artisan config:clear)', strtoupper($mode),
-            config('trading.swing_sar.confirmed_only', false) ? 'confirmed flips only' : 'every flip incl. "?"',
+        $bars = (int) ceil($hours * 3600 / SwingSarTrader::intervalSeconds());
+        $this->info(sprintf('Swing SAR %s · %s candles · mode %s · %s · config cached: %s',
+            SwingSarTrader::enabled() ? 'ON' : 'OFF (set SWING_SAR_ENABLED=true, then php artisan config:clear)', SwingSarTrader::interval(), strtoupper($mode),
+            config('trading.swing_sar.confirmed_only', true) ? 'confirmed flips only' : 'every flip incl. "?"',
             app()->configurationIsCached() ? 'yes' : 'no'));
         $account = TradingAccount::getForMode($mode);
         if (! $account->canTrade()) {
@@ -48,13 +49,13 @@ class SarCheckCommand extends Command
         $rows = [];
         foreach (SwingSarTrader::symbols() as $symbol) {
             try {
-                $c = CandleSanitizer::onlyClosedCandles($market->klines($symbol, (string) config('trading.swing_sar.interval', '1h'), 300), now()->getTimestampMs());
+                $c = CandleSanitizer::onlyClosedCandles($market->klines($symbol, SwingSarTrader::interval(), min(1500, max(300, $bars + 100))), now()->getTimestampMs());
             } catch (Throwable $e) {
                 $rows[] = [$symbol, '-', '-', '-', '-', 'candles failed: '.$e->getMessage()];
 
                 continue;
             }
-            $from = max(60, count($c['closes'] ?? []) - $hours - 1);
+            $from = max(60, count($c['closes'] ?? []) - $bars - 1);
             foreach ($engine->swingSignals($c, $from, true) as $flip) {
                 if ($flip['time'] < $since) {
                     continue;
@@ -86,17 +87,18 @@ class SarCheckCommand extends Command
     protected function outcome(SwingSarTrader $sar, string $mode, string $symbol, array $flip, int $maxOpen): string
     {
         $at = Carbon::createFromTimestamp($flip['time']);
+        $window = intdiv(SwingSarTrader::intervalSeconds(), 60) + 30;
         $sarTrades = Trade::where('mode', $mode)->where('setup_tag', SwingSarTrader::SETUP);
 
         $opened = (clone $sarTrades)->where('symbol', $symbol)->where('side', $flip['side'])
-            ->whereBetween('opened_at', [$at->copy()->subMinutes(5), $at->copy()->addMinutes(90)])->first();
+            ->whereBetween('opened_at', [$at->copy()->subMinutes(5), $at->copy()->addMinutes($window)])->first();
         if ($opened !== null) {
             return "opened trade #{$opened->id} ({$opened->status}".($opened->status === 'CLOSED' ? ', $'.round((float) $opened->net_pnl, 2) : '').')';
         }
 
         $notes = [];
         $closed = (clone $sarTrades)->where('symbol', $symbol)->where('exit_reason', 'OPPOSITE_SIGNAL')
-            ->whereBetween('closed_at', [$at->copy()->subMinutes(5), $at->copy()->addMinutes(90)])->first();
+            ->whereBetween('closed_at', [$at->copy()->subMinutes(5), $at->copy()->addMinutes($window)])->first();
         if ($closed !== null) {
             $notes[] = "closed #{$closed->id}";
         }
@@ -112,7 +114,7 @@ class SarCheckCommand extends Command
         } elseif (! SwingSarTrader::enabled()) {
             $notes[] = 'not traded: Swing SAR is off';
         } else {
-            $notes[] = 'not traded: before the 2026-10-19 update only confirmed flips with the 4h trend agreeing were traded; otherwise paused / daily stop / margin / error (see the engine log or the Telegram ⏭ message)';
+            $notes[] = 'not traded: paused / daily stop / margin / error, or the coin or interval was different then (see the engine log or the Telegram ⏭ message)';
         }
 
         return implode(' · ', $notes);

@@ -119,6 +119,13 @@ Route::middleware('auth')->group(function (): void {
         Route::post('/monitored-coins/mode', [DaemonController::class, 'setScanMode'])
             ->middleware('permission:manage_sentinel')
             ->name('daemon.monitored-coins.mode');
+        Route::get('/swing-coins', [DaemonController::class, 'getSwingCoins'])->name('daemon.swing-coins');
+        Route::post('/swing-coins/add', [DaemonController::class, 'addSwingCoin'])
+            ->middleware('permission:manage_sentinel')
+            ->name('daemon.swing-coins.add');
+        Route::post('/swing-coins/remove', [DaemonController::class, 'removeSwingCoin'])
+            ->middleware('permission:manage_sentinel')
+            ->name('daemon.swing-coins.remove');
     });
 
     // 7. Whole-Market Scanner page + API

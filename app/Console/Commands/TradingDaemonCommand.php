@@ -137,7 +137,8 @@ class TradingDaemonCommand extends Command
 
                 // 3a. Swing SAR: once per closed candle (30s after the close, like the scan). Closes always run;
                 //     new entries follow the same pause / stop / breaker state as the main bot.
-                if (SwingSarTrader::enabled() && time() % 3600 >= 30 && Cache::add('engine:swing-sar:'.intdiv(time(), 3600), true, 7200)) {
+                $sarSeconds = SwingSarTrader::intervalSeconds();
+                if (SwingSarTrader::enabled() && time() % $sarSeconds >= 30 && Cache::add('engine:swing-sar:'.$sarSeconds.':'.intdiv(time(), $sarSeconds), true, 2 * $sarSeconds)) {
                     try {
                         $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
                         foreach ($sar->run($mode, $entriesAllowed) as $row) {

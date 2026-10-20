@@ -435,9 +435,10 @@ class DynamicTradeManager
     }
 
     /**
-     * Swing SAR: half is booked at TP1 (swing_sar.take_profit), then the stop goes to breakeven + fees. No time stop.
-     * The stop follows the SuperTrend line (SwingSarTrader stores the latest closed-candle value in meta.sar_trail)
-     * and only moves in the trade's favour; the opposite flip closes the rest.
+     * Swing SAR, every tick: once price has run breakeven_r R the stop goes to breakeven + fees and then trails the
+     * best price by trail_atr ATR; it also follows the SuperTrend line (SwingSarTrader stores the latest closed-candle
+     * value in meta.sar_trail). The stop only moves in the trade's favour; the opposite flip closes the trade.
+     * Optional: half booked at TP1 (swing_sar.take_profit). No time stop.
      *
      * @return array{status: string, message: string}
      */
@@ -459,12 +460,41 @@ class DynamicTradeManager
             $this->bookTp1($trade, $trade->mode === 'live' ? $price : $tp1);
         }
 
+        $dir = $trade->isLong() ? 1 : -1;
+        $entry = (float) $trade->entry_price;
+        $risk = abs($entry - (float) $trade->initial_sl);
+        $best = $trade->isLong() ? (float) $trade->highest_price : (float) $trade->lowest_price;
+        $atr = (float) ($trade->meta['atr'] ?? 0);
+        $beR = (float) config('trading.swing_sar.breakeven_r', 1.0);
+        $profitStop = null;
+        if ($beR > 0 && $risk > 0 && ($best - $entry) * $dir >= $beR * $risk) {
+            $profitStop = $entry * (1 + $dir * 2 * $this->exitPlan->feeRate());
+            if ($atr > 0) {
+                $chandelier = $best - $dir * (float) config('trading.swing_sar.trail_atr', 1.5) * $atr;
+                $profitStop = $dir > 0 ? max($profitStop, $chandelier) : min($profitStop, $chandelier);
+            }
+            // Move in steps (not every tick) so a live stop order is not replaced every 5 seconds.
+            $step = max($price * 0.0015, 0.2 * $atr);
+            if ($trade->be_locked && ($profitStop - (float) $trade->current_sl) * $dir < $step) {
+                $profitStop = null;
+            }
+        }
+
         $trail = $trade->meta['sar_trail'] ?? null;
+        if ($profitStop !== null && ($trail === null || ($profitStop - (float) $trail) * $dir > 0)) {
+            $trail = $profitStop;
+        }
         if ($trail !== null && ($trade->isLong() ? (float) $trail < $price : (float) $trail > $price)) {
             $before = (float) $trade->current_sl;
-            $this->applyStop($trade, ['current_sl' => (float) $trail, 'be_locked' => false]);
+            $wasBeLocked = (bool) $trade->be_locked;
+            $this->applyStop($trade, ['current_sl' => (float) $trail, 'be_locked' => ($trail - $entry) * $dir >= 0]);
             $notified = (float) ($trade->meta['sar_notified_sl'] ?? $trade->initial_sl);
-            if (abs((float) $trade->current_sl - $before) > 1e-12
+            if (! $wasBeLocked && $trade->be_locked) {
+                // applyStop already sent the "stop moved to breakeven" reply.
+                $meta = $trade->meta;
+                $meta['sar_notified_sl'] = (float) $trade->current_sl;
+                $trade->meta = $meta;
+            } elseif (abs((float) $trade->current_sl - $before) > 1e-12
                 && abs((float) $trade->current_sl - $notified) / $price * 100 >= (float) config('trading.swing_sar.trail_notify_pct', 0.5)) {
                 $meta = $trade->meta;
                 $meta['sar_notified_sl'] = (float) $trade->current_sl;

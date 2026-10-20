@@ -11,6 +11,7 @@ use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Strategy\StrategyEngine;
 use App\Services\Strategy\Watchlist;
+use App\Services\Trading\SwingSarTrader;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 
@@ -120,7 +121,8 @@ class SignalAlerts
             $entry = (float) ($levels['entry'] ?? $row['level']);
             $sl = (float) ($levels['sl'] ?? (((float) $row['box_high'] + (float) $row['box_low']) / 2));
 
-            $block = sprintf("%s <b>%s %s</b>: breakout setup (%s)\n", $isLong ? '🟢' : '🔴', $isLong ? 'BUY' : 'SELL', $row['symbol'], $row['interval'] ?? '1h')
+            $block = sprintf("%s <b>%s %s</b>: breakout setup (%s) %s\n", $isLong ? '🟢' : '🔴', $isLong ? 'BUY' : 'SELL', $row['symbol'], $row['interval'] ?? '1h',
+                ($row['proven_subset'] ?? false) ? '✅ proven setup' : '⚠️ unproven (this kind lost in tests)')
                 .sprintf("Entry %s <code>%s</code> (now %s, %.1f%% away)\n", $isLong ? 'above' : 'below', $this->fmt($entry), $this->fmt((float) $row['price']), $row['distance_pct'])
                 .sprintf('Stop <code>%s</code> (−%.2f%%)', $this->fmt($sl), abs($entry - $sl) / $entry * 100);
             if (isset($levels['tp1'], $levels['tp2'])) {
@@ -134,7 +136,8 @@ class SignalAlerts
         }
 
         $auto = (bool) config('trading.strategy.intrabar_breakouts', true)
-            ? 'The bot enters automatically when the break is confirmed (1% risk).'
+            ? sprintf('The bot enters automatically when the break is confirmed (%s%% risk%s).', (float) config('trading.strategy.early_breakout.risk_pct', 1.0),
+                SwingSarTrader::enabled() ? ', from the breakout half of the fund' : '')
             : 'The bot trades only the confirmed candle close.';
 
         return $this->gateway->send("🔭 <b>Breakout setups</b> (this 1h candle)\n\n".implode("\n\n", $blocks)

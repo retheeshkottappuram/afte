@@ -98,8 +98,9 @@ class BreakoutAlertsTest extends TestCase
         $this->assertStringNotContainsString('SELL', $text);
     }
 
-    public function test_far_entries_wide_stops_and_unproven_setups_are_not_announced(): void
+    public function test_with_proven_only_far_entries_wide_stops_and_unproven_setups_are_not_announced(): void
     {
+        config(['trading.strategy.setup_alerts.proven_only' => true, 'trading.strategy.setup_alerts.max_distance_pct' => 1.5]);
         $alerts = app(SignalAlerts::class);
         $levels = ['entry' => 99.85, 'sl' => 98.5, 'tp1' => 101.9, 'tp2' => 103.9, 'tp3' => 105.9];
 
@@ -112,6 +113,17 @@ class BreakoutAlertsTest extends TestCase
         config(['trading.strategy.setup_alerts.proven_only' => false]);
         $this->assertTrue($alerts->breakoutWatchAlert(['WLDUSDT:LONG' => $unproven]));
         $this->assertStringNotContainsString('4 in 5', $this->telegramMessages()[0]['text']);
+        $this->assertStringContainsString('⚠️ unproven', $this->telegramMessages()[0]['text']);
+    }
+
+    public function test_by_default_unproven_setups_within_two_and_a_half_percent_are_announced_and_tagged(): void
+    {
+        $levels = ['entry' => 99.85, 'sl' => 98.5, 'tp1' => 101.9, 'tp2' => 103.9, 'tp3' => 105.9];
+        $near = ['proven_subset' => false] + $this->watch('ZROUSDT', 'LONG', 100.0, 97.9) + ['levels' => $levels];
+
+        $this->assertTrue(app(SignalAlerts::class)->breakoutWatchAlert(['ZROUSDT:LONG' => $near]));
+        $this->assertStringContainsString('⚠️ unproven', $this->telegramMessages()[0]['text']);
+        $this->assertStringContainsString('The bot enters automatically', $this->telegramMessages()[0]['text']);
     }
 
     public function test_boxes_without_a_lean_are_not_announced_before_they_break(): void
@@ -161,8 +173,9 @@ class BreakoutAlertsTest extends TestCase
         $this->assertStringContainsString('Auto-trader: [PAPER] taken', $texts);
     }
 
-    public function test_by_default_an_early_breakout_is_alerted_but_not_traded(): void
+    public function test_with_intrabar_trading_off_an_early_breakout_is_alerted_but_not_traded(): void
     {
+        config(['trading.strategy.intrabar_breakouts' => false]);
         TradingAccount::getForMode('paper')->update(['balance' => 100.0, 'peak_equity' => 100.0, 'is_running' => true]);
         $signal = app(StrategyEngine::class)->intrabarSignal($this->watch(), 100.0, intdiv(now()->startOfHour()->getTimestampMs() + 3_599_999, 1000))->withScore('B', null);
         $record = app(SignalLedger::class)->record($signal, 'watcher');

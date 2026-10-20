@@ -117,11 +117,13 @@ class TradeHealthCommand extends Command
         $this->line(sprintf('  Risk %.1f%% per trade · seed $%.2f · early-breakout trading %s',
             (float) config('trading.sizing.risk_per_trade_pct', 2.0), (float) config('trading.seed_capital', 24.0),
             config('trading.strategy.intrabar_breakouts', false) ? 'ON' : 'off (alerts only)'));
-        $this->line(sprintf('  Swing SAR: %s · %s · TP1 %s · coins %s · $%.0f margin x %dx · open %d (details: php artisan trade:sar-check)',
-            SwingSarTrader::enabled() ? 'ON' : 'off (SWING_SAR_ENABLED=false)',
-            config('trading.swing_sar.confirmed_only', false) ? 'confirmed flips only' : 'every flip incl. "?"',
-            config('trading.swing_sar.take_profit', true) ? 'on' : 'off', implode(',', SwingSarTrader::symbols()) ?: '-',
-            (float) config('trading.swing_sar.margin_usd', 10), (int) config('trading.swing_sar.leverage', 5),
+        $this->line(sprintf('  Swing SAR: %s · %s · %s · TP1 %s · breakeven at %sR then %s ATR trail · coins %s · %d%% of the fund: $%.2f margin x %dx · open %d (details: php artisan trade:sar-check)',
+            SwingSarTrader::enabled() ? 'ON' : 'off (SWING_SAR_ENABLED=false)', SwingSarTrader::interval(),
+            config('trading.swing_sar.confirmed_only', true) ? 'confirmed flips only' : 'every flip incl. "?"',
+            config('trading.swing_sar.take_profit', false) ? 'on' : 'off',
+            (float) config('trading.swing_sar.breakeven_r', 1.0), (float) config('trading.swing_sar.trail_atr', 1.5),
+            implode(',', SwingSarTrader::symbols()) ?: '-', (int) round(100 * (float) config('trading.swing_sar.fund_share', 0.5)),
+            SwingSarTrader::marginPerTrade(TradingAccount::getForMode($mode)), (int) config('trading.swing_sar.leverage', 5),
             Trade::where('mode', $mode)->where('status', 'OPEN')->where('setup_tag', SwingSarTrader::SETUP)->count()));
 
         // 6. Last 24 hours

@@ -72,7 +72,7 @@ class OrderExecutor
 
             $sizing = isset($signal['fixed_margin'])
                 ? $this->riskManager->fixedMarginSize($account, $symbol, $referencePrice, $structuralSl, (float) $signal['fixed_margin'], (int) ($signal['fixed_leverage'] ?? 5))
-                : $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl, isset($signal['risk_pct']) ? (float) $signal['risk_pct'] : null);
+                : $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl, isset($signal['risk_pct']) ? (float) $signal['risk_pct'] : null, $isManual);
             if (! $sizing['allowed']) {
                 return $this->rejected($sizing['reason']);
             }

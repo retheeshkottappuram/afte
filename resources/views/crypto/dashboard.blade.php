@@ -169,6 +169,23 @@
             <div id="monitoredCoinsPillContainer" class="flex flex-wrap gap-2 min-h-[48px] p-3 rounded-xl bg-slate-900/60 border border-slate-800">
                 <span class="text-slate-500 text-xs italic">Loading coins...</span>
             </div>
+
+            <!-- Swing SAR auto-trade coins (separate from the alert list) -->
+            <div class="mt-5 pt-4 border-t border-slate-800">
+                <div class="font-bold text-white flex flex-wrap items-center gap-2 text-sm mb-2">
+                    <span>🔁 Swing Auto-Trade Coins</span>
+                    <span id="swingCoinsInfo" class="text-[11px] px-2.5 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">…</span>
+                </div>
+                <p class="text-[11px] text-slate-400 mb-3">The bot auto-trades the chart's <strong>confirmed</strong> swing BUY/SELL flips on these coins only ("?" flips are not traded), using half of the fund. The other half is for breakout trades.</p>
+                <form onsubmit="event.preventDefault(); changeSwingCoin('add');" class="flex flex-col sm:flex-row gap-2 mb-3">
+                    <input type="text" id="newSwingCoinInput" placeholder="Coin symbol, e.g. NEAR, SUI"
+                        class="flex-1 min-w-0 uppercase px-3.5 py-2 text-xs rounded-xl bg-slate-900 text-white placeholder-slate-500 border border-slate-700 focus:outline-none focus:border-cyan-500 font-mono">
+                    <button type="button" onclick="changeSwingCoin('add')" class="px-4 py-2 text-xs font-bold rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white border border-cyan-500 transition">+ Add Swing Coin</button>
+                </form>
+                <div id="swingCoinsPillContainer" class="flex flex-wrap gap-2 min-h-[40px] p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                    <span class="text-slate-500 text-xs italic">Loading coins...</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1727,7 +1744,60 @@
         panel.classList.toggle('hidden');
         if (!panel.classList.contains('hidden') && !isCoinsLoaded) {
             loadMonitoredCoins();
+            loadSwingCoins();
         }
+    }
+
+    function renderSwingCoins(data) {
+        const info = document.getElementById('swingCoinsInfo');
+        if (info) {
+            info.textContent = `${data.enabled ? 'ON' : 'OFF'} · ${data.interval} · ${data.confirmed_only ? 'confirmed only' : 'every flip'} · ${Math.round((data.fund_share || 0) * 100)}% fund`;
+        }
+        const container = document.getElementById('swingCoinsPillContainer');
+        if (!container) return;
+        const coins = data.coins || [];
+        if (coins.length === 0) {
+            container.innerHTML = '<span class="text-amber-400 text-xs italic">No swing coins. Add one above.</span>';
+            return;
+        }
+        container.innerHTML = coins.map(symbol => `
+            <span class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-slate-800 text-slate-200 border border-slate-700">
+                <span class="text-cyan-300">${symbol.replace('USDT', '')}</span>
+                <span class="text-[10px] text-slate-500 font-normal">USDT</span>
+                <button type="button" onclick="changeSwingCoin('remove', '${symbol}')" title="Remove ${symbol}"
+                    class="ml-1 text-slate-500 hover:text-rose-400 transition font-bold text-xs p-0.5 rounded cursor-pointer leading-none">✕</button>
+            </span>`).join('');
+    }
+
+    function loadSwingCoins() {
+        fetch('{{ route('daemon.swing-coins') }}', { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(res => res.json())
+            .then(data => { if (data.success) renderSwingCoins(data); })
+            .catch(() => {});
+    }
+
+    function changeSwingCoin(action, symbol = null) {
+        const input = document.getElementById('newSwingCoinInput');
+        const value = symbol || (input ? input.value.trim() : '');
+        if (!value) {
+            showToast('Please enter a coin symbol (e.g. NEAR or SUIUSDT).', false);
+            return;
+        }
+        const url = action === 'add' ? '{{ route('daemon.swing-coins.add') }}' : '{{ route('daemon.swing-coins.remove') }}';
+        fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' },
+            body: JSON.stringify({ symbol: value })
+        })
+        .then(res => res.json())
+        .then(data => {
+            showToast(data.message || (data.success ? 'Saved.' : 'Failed.'), !!data.success);
+            if (data.success) {
+                if (input && action === 'add') input.value = '';
+                renderSwingCoins(data);
+            }
+        })
+        .catch(() => showToast('Network error while saving swing coins.', false));
     }
 
     function loadMonitoredCoins() {

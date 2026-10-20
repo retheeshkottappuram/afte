@@ -254,17 +254,20 @@ return [
         // ~26/day as sent then: only ~33% went 2 ATR the right way first, PF 0.81 (months 1-10) / 1.18 (last 2).
         // Entry > 1.5% away (PF 0.60-0.74) and stop > 4% (PF 0.74-0.88) were the worst. Top-10 coin + 4h trend agreeing
         // + stop <= 4% + entry <= 1.5% away: ~1/day, PF 1.03 / 2.91, the only subset not losing in either period.
+        // User's decision (2026-10-20): send every leaning setup within 2.5% (tagged proven / unproven) and let the
+        // bot trade them all, knowing the full list lost in that audit. true / 1.5 = the measured subset only.
         'setup_alerts' => [
-            'max_distance_pct' => (float) env('STRATEGY_SETUP_ALERT_MAX_DISTANCE_PCT', 1.5),
-            'proven_only' => (bool) env('STRATEGY_SETUP_ALERT_PROVEN_ONLY', true), // top-10 + 4h trend + box lean
+            'max_distance_pct' => (float) env('STRATEGY_SETUP_ALERT_MAX_DISTANCE_PCT', 2.5),
+            'proven_only' => (bool) env('STRATEGY_SETUP_ALERT_PROVEN_ONLY', false), // top-10 + 4h trend + box lean
         ],
         // Swing BUY/SELL Telegram alerts (SuperTrend 10,3 flip on 1.5x volume), never auto-traded (user's decision
         // 2026-10-13). 12-month test: 43.9% won, about breakeven (PF 0.98). The message states this.
         'topbottom_alerts' => (bool) env('STRATEGY_TOPBOTTOM_ALERTS', true),
         // Auto-trade early breakouts (before the candle closes). Off (user's decision 2026-10-13): a 5m replay of the
         // live watcher (12 months, 23 coins) lost with realistic fills, even on the proven subset (last 4 months
-        // PF 0.83). Breakout alerts still go to Telegram (breakout_alerts), marked "not auto-traded".
-        'intrabar_breakouts' => (bool) env('STRATEGY_INTRABAR_BREAKOUTS', false),
+        // PF 0.83). User's decision (2026-10-20): on again, the bot trades every predicted breakout when it breaks,
+        // sized from the breakout half of the fund (swing_sar.fund_share). false = alerts only.
+        'intrabar_breakouts' => (bool) env('STRATEGY_INTRABAR_BREAKOUTS', true),
         'early_breakout' => [
             'stop_mode' => env('STRATEGY_EARLY_STOP_MODE', 'mid'), // atr | inside | mid: box midpoint tested best (PF 0.78 pessimistic to 1.17 optimistic)
             'anticipate_pct' => (float) env('STRATEGY_EARLY_ANTICIPATE_PCT', 0.15), // enter this % before the breakout level
@@ -281,7 +284,8 @@ return [
             // $5 -> $0.98-$6.14, max DD 36-81%. Only the trend + box-bias + top-10 subset: ~3/week, PF 1.39-1.58,
             // $5 -> $6.27-$6.87, max DD 5-7%. false = alert every breakout, trade only that subset.
             // User's decision (2026-10-12): trade only the profitable subset; the others are alerted, not traded.
-            'trade_all_breakouts' => (bool) env('STRATEGY_EARLY_TRADE_ALL', false),
+            // User's decision (2026-10-20): trade them all again.
+            'trade_all_breakouts' => (bool) env('STRATEGY_EARLY_TRADE_ALL', true),
             // Minute watcher confirmation: volume so far on pace for this x the 20-bar average, judged on at
             // least this share of the candle. Skip the entry when price is already this many R past the trigger.
             'volume_pace' => (float) env('STRATEGY_EARLY_VOLUME_PACE', 1.5),
@@ -330,22 +334,33 @@ return [
     */
     'swing_sar' => [
         'enabled' => (bool) env('SWING_SAR_ENABLED', false),
-        // WATCHLIST = the monitored alert coins on the Signals page (Watchlist::symbols()); or a comma list.
-        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('SWING_SAR_SYMBOLS', 'WATCHLIST'))))),
-        'interval' => '1h',
+        // Default coins; the list saved on the Signals page ("Swing auto-trade coins") wins over this.
+        // WATCHLIST = the monitored alert coins (Watchlist::symbols()).
+        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('SWING_SAR_SYMBOLS', 'NEARUSDT,SUIUSDT'))))),
+        // User's decision (2026-10-20): 15m candles, confirmed flips only. 12-month test on NEAR + SUI
+        // (bt_sar_15m.php, $30 trades): every stop variant LOST on months 1-10 (PF 0.72-0.85, ~15 trades/week);
+        // the shipped one (2% cap, breakeven at +1R, then 1.5 ATR trail) PF 0.85 / 0.83, max drawdown $37.
+        // 1h on the same coins: ~1.5 trades/week, PF 0.83-1.42.
+        'interval' => (string) env('SWING_SAR_INTERVAL', '15m'),
+        // Margin per trade = balance x fund_share / max_open (the other half is for the breakout bot); the fixed
+        // margin_usd is used only when fund_share is 0.
+        'fund_share' => (float) env('SWING_SAR_FUND_SHARE', 0.5),
         'margin_usd' => (float) env('SWING_SAR_MARGIN_USD', 10.0),
         'leverage' => (int) env('SWING_SAR_LEVERAGE', 5),
         'max_open' => (int) env('SWING_SAR_MAX_OPEN', 2),
-        // The placed stop (line + ATR buffer) is capped at this % from entry, so a wide "?" flip risks at most ~$2 + fees.
-        'max_sl_pct' => (float) env('SWING_SAR_MAX_SL_PCT', 4.0),
+        // The placed stop (line + ATR buffer) is capped at this % from entry (flips often print at a top / bottom).
+        'max_sl_pct' => (float) env('SWING_SAR_MAX_SL_PCT', 2.0),
         'max_order_sl_pct' => (float) env('SWING_SAR_MAX_ORDER_SL_PCT', 6.0),
-        // false = every chart flip opens a trade, "BUY?"/"SELL?" too (user's choice 2026-10-19; every flip on the
-        // 8 watch coins tested PF 0.85-0.88 in months 1-10, 1.11-1.25 in the last 2). true = confirmed flips only.
-        'confirmed_only' => (bool) env('SWING_SAR_CONFIRMED_ONLY', false),
+        // true = confirmed flips only; "BUY?" / "SELL?" are never traded (an opposite "?" still closes an open trade).
+        'confirmed_only' => (bool) env('SWING_SAR_CONFIRMED_ONLY', true),
         // Only enter when the 4h SuperTrend points the same way.
         'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', false),
-        // Book half at TP1 (exits.tp1_r = 1.5R, beat 1R in the test), stop to breakeven + fees, the rest trails.
-        'take_profit' => (bool) env('SWING_SAR_TAKE_PROFIT', true),
+        // Checked every 5s: at +breakeven_r R the stop goes to entry + fees, then trails the best price by
+        // trail_atr ATR (and the SuperTrend line), only ever toward profit.
+        'breakeven_r' => (float) env('SWING_SAR_BREAKEVEN_R', 1.0),
+        'trail_atr' => (float) env('SWING_SAR_TRAIL_ATR', 1.5),
+        // Book half at TP1 (exits.tp1_r) too. Off: in the 15m test it did not help (PF 0.84 / 0.77 vs 0.85 / 0.83).
+        'take_profit' => (bool) env('SWING_SAR_TAKE_PROFIT', false),
         // Stop = SuperTrend line pushed out by this many ATR; trail = move it with the line every closed candle.
         'stop_buffer_atr' => (float) env('SWING_SAR_STOP_BUFFER_ATR', 1.0),
         'trail' => (bool) env('SWING_SAR_TRAIL', true),

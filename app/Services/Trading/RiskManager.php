@@ -189,7 +189,7 @@ class RiskManager
      *
      * @return array{allowed: bool, quantity: float, margin: float, amount_added: float, leverage: int, risk_usd: float, risk_pct: float, notional: float, reason: string}
      */
-    public function calculatePositionSize(TradingAccount $account, string $symbol, float $entryPrice, float $slPrice, ?float $riskPctOverride = null): array
+    public function calculatePositionSize(TradingAccount $account, string $symbol, float $entryPrice, float $slPrice, ?float $riskPctOverride = null, bool $isManual = false): array
     {
         $reject = fn (string $reason): array => [
             'allowed' => false, 'quantity' => 0.0, 'margin' => 0.0, 'amount_added' => 0.0, 'leverage' => 0,
@@ -238,6 +238,15 @@ class RiskManager
         $availMargin = $this->getAvailableBalance($account);
         $usableMargin = $availMargin * $maxMarginPct;
 
+        $budget = $isManual ? null : $this->breakoutMarginBudget($account);
+        if ($budget !== null) {
+            if ($budget <= 0) {
+                return $reject(sprintf('The breakout half of the fund ($%.2f) is already in use.', $equity * (1 - (float) config('trading.swing_sar.fund_share', 0.5))));
+            }
+            $usableMargin = min($usableMargin, $budget);
+            $availMargin = round($usableMargin, 2);
+        }
+
         if ($usableMargin <= 0) {
             return $reject('No free margin available.');
         }
@@ -262,6 +271,24 @@ class RiskManager
             'notional' => round($notional, 2),
             'reason' => 'Sized by stop distance and equity at risk.',
         ];
+    }
+
+    /**
+     * Margin the auto (breakout) bot may still use while Swing SAR holds its fund share, or null without a split:
+     * balance x (1 - swing_sar.fund_share) minus the margin of open non-SAR trades.
+     */
+    public function breakoutMarginBudget(TradingAccount $account): ?float
+    {
+        $share = (float) config('trading.swing_sar.fund_share', 0.5);
+        if (! SwingSarTrader::enabled() || $share <= 0 || $share >= 1) {
+            return null;
+        }
+
+        $used = (float) Trade::where('mode', $account->mode)->where('status', 'OPEN')
+            ->where(fn ($q) => $q->whereNull('setup_tag')->orWhere('setup_tag', '!=', SwingSarTrader::SETUP))
+            ->sum('margin_used');
+
+        return round(max(0.0, (float) $account->balance) * (1 - $share) - $used, 4);
     }
 
     /**
