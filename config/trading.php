@@ -192,12 +192,15 @@ return [
         'small_account_equity' => 25.0,
         'max_leverage' => (int) env('TRADING_MAX_LEVERAGE', 10),
         'max_margin_pct' => 90.0,
-        'max_positions' => [ // equity ceiling => max simultaneous positions
+        'max_positions' => [ // equity ceiling => max simultaneous AT-RISK positions (stop still below breakeven)
             25 => 1,
             100 => 2,
             PHP_INT_MAX => 3,
         ],
-        'max_same_side' => 2,
+        // User's decision (2026-10-20): more positions may open while the others are risk-free (stop at breakeven or
+        // better), up to this many in total, so open risk never exceeds the at-risk limit above.
+        'max_positions_protected' => (int) env('TRADING_MAX_POSITIONS_PROTECTED', 4),
+        'max_same_side' => 2, // at-risk positions in one direction
     ],
 
     /*

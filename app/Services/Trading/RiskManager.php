@@ -132,12 +132,25 @@ class RiskManager
         // Swing SAR trades have their own slots and never block (or count toward) the main bot's positions.
         $openTrades = $openTrades->filter(fn (Trade $t): bool => ($t->setup_tag === SwingSarTrader::SETUP) === $isSar);
         $maxPositions = $isSar ? (int) config('trading.swing_sar.max_open', 2) : $this->maxPositions((float) $account->balance);
-        if ($openTrades->count() >= $maxPositions) {
-            return ['allowed' => false, 'reason' => ($isSar ? 'Swing SAR' : 'Max open')." positions ({$maxPositions}) reached".($isSar ? '.' : ' for this account size.')];
+        if ($isSar && $openTrades->count() >= $maxPositions) {
+            return ['allowed' => false, 'reason' => "Swing SAR positions ({$maxPositions}) reached."];
+        }
+
+        // Main bot: the account-size limit counts only trades that can still lose (stop below breakeven); risk-free
+        // ones free their slot, up to max_positions_protected open in total.
+        $atRisk = $isSar ? $openTrades : $openTrades->filter(fn (Trade $t): bool => self::stillAtRisk($t));
+        if (! $isSar) {
+            $maxTotal = max($maxPositions, (int) config('trading.sizing.max_positions_protected', 4));
+            if ($openTrades->count() >= $maxTotal) {
+                return ['allowed' => false, 'reason' => "Max open positions ({$maxTotal}) reached."];
+            }
+            if ($atRisk->count() >= $maxPositions) {
+                return ['allowed' => false, 'reason' => "Max open positions ({$maxPositions}) at risk reached for this account size; another opens once the open trade's stop is at breakeven."];
+            }
         }
 
         if ($side !== null) {
-            $sameSide = $openTrades->where('side', strtoupper($side))->count();
+            $sameSide = $atRisk->where('side', strtoupper($side))->count();
             // Swing SAR may fill all its slots in one direction (each flip carries its own capped stop).
             $maxSameSide = $isSar ? $maxPositions : (int) config('trading.sizing.max_same_side', 2);
             if ($sameSide >= $maxSameSide) {
@@ -152,6 +165,14 @@ class RiskManager
         }
 
         return ['allowed' => true, 'reason' => 'Risk checks passed.'];
+    }
+
+    /**
+     * A trade can still lose money when its stop is on the losing side of entry.
+     */
+    public static function stillAtRisk(Trade $trade): bool
+    {
+        return ((float) $trade->current_sl - (float) $trade->entry_price) * ($trade->isLong() ? 1 : -1) < 0;
     }
 
     /**

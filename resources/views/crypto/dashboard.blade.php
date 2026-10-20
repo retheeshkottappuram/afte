@@ -637,7 +637,7 @@
 
 <!-- TradingView & Lightweight Charts Scripts with Fail-Safe Fallback -->
 <script type="text/javascript" src="{{ asset('js/lightweight-charts.standalone.production.js') }}"></script>
-<script type="text/javascript" src="{{ asset('js/signalalgo-chart.js') }}?v=7"></script>
+<script type="text/javascript" src="{{ asset('js/signalalgo-chart.js') }}?v={{ @filemtime(public_path('js/signalalgo-chart.js')) ?: 8 }}"></script>
 <script type="text/javascript">
     if (typeof LightweightCharts === 'undefined') {
         const s = document.createElement('script');

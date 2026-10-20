@@ -561,7 +561,7 @@
                             <h4 class="text-white font-bold uppercase tracking-wider text-xs">Position size &amp; limits</h4>
                             <ul class="space-y-1.5 list-disc pl-4 text-slate-300">
                                 <li><strong class="text-cyan-300">2% of the balance</strong> is lost if the stop is hit (up to 3% only when Binance's minimum order forces it on a small account). Leverage just fits the margin; it does not change the risk.</li>
-                                <li>Max open positions: <strong class="text-white">1</strong> below $25, <strong class="text-white">2</strong> below $100, <strong class="text-white">3</strong> above. At most 2 in the same direction.</li>
+                                <li>Max open positions at risk: <strong class="text-white">1</strong> below $25, <strong class="text-white">2</strong> below $100, <strong class="text-white">3</strong> above. Once a trade's stop is at breakeven it no longer counts, up to <strong class="text-white">{{ (int) config('trading.sizing.max_positions_protected', 4) }}</strong> open. At most 2 at risk in the same direction.</li>
                                 <li>Stop-loss and TP1 orders are placed <strong class="text-white">on Binance</strong> with the entry. If the stop cannot be placed, the position is closed at once.</li>
                             </ul>
                         </div>

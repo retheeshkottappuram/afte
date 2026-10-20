@@ -50,6 +50,30 @@ class RiskManagerTest extends TestCase
         $this->assertSame(3, $risk->maxPositions(500.0));
     }
 
+    public function test_risk_free_trades_free_their_slot_up_to_four_open(): void
+    {
+        $risk = app(RiskManager::class);
+        $account = $this->account(24.0);
+
+        // $24 account: one trade still at risk (stop below entry) fills the only slot.
+        $first = $this->openTrade('SOLUSDT', 'LONG');
+        $blocked = $risk->canOpenTrade($account, 'ETHUSDT', 'LONG');
+        $this->assertFalse($blocked['allowed']);
+        $this->assertStringContainsString('at risk', $blocked['reason']);
+
+        // Its stop moves to breakeven: it can no longer lose, so another trade may open.
+        $first->update(['current_sl' => 100.0]);
+        $this->assertTrue($risk->canOpenTrade($account, 'ETHUSDT', 'LONG')['allowed']);
+
+        // Safe trades don't count toward the same-direction limit either; 4 open in total is the cap.
+        foreach (['ETHUSDT', 'BNBUSDT', 'XRPUSDT'] as $symbol) {
+            $this->openTrade($symbol, 'LONG')->update(['current_sl' => 100.5]);
+        }
+        $capped = $risk->canOpenTrade($account, 'DOGEUSDT', 'LONG');
+        $this->assertFalse($capped['allowed']);
+        $this->assertStringContainsString('(4)', $capped['reason']);
+    }
+
     public function test_position_is_sized_to_two_percent_risk_at_the_stop(): void
     {
         $sizing = app(RiskManager::class)->calculatePositionSize($this->account(100.0), 'SOLUSDT', 150.0, 148.5);
