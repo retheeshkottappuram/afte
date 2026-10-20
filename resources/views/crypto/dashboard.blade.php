@@ -413,9 +413,11 @@
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-filtered" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('filtered', this.checked)"> Filtered</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-shadow" class="accent-emerald-500" onchange="SignalAlgoPro.setToggle('shadow', this.checked)"> Shadow</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-levels" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('levels', this.checked)"> Levels</label>
-                <label class="inline-flex items-center gap-1 cursor-pointer" title="SuperTrend flip on volume. 12-month test: ~44% won, about breakeven overall. Alert only, never auto-traded."><input type="checkbox" id="sapToggle-swings" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('swings', this.checked)"> Swing BUY/SELL</label>
+                <label class="inline-flex items-center gap-1 cursor-pointer" title="SuperTrend flip on volume. Confirmed flips (no ?) on the 15m chart of the swing coins are auto-traded by Swing SAR."><input type="checkbox" id="sapToggle-swings" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('swings', this.checked)"> Swing BUY/SELL</label>
                 <button type="button" id="sap-alerts-btn" onclick="SignalAlgoPro.enableAlerts()" class="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 font-bold" title="Pop-up, sound and browser notification when a new BUY/SELL prints (this coin and every scanned coin)">🔔 Enable alerts</button>
             </div>
+
+            <div id="tvLabelsNote" class="hidden text-[11px] sm:text-xs text-amber-300">Bot BUY/SELL labels are shown on the Signals Chart tab only (TradingView can't display them).</div>
 
             <!-- Indicator Color Legend -->
             <div id="algoIndicatorLegend" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] sm:text-xs text-slate-400">
@@ -740,11 +742,13 @@
             tvContainer.classList.add('hidden');
             if (tooltip) tooltip.classList.remove('hidden');
             if (legend) legend.classList.remove('hidden');
+            document.getElementById('tvLabelsNote')?.classList.add('hidden');
 
             if (chart && algoContainer) {
                 chart.applyOptions({ width: algoContainer.clientWidth, height: algoContainer.clientHeight });
                 chart.timeScale().fitContent();
             }
+            window.SignalAlgoPro?.relayout();
         } else {
             tvTab.className = 'px-3 py-1.5 rounded-lg font-bold transition flex items-center space-x-1.5 bg-emerald-600 text-white shadow';
             algoTab.className = 'px-3 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white flex items-center space-x-1.5';
@@ -752,6 +756,8 @@
             tvContainer.classList.remove('hidden');
             if (tooltip) tooltip.classList.add('hidden');
             if (legend) legend.classList.add('hidden');
+            document.getElementById('tvLabelsNote')?.classList.remove('hidden');
+            window.SignalAlgoPro?.relayout();
 
             initTradingViewWidget(activeSymbol);
         }

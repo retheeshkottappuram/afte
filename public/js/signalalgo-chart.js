@@ -312,7 +312,16 @@
 
     function layoutLabels() {
         const layer = el('sap-label-layer');
-        if (!layer || !state.chart || !state.candleSeries || !state.data) return;
+        if (!layer) return;
+        // Labels belong to this chart only: hide them while the TradingView tab (same parent) is shown.
+        const canvas = el('signalalgo_canvas_chart');
+        if (!canvas || canvas.classList.contains('hidden') || canvas.offsetParent === null) {
+            layer.innerHTML = '';
+            layer.style.display = 'none';
+            return;
+        }
+        layer.style.display = '';
+        if (!state.chart || !state.candleSeries || !state.data) return;
         const candles = state.data.candles || [];
         const byTime = new Map(candles.map((c) => [c.time, c]));
         const width = layer.clientWidth;
@@ -461,6 +470,11 @@
             renderStrip(data);
             renderInspector(data);
             renderAccuracyCard(data.all_setup_stats);
+        },
+
+        /** Re-place (or hide) the BUY/SELL labels, e.g. after switching between the Signals Chart and TradingView. */
+        relayout() {
+            layoutLabels();
         },
 
         /** Chart toggle checkbox handler: results / filtered / shadow / levels / swings. */
