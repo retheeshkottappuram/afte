@@ -42,7 +42,7 @@
         const markers = (state.data.markers || [])
             .filter((m) => (m.kind !== 'result' || t.results) && (m.kind !== 'shadow' || t.shadow) && (m.kind !== 'filtered' || t.filtered))
             .map((m) => ({ time: m.time, position: m.position, shape: m.shape, color: m.color, text: m.text, size: m.size }))
-            .concat(t.trades ? tradeMarkers() : [])
+            .concat(t.trades ? tradeMarkers() : (tradesNote(''), []))
             .sort((a, b) => a.time - b.time);
         state.candleSeries.setMarkers(markers);
         drawTradeLines();
@@ -67,11 +67,20 @@
         return tr && state.data && tr.symbol === state.data.symbol ? tr.list : [];
     }
 
+    /** "My trades" note next to the toggle: how many are shown, or why none are. */
+    function tradesNote(text) {
+        const note = el('sapTradesNote');
+        if (note) note.textContent = state.toggles.trades && text ? `(${text})` : '';
+    }
+
     function tradeMarkers() {
         const out = [];
-        currentTrades().forEach((tr) => {
+        const list = currentTrades();
+        let shown = 0, older = 0;
+        list.forEach((tr) => {
             const long = tr.side === 'LONG';
             const inAt = barAt(tr.opened_at);
+            if (inAt || barAt(tr.closed_at)) shown++; else older++;
             if (inAt) out.push({ time: inAt, position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: '#38bdf8', text: `IN #${tr.id} ${fmt(tr.entry)}`, size: 2 });
             const outAt = tr.status === 'OPEN' ? null : barAt(tr.closed_at);
             if (outAt) {
@@ -80,6 +89,10 @@
                 out.push({ time: outAt, position: long ? 'aboveBar' : 'belowBar', shape: 'circle', color: win ? '#22c55e' : '#ef4444', text: `OUT #${tr.id} ${win ? '+' : '-'}$${Math.abs(Number(tr.pnl)).toFixed(2)}${roe}`, size: 2 });
             }
         });
+        if (state.trades && state.data && state.trades.symbol === state.data.symbol) {
+            tradesNote(list.length === 0 ? 'none on this coin in 7 days'
+                : `${shown} shown${older ? `, ${older} older than the chart` : ''}`);
+        }
         return out;
     }
 
@@ -532,6 +545,13 @@
         setTrades(symbol, list) {
             state.trades = { symbol, list: Array.isArray(list) ? list : [] };
             applyMarkers();
+        },
+
+        /** Shown next to the "My trades" toggle when the trades could not be loaded. */
+        setTradesStatus(text) {
+            state.trades = null;
+            applyMarkers();
+            tradesNote(text);
         },
 
         /** Chart toggle checkbox handler: results / filtered / shadow / levels / swings / trades. */

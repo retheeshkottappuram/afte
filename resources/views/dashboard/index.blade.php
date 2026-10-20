@@ -1934,7 +1934,7 @@
             const atStop = (sl - Number(pos.entry_price)) * Number(pos.quantity) * (pos.side === 'LONG' ? 1 : -1);
             if (!confirm(`Set ${pos.symbol} stop to ${sl}?\nResult if hit: ${atStop >= 0 ? '+' : '-'}$${Math.abs(atStop).toFixed(2)} (before fees).`)) return;
             try {
-                const res = await fetch('{{ route('api.update_stop_loss') }}', {
+                const res = await fetch('{{ route('api.update_stop_loss', [], false) }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
                     body: JSON.stringify({ trade_id: tradeId, stop_loss: sl })

@@ -460,7 +460,9 @@ class SwingSarTraderTest extends TestCase
         $res = $this->actingAs($admin)->getJson(route('signals.chart_trades', ['symbol' => 'NEARUSDT']))->assertOk();
 
         $this->assertSame([$mine->id], array_column($res->json('trades'), 'id'));
-        $this->actingAs($admin)->get('/signals')->assertSee('id="sapToggle-trades"', false);
+        $this->actingAs($admin)->get('/signals')->assertSee('id="sapToggle-trades"', false)
+            ->assertSee('fetch(`/signals/chart-trades?symbol=', false)
+            ->assertDontSee(route('signals.chart_trades'), false);
     }
 
     public function test_sar_trades_have_their_own_slots(): void

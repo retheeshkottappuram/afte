@@ -406,7 +406,7 @@
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-shadow" class="accent-emerald-500" onchange="SignalAlgoPro.setToggle('shadow', this.checked)"> Shadow</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-levels" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('levels', this.checked)"> Levels</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer" title="SuperTrend flip on volume. Confirmed flips (no ?) on the 15m chart of the swing coins are auto-traded by Swing SAR."><input type="checkbox" id="sapToggle-swings" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('swings', this.checked)"> Swing BUY/SELL</label>
-                <label class="inline-flex items-center gap-1 cursor-pointer" title="The bot's own trades on this coin (last 7 days): IN / OUT markers with the result, and the entry and stop lines of an open trade."><input type="checkbox" id="sapToggle-trades" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('trades', this.checked)"> My trades</label>
+                <label class="inline-flex items-center gap-1 cursor-pointer" title="The bot's own trades on this coin (last 7 days): IN / OUT markers with the result, and the entry and stop lines of an open trade."><input type="checkbox" id="sapToggle-trades" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('trades', this.checked)"> My trades <span id="sapTradesNote" class="text-[10px] text-slate-400"></span></label>
                 <button type="button" id="sap-alerts-btn" onclick="SignalAlgoPro.enableAlerts()" class="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 font-bold" title="Pop-up, sound and browser notification when a new BUY/SELL prints (this coin and every scanned coin)">🔔 Enable alerts</button>
             </div>
 
@@ -1118,10 +1118,15 @@
 
         const fetchOptions = abortSignal ? { signal: abortSignal } : {};
 
-        fetch(`{{ route('signals.chart_trades') }}?symbol=${encodeURIComponent(symbol)}`, Object.assign({ headers: { 'Accept': 'application/json' } }, fetchOptions))
-            .then(res => res.ok ? res.json() : null)
-            .then(tr => { if (tr && window.SignalAlgoPro) window.SignalAlgoPro.setTrades(tr.symbol, tr.trades); })
-            .catch(() => { /* trades layer is optional */ });
+        // Relative URL: an absolute one can come out as http:// behind the host's SSL proxy and be blocked.
+        fetch(`{{ route('signals.chart_trades', [], false) }}?symbol=${encodeURIComponent(symbol)}`, Object.assign({ headers: { 'Accept': 'application/json' } }, fetchOptions))
+            .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+            .then(tr => { if (window.SignalAlgoPro && symbol === activeSymbol) window.SignalAlgoPro.setTrades(tr.symbol, tr.trades); })
+            .catch(err => {
+                if (err.name === 'AbortError' || !window.SignalAlgoPro) return;
+                console.warn('My trades layer:', err);
+                window.SignalAlgoPro.setTradesStatus(`unavailable (${err.message})`);
+            });
 
         fetch(`/dashboard/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&signal_time=${requestedSignalTime || 0}`, fetchOptions)
             .then(res => res.json())
@@ -1687,7 +1692,7 @@
     function resumeAutoTrading() {
         const bar = document.getElementById('tradingPauseBar');
         if (!confirm('Reset the pause and let the bot open new trades again now?')) return;
-        fetch('{{ route('api.resume_cooldown') }}', {
+        fetch('{{ route('api.resume_cooldown', [], false) }}', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' },
             body: JSON.stringify({ mode: bar ? bar.dataset.mode : undefined })
