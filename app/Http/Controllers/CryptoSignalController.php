@@ -97,12 +97,23 @@ class CryptoSignalController extends Controller
         }
 
         try {
-            $analysis = $this->analyzer->analyze($symbol, $interval, lookback: 300);
-            $chart = $this->overlays->build($analysis['candles'], $analysis['signals'], $interval);
+            // The heavy part (candles, signals, overlays, stats) only changes when a candle closes: cache it per candle.
+            $barSeconds = MarketScanService::barSeconds($interval);
+            $heavy = Cache::remember("chart:analyze:{$symbol}:{$interval}:".intdiv(time(), $barSeconds), $barSeconds + 60, function () use ($symbol, $interval): array {
+                $analysis = $this->analyzer->analyze($symbol, $interval, lookback: 300);
+
+                return [
+                    'chart' => $this->overlays->build($analysis['candles'], $analysis['signals'], $interval),
+                    'state' => $analysis['state'],
+                    'all_setup_stats' => $this->setupStats->all(),
+                    'model' => $this->model->metrics(),
+                ];
+            });
+            $chart = $this->withFormingCandle($heavy['chart'], $symbol, $interval, $market);
             $activeSignal = $this->activeSignal($chart['signal_history'], (int) $request->query('signal_time', 0));
             $mode = $this->modeManager->activeMode();
-            $state = $analysis['state'];
-            $closes = $analysis['candles']['closes'];
+            $state = $heavy['state'];
+            $lastCandle = end($chart['candles']);
 
             return response()->json(array_merge($chart, [
                 'success' => true,
@@ -111,7 +122,7 @@ class CryptoSignalController extends Controller
                 'interval' => $interval,
                 'regime_interval' => SymbolAnalyzer::regimeInterval($interval),
                 'market' => $market->getMarketLabel(),
-                'price' => (float) end($closes),
+                'price' => $lastCandle !== false ? (float) $lastCandle['close'] : 0.0,
                 'mode' => $mode,
                 'state' => $state,
                 'signal' => $activeSignal,
@@ -120,8 +131,8 @@ class CryptoSignalController extends Controller
                     'd30' => $this->setupStats->forSetup($activeSignal['setup'], null, 30),
                     'd90' => $this->setupStats->forSetup($activeSignal['setup'], null, 90),
                 ] : null,
-                'all_setup_stats' => $this->setupStats->all(),
-                'model' => $this->model->metrics(),
+                'all_setup_stats' => $heavy['all_setup_stats'],
+                'model' => $heavy['model'],
                 'mtf' => $this->multiTimeframe($symbol, $market),
                 'active_trade' => $this->activeTrade($symbol),
                 'btc_macro' => [
@@ -145,6 +156,42 @@ class CryptoSignalController extends Controller
         } catch (Throwable $e) {
             return response()->json(['success' => false, 'message' => "Failed to analyze {$symbol}: ".$e->getMessage()], 422);
         }
+    }
+
+    /**
+     * Refresh the still-forming last candle of a cached chart from the latest klines (cached 15s), appending it when
+     * a new candle has started.
+     *
+     * @param  array<string, mixed>  $chart
+     * @return array<string, mixed>
+     */
+    protected function withFormingCandle(array $chart, string $symbol, string $interval, BinanceClient $market): array
+    {
+        try {
+            $k = $market->klines($symbol, $interval, 2);
+        } catch (Throwable) {
+            return $chart;
+        }
+        $n = count($k['closes'] ?? []);
+        if ($n === 0 || ($chart['candles'] ?? []) === []) {
+            return $chart;
+        }
+        $live = [
+            'time' => intdiv((int) $k['closeTimes'][$n - 1], 1000),
+            'open' => (float) $k['opens'][$n - 1],
+            'high' => (float) $k['highs'][$n - 1],
+            'low' => (float) $k['lows'][$n - 1],
+            'close' => (float) $k['closes'][$n - 1],
+            'volume' => (float) $k['volumes'][$n - 1],
+        ];
+        $last = count($chart['candles']) - 1;
+        if ($chart['candles'][$last]['time'] === $live['time']) {
+            $chart['candles'][$last] = $live;
+        } elseif ($live['time'] > $chart['candles'][$last]['time']) {
+            $chart['candles'][] = $live;
+        }
+
+        return $chart;
     }
 
     /**

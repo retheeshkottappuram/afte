@@ -749,6 +749,7 @@
                 chart.timeScale().fitContent();
             }
             window.SignalAlgoPro?.relayout();
+            startLiveCandles(activeSymbol, activeInterval);
         } else {
             tvTab.className = 'px-3 py-1.5 rounded-lg font-bold transition flex items-center space-x-1.5 bg-emerald-600 text-white shadow';
             algoTab.className = 'px-3 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white flex items-center space-x-1.5';
@@ -758,6 +759,7 @@
             if (legend) legend.classList.add('hidden');
             document.getElementById('tvLabelsNote')?.classList.remove('hidden');
             window.SignalAlgoPro?.relayout();
+            stopLiveCandles();
 
             initTradingViewWidget(activeSymbol);
         }
@@ -1093,25 +1095,69 @@
         });
     }
 
-    function fetchSignalAlgoData(symbol, abortSignal = null) {
+    // Last response per coin + timeframe: a switch back to a coin renders instantly, then refreshes in the background.
+    const chartCache = new Map();
+
+    /**
+     * Load the chart data. silent = background refresh: no loading overlay, the view (zoom / scroll) is kept.
+     * A coin or timeframe switch with a cached response renders that first and refreshes silently.
+     */
+    function fetchSignalAlgoData(symbol, abortSignal = null, silent = false) {
         const badge = document.getElementById('hud-signal-badge');
-        const priceEl = document.getElementById('hud-price');
+        const interval = activeInterval;
+        const cacheKey = `${symbol}|${interval}`;
 
-        if (badge) {
-            badge.className = 'px-2.5 py-1 rounded-lg text-xs font-black tracking-wide bg-slate-800 text-slate-300 border border-slate-700 flex items-center space-x-1.5';
-            badge.innerHTML = '<span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span><span>EVALUATING ALGO...</span>';
+        if (!silent) {
+            const cached = chartCache.get(cacheKey);
+            if (cached) {
+                renderSignalAlgoData(cached, { fit: true });
+                silent = true;
+            } else {
+                if (badge) {
+                    badge.className = 'px-2.5 py-1 rounded-lg text-xs font-black tracking-wide bg-slate-800 text-slate-300 border border-slate-700 flex items-center space-x-1.5';
+                    badge.innerHTML = '<span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span><span>EVALUATING ALGO...</span>';
+                }
+                showChartLoading(symbol, interval);
+            }
         }
-
-        showChartLoading(symbol, activeInterval);
+        const fit = !silent;
+        startLiveCandles(symbol, interval);
 
         const fetchOptions = abortSignal ? { signal: abortSignal } : {};
 
-        fetch(`/dashboard/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(activeInterval)}&signal_time=${requestedSignalTime || 0}`, fetchOptions)
+        fetch(`/dashboard/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&signal_time=${requestedSignalTime || 0}`, fetchOptions)
             .then(res => res.json())
             .then(data => {
-                if (symbol !== activeSymbol) {
+                if (symbol !== activeSymbol || interval !== activeInterval) {
                     return;
                 }
+                if (data && data.success) {
+                    chartCache.set(cacheKey, data);
+                }
+                if (data && !data.success && silent) {
+                    return; // keep the chart on screen; the next refresh retries
+                }
+                renderSignalAlgoData(data, { fit });
+            })
+            .catch(err => {
+                if (err.name === 'AbortError') {
+                    return;
+                }
+                if (silent) {
+                    return;
+                }
+                hideChartLoading();
+                console.error('SignalAlgo PRO analysis error:', err);
+                if (badge) {
+                    badge.className = 'px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700';
+                    badge.textContent = 'STATUS: STANDBY';
+                }
+            });
+    }
+
+    function renderSignalAlgoData(data, { fit = false } = {}) {
+                const badge = document.getElementById('hud-signal-badge');
+                const priceEl = document.getElementById('hud-price');
 
                 hideChartLoading();
 
@@ -1125,6 +1171,7 @@
 
                 // Render into Native Canvas Chart
                 if (data.candles && data.candles.length) {
+                    renderedKey = data.symbol + '|' + data.interval;
                     initAlgoCanvasChart();
 
                     const container = document.getElementById('signalalgo_canvas_chart');
@@ -1163,7 +1210,9 @@
                         markersBadge.textContent = historicalMarkers.length;
                     }
 
-                    chart.timeScale().fitContent();
+                    if (fit) {
+                        chart.timeScale().fitContent();
+                    }
 
                     // Store active position on window for click-restores and tooltips
                     window.activePositionTrade = data.active_trade ? Object.assign({}, data.active_trade, { is_live_position: true }) : null;
@@ -1389,18 +1438,71 @@
                 if (scoreLabel) {
                     if (!activeTrade) scoreLabel.textContent = sig ? `Grade ${sig.grade}${sig.ai_probability !== null && sig.ai_probability !== undefined ? ' · AI ' + Math.round(sig.ai_probability * 100) + '%' : ''}` : 'No active signal';
                 }
-            })
-            .catch(err => {
-                if (err.name === 'AbortError') {
-                    return;
+    }
+
+    // Live forming candle from Binance's public futures kline stream (market data only, no API key, no REST calls).
+    let liveSocket = null;
+    let liveKey = null;
+    let liveRetry = 0;
+    let liveRetryTimer = null;
+    let renderedKey = null;
+
+    function stopLiveCandles() {
+        clearTimeout(liveRetryTimer);
+        if (liveSocket) {
+            liveSocket.onclose = null;
+            liveSocket.close();
+        }
+        liveSocket = null;
+        liveKey = null;
+    }
+
+    function startLiveCandles(symbol, interval) {
+        const key = `${symbol}|${interval}`;
+        if (typeof WebSocket === 'undefined' || chartMode !== 'algo' || document.visibilityState !== 'visible') {
+            stopLiveCandles();
+            return;
+        }
+        if (liveSocket && liveKey === key && liveSocket.readyState <= 1) {
+            return;
+        }
+        stopLiveCandles();
+        liveKey = key;
+        const ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${interval}`);
+        liveSocket = ws;
+        ws.onopen = () => { liveRetry = 0; };
+        ws.onmessage = (event) => {
+            // Only patch the series when it holds this coin / timeframe (a switch may still be loading).
+            if (liveKey !== `${activeSymbol}|${activeInterval}` || liveKey !== renderedKey || !candleSeries) return;
+            let k;
+            try { k = JSON.parse(event.data).k; } catch (e) { return; }
+            if (!k) return;
+            const time = Math.floor(Number(k.T) / 1000);
+            const bar = { time, open: Number(k.o), high: Number(k.h), low: Number(k.l), close: Number(k.c) };
+            try {
+                candleSeries.update(bar);
+                if (volumeSeries) {
+                    volumeSeries.update({ time, value: Number(k.v), color: bar.close >= bar.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)' });
                 }
-                hideChartLoading();
-                console.error('SignalAlgo PRO analysis error:', err);
-                if (badge) {
-                    badge.className = 'px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700';
-                    badge.textContent = 'STATUS: STANDBY';
-                }
-            });
+            } catch (e) {
+                return; // older bar than the chart's last one (stale message)
+            }
+            const priceEl = document.getElementById('hud-price');
+            if (priceEl) {
+                priceEl.textContent = '$' + bar.close.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+            }
+            if (k.x) {
+                // Candle closed: new BUY/SELL labels may exist now; give the server a moment, then refresh quietly.
+                setTimeout(() => fetchSignalAlgoData(activeSymbol, null, true), 2500);
+            }
+        };
+        ws.onclose = () => {
+            if (liveSocket !== ws) return;
+            liveSocket = null;
+            liveRetry = Math.min(liveRetry + 1, 6);
+            liveRetryTimer = setTimeout(() => startLiveCandles(activeSymbol, activeInterval), 1000 * 2 ** liveRetry);
+        };
+        ws.onerror = () => { try { ws.close(); } catch (e) { /* ignore */ } };
     }
 
     function showAutoOrderNotification(order) {
@@ -1508,8 +1610,10 @@
             btn.classList.remove('text-slate-300', 'text-slate-400');
         });
 
-        // Show instant loading state
-        showChartLoading(activeSymbol, activeInterval);
+        // Loading overlay only when this coin / timeframe has never been loaded (otherwise it renders from memory)
+        if (!chartCache.has(activeSymbol + '|' + activeInterval)) {
+            showChartLoading(activeSymbol, activeInterval);
+        }
 
         // On mobile devices, smoothly scroll to chart
         if (autoScroll && window.innerWidth < 1024) {
@@ -1967,8 +2071,8 @@
 
         // Auto-refresh chart & synchronize signals every 60 seconds
         setInterval(function() {
-            if (document.visibilityState === 'visible') {
-                fetchSignalAlgoData(activeSymbol);
+            if (document.visibilityState === 'visible' && chartMode === 'algo') {
+                fetchSignalAlgoData(activeSymbol, null, true);
             }
         }, 60000);
 
@@ -1976,7 +2080,9 @@
         document.addEventListener('visibilitychange', function() {
             if (document.visibilityState === 'visible') {
                 pollDaemonStatus();
-                fetchSignalAlgoData(activeSymbol);
+                fetchSignalAlgoData(activeSymbol, null, true);
+            } else {
+                stopLiveCandles();
             }
         });
     });

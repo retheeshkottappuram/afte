@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
+use App\Services\Strategy\SymbolAnalyzer;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
@@ -75,6 +76,24 @@ class SignalAlgoChartStrictExecutionTest extends TestCase
         $this->assertCount(4, $response->json('mtf'));
         $this->assertNotEmpty($response->json('trend_ribbon'));
         $this->assertSame(0, Trade::count(), 'Viewing a chart must never place orders');
+    }
+
+    public function test_the_heavy_chart_analysis_is_cached_per_candle_but_the_forming_candle_stays_fresh(): void
+    {
+        $this->fakeBinance();
+        $user = User::factory()->create(['role' => 'admin']);
+        $analyzer = \Mockery::spy(app(SymbolAnalyzer::class))->makePartial();
+        $this->app->instance(SymbolAnalyzer::class, $analyzer);
+
+        $first = $this->actingAs($user)->getJson(route('dashboard.analyze', ['symbol' => 'SOLUSDT', 'interval' => '15m']))->assertOk();
+        $second = $this->actingAs($user)->getJson(route('dashboard.analyze', ['symbol' => 'SOLUSDT', 'interval' => '15m']))->assertOk();
+
+        $analyzer->shouldHaveReceived('analyze')->once();
+        $this->assertSame($first->json('signal_history'), $second->json('signal_history'));
+        $this->assertArrayHasKey('active_trade', $second->json());
+        // The last candle and the price come from the latest klines, not the cache.
+        $last = $second->json('candles')[count($second->json('candles')) - 1];
+        $this->assertEquals($last['close'], $second->json('price'));
     }
 
     public function test_manual_trade_is_refused_without_a_current_strategy_signal(): void
