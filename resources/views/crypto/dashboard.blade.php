@@ -160,7 +160,7 @@
                     <button type="button" onclick="toggleCoinManager()" class="text-slate-400 hover:text-white font-bold text-base p-1">&times;</button>
                 </div>
             </div>
-            <p class="text-[11px] text-slate-400 mb-3">These coins are always scanned, and <strong>every</strong> signal on them is sent to Telegram (flagged if it is not tradable). Other coins only alert on Grade A/B tradable signals.</p>
+            <p class="text-[11px] text-slate-400 mb-3">These coins are always scanned, <strong>every</strong> signal on them is sent to Telegram, and the swing bot auto-trades their <strong>confirmed</strong> 15m BUY/SELL flips (half of the fund, up to 4 trades at once). They are also the coin buttons on the chart.</p>
             <form onsubmit="event.preventDefault(); addMonitoredCoin();" class="flex flex-col sm:flex-row gap-2 mb-3">
                 <input type="text" id="newCoinInput" placeholder="Coin symbol, e.g. ADA, LINK, DOGEUSDT"
                     class="flex-1 min-w-0 uppercase px-3.5 py-2 text-xs rounded-xl bg-slate-900 text-white placeholder-slate-500 border border-slate-700 focus:outline-none focus:border-emerald-500 font-mono">
@@ -170,22 +170,6 @@
                 <span class="text-slate-500 text-xs italic">Loading coins...</span>
             </div>
 
-            <!-- Swing SAR auto-trade coins (separate from the alert list) -->
-            <div class="mt-5 pt-4 border-t border-slate-800">
-                <div class="font-bold text-white flex flex-wrap items-center gap-2 text-sm mb-2">
-                    <span>🔁 Swing Auto-Trade Coins</span>
-                    <span id="swingCoinsInfo" class="text-[11px] px-2.5 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">…</span>
-                </div>
-                <p class="text-[11px] text-slate-400 mb-3">The bot auto-trades the chart's <strong>confirmed</strong> swing BUY/SELL flips on these coins only ("?" flips are not traded), using half of the fund. The other half is for breakout trades.</p>
-                <form onsubmit="event.preventDefault(); changeSwingCoin('add');" class="flex flex-col sm:flex-row gap-2 mb-3">
-                    <input type="text" id="newSwingCoinInput" placeholder="Coin symbol, e.g. NEAR, SUI"
-                        class="flex-1 min-w-0 uppercase px-3.5 py-2 text-xs rounded-xl bg-slate-900 text-white placeholder-slate-500 border border-slate-700 focus:outline-none focus:border-cyan-500 font-mono">
-                    <button type="button" onclick="changeSwingCoin('add')" class="px-4 py-2 text-xs font-bold rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white border border-cyan-500 transition">+ Add Swing Coin</button>
-                </form>
-                <div id="swingCoinsPillContainer" class="flex flex-wrap gap-2 min-h-[40px] p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                    <span class="text-slate-500 text-xs italic">Loading coins...</span>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -217,8 +201,8 @@
 
             <!-- Quick Switcher & Custom Coin Search -->
             <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto min-w-0">
-                <div class="flex items-center bg-slate-950/80 p-1 rounded-xl border border-slate-800 text-xs shadow-inner overflow-x-auto max-w-full touch-pan-x select-none">
-                    @foreach (['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'NEARUSDT', 'AVAXUSDT', 'SUIUSDT', '1000PEPEUSDT'] as $quickSymbol)
+                <div id="headerCoinButtons" class="flex items-center bg-slate-950/80 p-1 rounded-xl border border-slate-800 text-xs shadow-inner overflow-x-auto max-w-full touch-pan-x select-none">
+                    @foreach ($monitoredCoins as $quickSymbol)
                         <button type="button" onclick="loadFuturesChart('{{ $quickSymbol }}', true)"
                             class="px-3 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 font-semibold transition symbol-btn whitespace-nowrap active:scale-95 touch-manipulation cursor-pointer {{ ($quickSymbol === 'BTCUSDT') ? 'bg-emerald-600 text-white shadow' : '' }}"
                             id="btn-{{ $quickSymbol }}">
@@ -386,24 +370,26 @@
                 <!-- In-Chart Quick Coin Selector (Mobile & Desktop) with 5+ Monitored Highlights -->
                 <div class="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs shadow-inner overflow-x-auto max-w-full touch-pan-x select-none">
                     <span class="text-slate-500 text-[10px] px-2 font-bold uppercase tracking-wider">COIN</span>
-                    @php
-                        $activeMonitoredList = $monitoredCoins ?? ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'NEARUSDT', 'XRPUSDT', 'DOGEUSDT'];
-                        $quickCoins = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'NEARUSDT', 'AVAXUSDT', 'SUIUSDT', '1000PEPEUSDT'];
-                    @endphp
-                    @foreach ($quickCoins as $quickSymbol)
-                        @php
-                            $isMonitored = in_array($quickSymbol, $activeMonitoredList, true);
-                        @endphp
-                        <button type="button" onclick="loadFuturesChart('{{ $quickSymbol }}', false)"
-                            class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white font-bold text-xs transition chart-symbol-btn whitespace-nowrap active:scale-95 touch-manipulation cursor-pointer inline-flex items-center space-x-1 {{ ($quickSymbol === 'BTCUSDT') ? 'bg-emerald-600 text-white shadow' : '' }}"
-                            id="chart-btn-{{ $quickSymbol }}"
-                            title="{{ $isMonitored ? 'Continuously Monitored for Signals & Auto-Trade Execution' : 'On-Demand Chart' }}">
-                            @if ($isMonitored)
-                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                            @endif
-                            <span>{{ str_replace(['1000', 'USDT'], '', $quickSymbol) }}</span>
-                        </button>
-                    @endforeach
+                    <div id="chartCoinButtons" class="flex items-center">
+                        @foreach ($monitoredCoins as $quickSymbol)
+                            <span class="inline-flex items-center group">
+                                <button type="button" onclick="loadFuturesChart('{{ $quickSymbol }}', false)"
+                                    class="pl-2.5 pr-1 py-1 rounded-lg text-slate-400 hover:text-white font-bold text-xs transition chart-symbol-btn whitespace-nowrap active:scale-95 touch-manipulation cursor-pointer inline-flex items-center space-x-1 {{ ($quickSymbol === 'BTCUSDT') ? 'bg-emerald-600 text-white shadow' : '' }}"
+                                    id="chart-btn-{{ $quickSymbol }}"
+                                    title="Monitored: alerts + swing auto-trade (15m confirmed flips)">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                    <span>{{ str_replace(['1000', 'USDT'], '', $quickSymbol) }}</span>
+                                </button>
+                                <button type="button" onclick="removeCoinFromChart('{{ $quickSymbol }}')" title="Remove {{ $quickSymbol }}"
+                                    class="px-1 text-slate-600 hover:text-rose-400 text-[10px] font-bold cursor-pointer">✕</button>
+                            </span>
+                        @endforeach
+                    </div>
+                    <form onsubmit="event.preventDefault(); addCoinFromChart();" class="flex items-center ml-1">
+                        <input type="text" id="chartAddCoinInput" placeholder="+ coin"
+                            class="w-20 uppercase px-2 py-1 text-[11px] rounded-lg bg-slate-900 text-white placeholder-slate-500 border border-slate-700 focus:outline-none focus:border-emerald-500 font-mono">
+                        <button type="submit" title="Add coin" class="ml-1 px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs">+</button>
+                    </form>
                 </div>
             </div>
 
@@ -1854,60 +1840,7 @@
         panel.classList.toggle('hidden');
         if (!panel.classList.contains('hidden') && !isCoinsLoaded) {
             loadMonitoredCoins();
-            loadSwingCoins();
         }
-    }
-
-    function renderSwingCoins(data) {
-        const info = document.getElementById('swingCoinsInfo');
-        if (info) {
-            info.textContent = `${data.enabled ? 'ON' : 'OFF'} · ${data.interval} · ${data.confirmed_only ? 'confirmed only' : 'every flip'} · ${Math.round((data.fund_share || 0) * 100)}% fund`;
-        }
-        const container = document.getElementById('swingCoinsPillContainer');
-        if (!container) return;
-        const coins = data.coins || [];
-        if (coins.length === 0) {
-            container.innerHTML = '<span class="text-amber-400 text-xs italic">No swing coins. Add one above.</span>';
-            return;
-        }
-        container.innerHTML = coins.map(symbol => `
-            <span class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-slate-800 text-slate-200 border border-slate-700">
-                <span class="text-cyan-300">${symbol.replace('USDT', '')}</span>
-                <span class="text-[10px] text-slate-500 font-normal">USDT</span>
-                <button type="button" onclick="changeSwingCoin('remove', '${symbol}')" title="Remove ${symbol}"
-                    class="ml-1 text-slate-500 hover:text-rose-400 transition font-bold text-xs p-0.5 rounded cursor-pointer leading-none">✕</button>
-            </span>`).join('');
-    }
-
-    function loadSwingCoins() {
-        fetch('{{ route('daemon.swing-coins') }}', { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
-            .then(res => res.json())
-            .then(data => { if (data.success) renderSwingCoins(data); })
-            .catch(() => {});
-    }
-
-    function changeSwingCoin(action, symbol = null) {
-        const input = document.getElementById('newSwingCoinInput');
-        const value = symbol || (input ? input.value.trim() : '');
-        if (!value) {
-            showToast('Please enter a coin symbol (e.g. NEAR or SUIUSDT).', false);
-            return;
-        }
-        const url = action === 'add' ? '{{ route('daemon.swing-coins.add') }}' : '{{ route('daemon.swing-coins.remove') }}';
-        fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' },
-            body: JSON.stringify({ symbol: value })
-        })
-        .then(res => res.json())
-        .then(data => {
-            showToast(data.message || (data.success ? 'Saved.' : 'Failed.'), !!data.success);
-            if (data.success) {
-                if (input && action === 'add') input.value = '';
-                renderSwingCoins(data);
-            }
-        })
-        .catch(() => showToast('Network error while saving swing coins.', false));
     }
 
     function loadMonitoredCoins() {
@@ -1928,8 +1861,50 @@
         .catch(() => {});
     }
 
+    function coinLabel(symbol) {
+        return symbol.replace('1000', '').replace('USDT', '');
+    }
+
+    /** Rebuild the header and in-chart coin buttons from the monitored list (same markup as the Blade loops). */
+    function renderCoinButtons(coins) {
+        const active = (c) => c === activeSymbol ? 'bg-emerald-600 text-white shadow' : '';
+        const header = document.getElementById('headerCoinButtons');
+        if (header) {
+            header.innerHTML = coins.map(c => `
+                <button type="button" onclick="loadFuturesChart('${c}', true)" id="btn-${c}"
+                    class="px-3 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 font-semibold transition symbol-btn whitespace-nowrap active:scale-95 touch-manipulation cursor-pointer ${active(c)}">${coinLabel(c)}</button>`).join('');
+        }
+        const row = document.getElementById('chartCoinButtons');
+        if (row) {
+            row.innerHTML = coins.map(c => `
+                <span class="inline-flex items-center group">
+                    <button type="button" onclick="loadFuturesChart('${c}', false)" id="chart-btn-${c}" title="Monitored: alerts + swing auto-trade (15m confirmed flips)"
+                        class="pl-2.5 pr-1 py-1 rounded-lg text-slate-400 hover:text-white font-bold text-xs transition chart-symbol-btn whitespace-nowrap active:scale-95 touch-manipulation cursor-pointer inline-flex items-center space-x-1 ${active(c)}">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span><span>${coinLabel(c)}</span>
+                    </button>
+                    <button type="button" onclick="removeCoinFromChart('${c}')" title="Remove ${c}" class="px-1 text-slate-600 hover:text-rose-400 text-[10px] font-bold cursor-pointer">✕</button>
+                </span>`).join('');
+        }
+    }
+
+    function addCoinFromChart() {
+        const input = document.getElementById('chartAddCoinInput');
+        const value = input ? input.value.trim() : '';
+        if (!value) return;
+        addMonitoredCoin(value);
+        input.value = '';
+    }
+
+    function removeCoinFromChart(symbol) {
+        if (!confirm(`Remove ${symbol} from the monitored coins? Alerts and new swing trades on it stop (an open trade is still managed).`)) {
+            return;
+        }
+        removeMonitoredCoin(symbol);
+    }
+
     function updateMonitoredCoinsUI(coins) {
         cachedMonitoredCoins = coins || [];
+        renderCoinButtons(cachedMonitoredCoins);
         const countBadge = document.getElementById('daemonCoinCountBadge');
         const managerBadge = document.getElementById('coinManagerCountBadge');
         if (countBadge) countBadge.textContent = cachedMonitoredCoins.length;

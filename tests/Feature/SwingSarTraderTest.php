@@ -103,8 +103,8 @@ class SwingSarTraderTest extends TestCase
         $trade = Trade::where('setup_tag', SwingSarTrader::SETUP)->sole();
         $this->assertSame('LONG', $trade->side);
         $this->assertSame(5, (int) $trade->leverage);
-        // $24 x 50% / 2 slots = $6 margin.
-        $this->assertEqualsWithDelta(6.0, (float) $trade->margin_used, 0.2);
+        // $24 x 50% / 4 slots = $3 margin.
+        $this->assertEqualsWithDelta(3.0, (float) $trade->margin_used, 0.2);
         $text = implode("\n", array_map(fn (array $pair): string => (string) ($pair[0]->data()['text'] ?? ''), Http::recorded()->all()));
         $this->assertStringContainsString('opposite swing flip', $text);
         $this->assertStringContainsString('Stop loss: −$', $text);
@@ -232,26 +232,35 @@ class SwingSarTraderTest extends TestCase
         $this->assertEqualsWithDelta(4.80 + 1.5 * 0.06, (float) $trade->fresh()->current_sl, 1e-6);
     }
 
-    public function test_the_saved_coin_list_wins_over_the_config(): void
+    public function test_by_default_the_swing_coins_are_the_monitored_coins_and_the_chart_buttons(): void
     {
-        $this->assertSame(['NEARUSDT'], SwingSarTrader::symbols());
-
-        SwingSarTrader::saveSymbols(['sui', 'NEARUSDT']);
-
-        $this->assertSame(['SUIUSDT', 'NEARUSDT'], SwingSarTrader::symbols());
-    }
-
-    public function test_swing_coins_can_be_added_and_removed_from_the_signals_page(): void
-    {
+        config(['trading.swing_sar.symbols' => ['WATCHLIST']]);
         $admin = User::factory()->create(['role' => 'admin']);
 
-        $this->actingAs($admin)->postJson(route('daemon.swing-coins.add'), ['symbol' => 'sui'])
-            ->assertOk()->assertJsonPath('coins', ['NEARUSDT', 'SUIUSDT']);
-        $this->actingAs($admin)->postJson(route('daemon.swing-coins.remove'), ['symbol' => 'NEARUSDT'])
-            ->assertOk()->assertJsonPath('coins', ['SUIUSDT']);
-        $this->actingAs($admin)->getJson(route('daemon.swing-coins'))
-            ->assertOk()->assertJsonPath('coins', ['SUIUSDT'])->assertJsonPath('interval', '15m')->assertJsonPath('confirmed_only', true);
-        $this->actingAs($admin)->get('/signals')->assertSee('Swing Auto-Trade Coins');
+        $this->actingAs($admin)->postJson(route('daemon.monitored-coins.add'), ['symbol' => 'link'])->assertOk();
+        $this->actingAs($admin)->postJson(route('daemon.monitored-coins.remove'), ['symbol' => 'BTCUSDT'])->assertOk();
+
+        $this->assertSame(Watchlist::symbols(), SwingSarTrader::symbols());
+        $this->assertContains('LINKUSDT', SwingSarTrader::symbols());
+        $this->assertNotContains('BTCUSDT', SwingSarTrader::symbols());
+
+        $page = $this->actingAs($admin)->get('/signals')->assertOk();
+        $page->assertSee('id="chart-btn-LINKUSDT"', false);
+        $page->assertDontSee('id="chart-btn-BTCUSDT"', false);
+        $page->assertSee('id="chartAddCoinInput"', false);
+    }
+
+    public function test_four_swing_trades_may_run_the_same_way(): void
+    {
+        $risk = app(RiskManager::class);
+        $account = TradingAccount::getForMode('paper');
+        foreach (['NEARUSDT', 'SUIUSDT', 'DOGEUSDT'] as $symbol) {
+            $this->sarTrade('LONG', ['symbol' => $symbol, 'margin_used' => 3.0]);
+        }
+
+        $this->assertTrue($risk->canOpenTrade($account, 'XRPUSDT', 'LONG', setup: SwingSarTrader::SETUP)['allowed']);
+        $this->sarTrade('LONG', ['symbol' => 'XRPUSDT', 'margin_used' => 3.0]);
+        $this->assertFalse($risk->canOpenTrade($account, 'ADAUSDT', 'SHORT', setup: SwingSarTrader::SETUP)['allowed'], 'All 4 slots in use');
     }
 
     public function test_sar_runs_once_per_closed_fifteen_minute_candle(): void
@@ -298,6 +307,7 @@ class SwingSarTraderTest extends TestCase
 
     public function test_sar_check_lists_each_chart_flip_and_why_it_was_not_traded(): void
     {
+        config(['trading.swing_sar.max_open' => 2]);
         $this->flips = [array_merge($this->flip('LONG'), ['time' => time() - 600])];
         $this->sarTrade('LONG', ['symbol' => 'SUIUSDT', 'opened_at' => Carbon::now()->subHours(3)]);
         $this->sarTrade('SHORT', ['symbol' => 'DOGEUSDT', 'opened_at' => Carbon::now()->subHours(3)]);
@@ -359,6 +369,7 @@ class SwingSarTraderTest extends TestCase
 
     public function test_sar_trades_have_their_own_slots(): void
     {
+        config(['trading.swing_sar.max_open' => 2]);
         $risk = app(RiskManager::class);
         $account = TradingAccount::getForMode('paper');
         Trade::create(['symbol' => 'SOLUSDT', 'side' => 'LONG', 'mode' => 'paper', 'status' => 'OPEN', 'entry_price' => 100, 'quantity' => 0.1,

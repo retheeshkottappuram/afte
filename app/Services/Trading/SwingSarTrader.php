@@ -2,7 +2,6 @@
 
 namespace App\Services\Trading;
 
-use App\Models\Setting;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Crypto\BinanceClient;
@@ -17,7 +16,7 @@ use Throwable;
 
 /**
  * Swing SAR: stop-and-reverse on the chart's swing BUY/SELL flips (SuperTrend(10,3), StrategyEngine::swingSignalAt).
- * After every closed candle of swing_sar.interval (15m), for each SAR coin (the saved list, default NEAR + SUI):
+ * After every closed candle of swing_sar.interval (15m), for each SAR coin (default: the monitored coins):
  *  - an opposite flip (also a "?") closes the open SAR trade;
  *  - a confirmed flip opens the new side with balance x fund_share / max_open margin ("?" only when
  *    confirmed_only is off); the stop sits 1 ATR beyond the SuperTrend line, capped at max_sl_pct from entry;
@@ -45,8 +44,6 @@ class SwingSarTrader
 
     public const LABEL = 'Swing SAR (SuperTrend flip, exit on the opposite flip)';
 
-    public const SYMBOLS_KEY = 'swing_sar_symbols';
-
     public function __construct(
         protected BinanceClient $market,
         protected StrategyEngine $engine,
@@ -65,26 +62,12 @@ class SwingSarTrader
      */
     public static function symbols(): array
     {
-        $symbols = (array) Setting::getValue(self::SYMBOLS_KEY, config('trading.swing_sar.symbols', []));
+        $symbols = (array) config('trading.swing_sar.symbols', []);
         if ($symbols === [] || in_array('WATCHLIST', $symbols, true)) {
             $symbols = array_merge(array_diff($symbols, ['WATCHLIST']), Watchlist::symbols());
         }
 
         return array_values(array_unique(array_map(fn (string $s): string => TradingTargetManager::normalizeSymbol($s), $symbols)));
-    }
-
-    /**
-     * Save the coin list (from the Signals page).
-     *
-     * @param  array<int, string>  $symbols
-     * @return array<int, string>
-     */
-    public static function saveSymbols(array $symbols): array
-    {
-        $symbols = array_values(array_unique(array_map(fn (string $s): string => TradingTargetManager::normalizeSymbol($s), $symbols)));
-        Setting::putValue(self::SYMBOLS_KEY, $symbols);
-
-        return $symbols;
     }
 
     public static function interval(): string

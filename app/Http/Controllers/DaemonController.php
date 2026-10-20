@@ -7,7 +7,6 @@ use App\Services\Notifications\TelegramGateway;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\Watchlist;
 use App\Services\Trading\PhpCliResolver;
-use App\Services\Trading\SwingSarTrader;
 use App\Services\Trading\TradingModeManager;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -100,7 +99,7 @@ class DaemonController extends Controller
 
         $coins = Watchlist::add($symbol);
 
-        return response()->json(['success' => true, 'message' => "Alerts on for {$symbol}: every signal on it goes to Telegram.", 'coins' => $coins, 'count' => count($coins), 'added_symbol' => $symbol]);
+        return response()->json(['success' => true, 'message' => "{$symbol} added: every signal on it goes to Telegram and the swing bot trades its confirmed flips.", 'coins' => $coins, 'count' => count($coins), 'added_symbol' => $symbol]);
     }
 
     public function removeMonitoredCoin(Request $request): JsonResponse
@@ -112,7 +111,7 @@ class DaemonController extends Controller
 
         $coins = Watchlist::remove($symbol);
 
-        return response()->json(['success' => true, 'message' => "Removed {$symbol} from the alert watchlist.", 'coins' => $coins, 'count' => count($coins), 'removed_symbol' => $symbol]);
+        return response()->json(['success' => true, 'message' => "Removed {$symbol}: no more alerts or new swing trades on it (an open trade is still managed).", 'coins' => $coins, 'count' => count($coins), 'removed_symbol' => $symbol]);
     }
 
     public function resetMonitoredCoins(): JsonResponse
@@ -120,50 +119,6 @@ class DaemonController extends Controller
         $coins = Watchlist::reset();
 
         return response()->json(['success' => true, 'message' => 'Alert watchlist reset to the default major pairs.', 'coins' => $coins, 'count' => count($coins)]);
-    }
-
-    /**
-     * Swing SAR auto-trade coins (separate from the alert watchlist).
-     */
-    public function getSwingCoins(): JsonResponse
-    {
-        return $this->swingCoinsResponse(SwingSarTrader::symbols(), null);
-    }
-
-    public function addSwingCoin(Request $request): JsonResponse
-    {
-        $symbol = $this->symbolFrom($request);
-        if ($symbol === null) {
-            return response()->json(['success' => false, 'message' => 'Please provide a valid symbol (e.g. NEAR or SUIUSDT).'], 422);
-        }
-
-        return $this->swingCoinsResponse(SwingSarTrader::saveSymbols(array_merge(SwingSarTrader::symbols(), [$symbol])), "{$symbol} added: the bot swing-trades its confirmed ".SwingSarTrader::interval().' flips.');
-    }
-
-    public function removeSwingCoin(Request $request): JsonResponse
-    {
-        $symbol = $this->symbolFrom($request);
-        if ($symbol === null) {
-            return response()->json(['success' => false, 'message' => 'Please provide a valid symbol to remove.'], 422);
-        }
-
-        return $this->swingCoinsResponse(SwingSarTrader::saveSymbols(array_diff(SwingSarTrader::symbols(), [$symbol])), "{$symbol} removed from swing auto-trading (an open trade on it is still managed).");
-    }
-
-    /**
-     * @param  array<int, string>  $coins
-     */
-    protected function swingCoinsResponse(array $coins, ?string $message): JsonResponse
-    {
-        return response()->json([
-            'success' => true,
-            'message' => $message,
-            'coins' => array_values($coins),
-            'enabled' => SwingSarTrader::enabled(),
-            'interval' => SwingSarTrader::interval(),
-            'confirmed_only' => (bool) config('trading.swing_sar.confirmed_only', true),
-            'fund_share' => (float) config('trading.swing_sar.fund_share', 0.5),
-        ]);
     }
 
     /**

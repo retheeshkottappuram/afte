@@ -138,7 +138,8 @@ class RiskManager
 
         if ($side !== null) {
             $sameSide = $openTrades->where('side', strtoupper($side))->count();
-            $maxSameSide = (int) config('trading.sizing.max_same_side', 2);
+            // Swing SAR may fill all its slots in one direction (each flip carries its own capped stop).
+            $maxSameSide = $isSar ? $maxPositions : (int) config('trading.sizing.max_same_side', 2);
             if ($sameSide >= $maxSameSide) {
                 return ['allowed' => false, 'reason' => "Already {$sameSide} {$side} positions open (correlation limit)."];
             }

@@ -334,9 +334,9 @@ return [
     */
     'swing_sar' => [
         'enabled' => (bool) env('SWING_SAR_ENABLED', false),
-        // Default coins; the list saved on the Signals page ("Swing auto-trade coins") wins over this.
-        // WATCHLIST = the monitored alert coins (Watchlist::symbols()).
-        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('SWING_SAR_SYMBOLS', 'NEARUSDT,SUIUSDT'))))),
+        // WATCHLIST = the monitored coins (Watchlist::symbols(), edited on the Signals page); or a comma list.
+        // User's decision (2026-10-20): all monitored coins, 4 slots.
+        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('SWING_SAR_SYMBOLS', 'WATCHLIST'))))),
         // User's decision (2026-10-20): 15m candles, confirmed flips only. 12-month test on NEAR + SUI
         // (bt_sar_15m.php, $30 trades): every stop variant LOST on months 1-10 (PF 0.72-0.85, ~15 trades/week);
         // the shipped one (2% cap, breakeven at +1R, then 1.5 ATR trail) PF 0.85 / 0.83, max drawdown $37.
@@ -347,7 +347,7 @@ return [
         'fund_share' => (float) env('SWING_SAR_FUND_SHARE', 0.5),
         'margin_usd' => (float) env('SWING_SAR_MARGIN_USD', 10.0),
         'leverage' => (int) env('SWING_SAR_LEVERAGE', 5),
-        'max_open' => (int) env('SWING_SAR_MAX_OPEN', 2),
+        'max_open' => (int) env('SWING_SAR_MAX_OPEN', 4),
         // The placed stop (line + ATR buffer) is capped at this % from entry (flips often print at a top / bottom).
         'max_sl_pct' => (float) env('SWING_SAR_MAX_SL_PCT', 2.0),
         'max_order_sl_pct' => (float) env('SWING_SAR_MAX_ORDER_SL_PCT', 6.0),
