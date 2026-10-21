@@ -80,6 +80,9 @@ Route::middleware('auth')->group(function (): void {
     Route::get('/signals/analyze', [CryptoSignalController::class, 'analyze'])
         ->middleware('permission:view_signals')
         ->name('signals.analyze');
+    Route::get('/signals/swing-scorecard', [CryptoSignalController::class, 'swingScorecard'])
+        ->middleware('permission:view_signals')
+        ->name('signals.swing_scorecard');
     Route::get('/signals/chart-trades', [CryptoSignalController::class, 'chartTrades'])
         ->middleware('permission:view_signals')
         ->name('signals.chart_trades');

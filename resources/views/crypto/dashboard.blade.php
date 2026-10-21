@@ -365,7 +365,7 @@
                 <!-- Timeframe Selector -->
                 <div class="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs shadow-inner">
                     <span class="text-slate-500 text-[10px] px-2 font-bold uppercase tracking-wider">TF</span>
-                    @foreach (['15m' => '15m', '1h' => '1h (strategy)', '4h' => '4h'] as $tfKey => $tfLabel)
+                    @foreach (['15m' => '15m', '30m' => '30m', '1h' => '1h (strategy)', '4h' => '4h'] as $tfKey => $tfLabel)
                         <button type="button" onclick="switchTimeframe('{{ $tfKey }}')" id="tf-{{ $tfKey }}"
                             class="tf-btn px-2.5 py-1 rounded-lg font-bold text-xs transition {{ ($cryptoConfig['interval'] === $tfKey) ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white hover:bg-slate-900' }}">
                             {{ $tfLabel }}
@@ -408,6 +408,18 @@
                 <label class="inline-flex items-center gap-1 cursor-pointer" title="SuperTrend flip on volume. Confirmed flips (no ?) on the 15m chart of the swing coins are auto-traded by Swing SAR."><input type="checkbox" id="sapToggle-swings" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('swings', this.checked)"> Swing BUY/SELL</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer" title="The bot's own trades on this coin (last 7 days): IN / OUT markers with the result, and the entry and stop lines of an open trade."><input type="checkbox" id="sapToggle-trades" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('trades', this.checked)"> My trades <span id="sapTradesNote" class="text-[10px] text-slate-400"></span></label>
                 <button type="button" id="sap-alerts-btn" onclick="SignalAlgoPro.enableAlerts()" class="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 font-bold" title="Pop-up, sound and browser notification when a new BUY/SELL prints (this coin and every scanned coin)">🔔 Enable alerts</button>
+            </div>
+
+            <!-- Swing signal accuracy per timeframe (this coin) -->
+            <div id="swingScorecard" class="w-full text-[11px] sm:text-xs text-slate-300 rounded-lg border border-slate-800 bg-slate-950/60 p-2 overflow-x-auto">
+                <div class="flex items-center justify-between gap-2 mb-1">
+                    <span class="font-bold text-slate-200">📊 Swing signal accuracy <span id="swingScorecardSym" class="text-slate-400 font-normal"></span></span>
+                    <span class="text-[10px] text-slate-500">Confirmed BUY/SELL replayed with the bot's exits on the last 1500 candles. Past results don't guarantee future ones.</span>
+                </div>
+                <table class="w-full font-mono">
+                    <thead class="text-slate-500 text-[10px] uppercase"><tr><th class="text-left">TF</th><th class="text-right">Trades</th><th class="text-right">Win</th><th class="text-right">PF</th><th class="text-right">Net ROE</th><th class="text-right" title="Average distance of the signal from the last 5 candles' extreme (how late after the turn)">Late</th><th class="text-right" title="Average best move in the trade's favour">Best move</th><th class="text-right">Period</th></tr></thead>
+                    <tbody id="swingScorecardBody"><tr><td colspan="8" class="text-slate-500">Loading…</td></tr></tbody>
+                </table>
             </div>
 
             <div id="tvLabelsNote" class="hidden text-[11px] sm:text-xs text-amber-300">Bot BUY/SELL labels are shown on the Signals Chart tab only (TradingView can't display them).</div>
@@ -1118,6 +1130,8 @@
 
         const fetchOptions = abortSignal ? { signal: abortSignal } : {};
 
+        loadSwingScorecard(symbol);
+
         // Relative URL: an absolute one can come out as http:// behind the host's SSL proxy and be blocked.
         fetch(`{{ route('signals.chart_trades', [], false) }}?symbol=${encodeURIComponent(symbol)}`, Object.assign({ headers: { 'Accept': 'application/json' } }, fetchOptions))
             .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
@@ -1155,6 +1169,47 @@
                     badge.className = 'px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700';
                     badge.textContent = 'STATUS: STANDBY';
                 }
+            });
+    }
+
+    let scorecardSymbol = null;
+    function loadSwingScorecard(symbol) {
+        if (scorecardSymbol === symbol) return; // per coin; the server caches each timeframe for an hour
+        scorecardSymbol = symbol;
+        const body = document.getElementById('swingScorecardBody');
+        const sym = document.getElementById('swingScorecardSym');
+        if (!body) return;
+        if (sym) sym.textContent = symbol;
+        body.innerHTML = '<tr><td colspan="8" class="text-slate-500">Loading…</td></tr>';
+        fetch(`{{ route('signals.swing_scorecard', [], false) }}?symbol=${encodeURIComponent(symbol)}`, { headers: { 'Accept': 'application/json' } })
+            .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+            .then(data => {
+                if (scorecardSymbol !== symbol) return;
+                const rows = data.rows || [];
+                const pfs = rows.filter(r => r.trades >= 5 && r.profit_factor !== null).map(r => r.profit_factor);
+                const best = pfs.length ? Math.max(...pfs) : null;
+                const cls = (v, good) => v === null || v === undefined ? 'text-slate-500' : (good ? 'text-emerald-400' : 'text-rose-400');
+                const days = (d) => d >= 1 ? `${Math.round(d)}d` : '--';
+                body.innerHTML = rows.map(r => {
+                    if (r.error) return `<tr><td>${r.interval}</td><td colspan="7" class="text-slate-500">unavailable</td></tr>`;
+                    const isBest = best !== null && r.profit_factor === best;
+                    const bot = r.interval === data.bot_interval ? ' <span class="text-sky-300">(bot)</span>' : '';
+                    return `<tr class="${isBest ? 'bg-emerald-500/10' : ''}">
+                        <td class="text-left font-bold">${r.interval}${bot}${isBest ? ' ⭐' : ''}</td>
+                        <td class="text-right">${r.trades}</td>
+                        <td class="text-right">${r.win_pct === null ? '--' : r.win_pct + '%'}</td>
+                        <td class="text-right ${cls(r.profit_factor, r.profit_factor >= 1)}">${r.profit_factor === null ? '--' : r.profit_factor}</td>
+                        <td class="text-right ${cls(r.net_pct, r.net_pct >= 0)}">${r.net_pct >= 0 ? '+' : ''}${r.net_pct}%</td>
+                        <td class="text-right">${r.late_pct === null ? '--' : r.late_pct + '%'}</td>
+                        <td class="text-right">${r.mfe_pct === null ? '--' : r.mfe_pct + '%'}</td>
+                        <td class="text-right text-slate-500">${days(r.days)}</td>
+                    </tr>`;
+                }).join('');
+            })
+            .catch(() => {
+                if (scorecardSymbol !== symbol) return;
+                scorecardSymbol = null;
+                body.innerHTML = '<tr><td colspan="8" class="text-slate-500">Accuracy unavailable right now.</td></tr>';
             });
     }
 

@@ -107,6 +107,7 @@ class SwingSarTraderTest extends TestCase
         $this->assertSame(5, (int) $trade->leverage);
         // $24 x 50% / 4 slots = $3 margin.
         $this->assertEqualsWithDelta(3.0, (float) $trade->margin_used, 0.2);
+        $this->assertEqualsWithDelta(5.0, (float) $trade->meta['signal_price'], 1e-9, 'The chart signal it came from');
         $text = implode("\n", array_map(fn (array $pair): string => (string) ($pair[0]->data()['text'] ?? ''), Http::recorded()->all()));
         $this->assertStringContainsString('opposite swing flip', $text);
         $this->assertStringContainsString('Stop loss: −$', $text);

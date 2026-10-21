@@ -9,6 +9,7 @@ use App\Services\Crypto\BinanceClient;
 use App\Services\Crypto\Indicators;
 use App\Services\Notifications\TelegramNotifier;
 use App\Services\Strategy\ExitPlan;
+use App\Services\Strategy\MarketScanService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -686,7 +687,7 @@ class DynamicTradeManager
         }
 
         $interval = (string) ($trade->meta['interval'] ?? config('trading.strategy.base_interval', '1h'));
-        $barSeconds = $interval === '15m' ? 900 : ($interval === '4h' ? 14400 : 3600);
+        $barSeconds = MarketScanService::barSeconds($interval);
         $currentBar = intdiv(now()->timestamp, $barSeconds);
         $meta = $trade->meta ?? [];
 
@@ -724,7 +725,7 @@ class DynamicTradeManager
         }
 
         $interval = (string) ($trade->meta['interval'] ?? '1h');
-        $barSeconds = $interval === '15m' ? 900 : ($interval === '4h' ? 14400 : 3600);
+        $barSeconds = MarketScanService::barSeconds($interval);
         $currentBar = intdiv(now()->timestamp, $barSeconds);
         $meta = $trade->meta;
         if ($currentBar <= intdiv($trade->opened_at->timestamp, $barSeconds) || (int) ($meta['box_checked_bar'] ?? 0) === $currentBar) {

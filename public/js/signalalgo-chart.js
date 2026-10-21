@@ -81,8 +81,11 @@
             const long = tr.side === 'LONG';
             const inAt = barAt(tr.opened_at);
             if (inAt || barAt(tr.closed_at)) shown++; else older++;
-            const tag = tr.mode === 'paper' ? '[P] ' : '';
-            if (inAt) out.push({ time: inAt, position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: '#38bdf8', text: `${tag}IN #${tr.id} ${fmt(tr.entry)}`, size: 2 });
+            const tag = (tr.mode === 'paper' ? '[P] ' : '') + (tr.setup === 'SWING_SAR' ? `SAR ${tr.interval || ''} `.replace('  ', ' ') : 'BRK ');
+            // Entry vs the chart signal: "worse" = paid more on a long / sold lower on a short.
+            const slip = tr.signal_price ? (tr.entry - tr.signal_price) / tr.signal_price * 100 * (long ? 1 : -1) : null;
+            const gap = slip === null ? '' : ` (signal ${fmt(tr.signal_price)}, ${Math.abs(slip).toFixed(2)}% ${slip > 0 ? 'worse' : 'better'})`;
+            if (inAt) out.push({ time: inAt, position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: '#38bdf8', text: `${tag}IN #${tr.id} ${fmt(tr.entry)}${gap}`, size: 2 });
             const outAt = tr.status === 'OPEN' ? null : barAt(tr.closed_at);
             if (outAt) {
                 const win = Number(tr.pnl) >= 0;

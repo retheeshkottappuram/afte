@@ -210,6 +210,12 @@ class SwingSarTrader
             return ['action' => $closedNote !== null ? 'closed' : 'skipped', 'message' => trim(($closedNote ?? '').' '.$result['message'])];
         }
 
+        if (($trade = $result['trade'] ?? null) instanceof Trade) {
+            // The chart signal this trade came from (the flip candle's close), to show the entry gap on the chart.
+            $trade->meta = array_merge($trade->meta ?? [], ['signal_price' => (float) $flip['entry'], 'signal_time' => (int) $flip['time']]);
+            $trade->save();
+        }
+
         return ['action' => $closedNote !== null ? 'reversed' : 'opened', 'message' => trim(($closedNote ?? '').' '.$result['message'])];
     }
 

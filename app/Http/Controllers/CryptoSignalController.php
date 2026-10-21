@@ -7,6 +7,7 @@ use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
 use App\Services\Crypto\BinanceClient;
+use App\Services\Crypto\CandleSanitizer;
 use App\Services\Crypto\Indicators;
 use App\Services\Notifications\SignalAlerts;
 use App\Services\Strategy\ChartOverlayBuilder;
@@ -15,9 +16,11 @@ use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Strategy\SignalLedger;
 use App\Services\Strategy\SignalModel;
+use App\Services\Strategy\SwingScorecard;
 use App\Services\Strategy\SymbolAnalyzer;
 use App\Services\Strategy\Watchlist;
 use App\Services\Trading\RiskManager;
+use App\Services\Trading\SwingSarTrader;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -32,7 +35,7 @@ use Throwable;
  */
 class CryptoSignalController extends Controller
 {
-    public const CHART_INTERVALS = ['15m', '1h', '4h'];
+    public const CHART_INTERVALS = ['15m', '30m', '1h', '4h'];
 
     public function __construct(
         protected SymbolAnalyzer $analyzer,
@@ -217,6 +220,8 @@ class CryptoSignalController extends Controller
                     'opened_at' => $t->opened_at?->timestamp, 'closed_at' => $t->closed_at?->timestamp,
                     'pnl' => round($pnl, 4), 'roe' => $margin > 0 ? round($pnl / $margin * 100, 2) : null,
                     'exit_reason' => $t->exit_reason,
+                    'interval' => $t->meta['interval'] ?? null,
+                    'signal_price' => isset($t->meta['signal_price']) ? (float) $t->meta['signal_price'] : null,
                 ];
             })->values();
 
@@ -226,6 +231,31 @@ class CryptoSignalController extends Controller
             'trades' => $trades,
             'open_any' => Trade::where('status', 'OPEN')->count(),
             'open_symbols' => Trade::where('status', 'OPEN')->distinct()->orderBy('symbol')->pluck('symbol')->all(),
+        ]);
+    }
+
+    /**
+     * How the confirmed swing BUY/SELL flips did on each chart timeframe for this coin, replayed with the Swing SAR
+     * bot's exits on the last 1500 closed candles. Klines are fetched one timeframe after another; cached 1h.
+     */
+    public function swingScorecard(Request $request, BinanceClient $market, SwingScorecard $scorecard): JsonResponse
+    {
+        $symbol = $this->normalizeSymbol(preg_replace('/[^A-Za-z0-9.]/', '', (string) $request->query('symbol', 'BTCUSDT')));
+        $rows = [];
+        foreach (self::CHART_INTERVALS as $interval) {
+            try {
+                $rows[] = ['interval' => $interval] + Cache::remember("swing-scorecard:{$symbol}:{$interval}", 3600, function () use ($market, $scorecard, $symbol, $interval): array {
+                    return $scorecard->score(CandleSanitizer::onlyClosedCandles($market->klines($symbol, $interval, 1500), now()->getTimestampMs()));
+                });
+            } catch (Throwable $e) {
+                $rows[] = ['interval' => $interval, 'error' => 'unavailable'];
+            }
+        }
+
+        return response()->json([
+            'symbol' => $symbol,
+            'bot_interval' => SwingSarTrader::interval(),
+            'rows' => $rows,
         ]);
     }
 
