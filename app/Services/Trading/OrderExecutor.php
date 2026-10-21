@@ -50,7 +50,11 @@ class OrderExecutor
         $minSlPct = (float) config('trading.strategy.min_sl_pct', 0.6);
         $setup = isset($signal['setup']) ? (string) $signal['setup'] : null;
         $isSar = $setup === SwingSarTrader::SETUP;
-        $maxSlPct = $isSar ? (float) config('trading.swing_sar.max_order_sl_pct', 6.0) : StrategyEngine::configuredMaxSlPct($setup);
+        $maxSlPct = match (true) {
+            $isSar => (float) config('trading.swing_sar.max_order_sl_pct', 6.0),
+            $setup === LabTrader::SETUP => (float) config('trading.lab.max_sl_pct', 15.0), // 4h ATR stops, sized by risk
+            default => StrategyEngine::configuredMaxSlPct($setup),
+        };
         if ($slPct > $maxSlPct + 0.0001) {
             return $this->rejected(sprintf('Stop-loss %.2f%% is wider than the %.2f%% limit. Trade skipped instead of widening risk.', $slPct, $maxSlPct));
         }
@@ -162,7 +166,7 @@ class OrderExecutor
 
         $tpRef = null;
         // Swing SAR books TP1 only when swing_sar.take_profit is on; otherwise it exits on the flip or the trailing stop.
-        if (($signal['setup'] ?? null) !== SwingSarTrader::SETUP || config('trading.swing_sar.take_profit', true)) {
+        if (($signal['setup'] ?? null) !== LabTrader::SETUP && (($signal['setup'] ?? null) !== SwingSarTrader::SETUP || config('trading.swing_sar.take_profit', true))) {
             try {
                 $tpQty = $client->formatQuantity($symbol, (float) $sizing['quantity'] * $exitPlan->tp1CloseRatio());
                 if ($tpQty > 0) {

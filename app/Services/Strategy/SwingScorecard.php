@@ -18,9 +18,11 @@ class SwingScorecard
     /**
      * @param  array<string, array<int, float|int>>  $c  Closed candles, oldest first
      * @param  string  $entries  'confirmed' (BUY/SELL), 'unconfirmed' (BUY?/SELL?, fixed unconfirmed_sl_pct stop) or 'all'
+     * @param  string|null  $source  Signal source to score (supertrend / v3 / sr); null = swing_sar.signal_source
+     * @param  string  $exits  'bot' = the Swing SAR bot's exits; 'target' = the signal's own target (tp2), stop to breakeven at +1R
      * @return array{trades: int, win_pct: ?float, profit_factor: ?float, net_pct: float, avg_r: ?float, late_pct: ?float, mfe_pct: ?float, days: float}
      */
-    public function score(array $c, int $warmup = 60, string $entries = 'confirmed'): array
+    public function score(array $c, int $warmup = 60, string $entries = 'confirmed', ?array $htf = null, ?string $source = null, string $exits = 'bot'): array
     {
         $n = count($c['closes'] ?? []);
         $empty = ['trades' => 0, 'win_pct' => null, 'profit_factor' => null, 'net_pct' => 0.0, 'avg_r' => null, 'late_pct' => null, 'mfe_pct' => null, 'days' => 0.0];
@@ -38,9 +40,11 @@ class SwingScorecard
 
         $flips = [];
         $index = array_flip(array_map(fn ($ms): int => intdiv((int) $ms, 1000), $c['closeTimes']));
-        foreach ($this->engine->swingSignals($c, $warmup, true) as $sig) {
+        $source ??= StrategyEngine::signalSource();
+        $ownStop = $source !== 'supertrend'; // V3 and S/R signals carry their own structure stop
+        foreach ($this->engine->swingSignalsFrom($source, $c, $warmup, true, $htf) as $sig) {
             if (isset($index[$sig['time']])) {
-                $flips[$index[$sig['time']]] = ['dir' => $sig['side'] === 'LONG' ? 1 : -1, 'confirmed' => (bool) $sig['confirmed']];
+                $flips[$index[$sig['time']]] = ['dir' => $sig['side'] === 'LONG' ? 1 : -1, 'confirmed' => (bool) $sig['confirmed'], 'sl' => (float) $sig['sl'], 'tp' => (float) $sig['tp2']];
             }
         }
 
@@ -61,7 +65,15 @@ class SwingScorecard
                     $close($q, $d > 0 ? min($pos['stop'], (float) $c['opens'][$q]) : max($pos['stop'], (float) $c['opens'][$q]));
                 } else {
                     $pos['best'] = $d > 0 ? max($pos['best'], (float) $c['highs'][$q]) : min($pos['best'], (float) $c['lows'][$q]);
-                    $this->updateStop($pos, $c, $q, $st['line'][$q] ?? null, $cfg, $lev);
+                    if ($exits === 'target') {
+                        if (($pos['best'] - $pos['tp']) * $d >= 0) {
+                            $close($q, $pos['tp']);
+                        } elseif (($pos['best'] - $e) * $d >= $pos['risk']) {
+                            $pos['stop'] = $d > 0 ? max($pos['stop'], $e * (1 + 2 * self::FEE)) : min($pos['stop'], $e * (1 - 2 * self::FEE));
+                        }
+                    } else {
+                        $this->updateStop($pos, $c, $q, $source === 'supertrend' ? ($st['line'][$q] ?? null) : null, $cfg, $lev);
+                    }
                 }
             }
 
@@ -76,19 +88,19 @@ class SwingScorecard
             if ($pos === null && $wanted && ($st['line'][$q] ?? null) !== null && ($atr[$q] ?? null) !== null) {
                 $d = $flip['dir'];
                 $entry = (float) $c['closes'][$q];
-                $stop = (float) $st['line'][$q] - $d * $buffer * (float) $atr[$q];
+                $stop = $ownStop ? $flip['sl'] : (float) $st['line'][$q] - $d * $buffer * (float) $atr[$q];
                 $cap = $entry * (1 - $d * $maxSl);
                 if ($d > 0 ? $stop < $cap : $stop > $cap) {
                     $stop = $cap;
                 }
-                if (! $flip['confirmed']) {
+                if (! $flip['confirmed'] && $source !== 'sr') {
                     $stop = $entry * (1 - $d * $tightSl); // "?" flip: fixed tight stop, as the bot trades it
                 }
                 // How far the signal came after the turn: entry vs the extreme of the last 5 candles.
                 $from = max(0, $q - 4);
                 $extreme = $d > 0 ? min(array_slice($c['lows'], $from, $q - $from + 1)) : max(array_slice($c['highs'], $from, $q - $from + 1));
                 $pos = ['dir' => $d, 'entry' => $entry, 'stop' => $stop, 'risk' => abs($entry - $stop), 'atr' => (float) $atr[$q], 'best' => $entry,
-                    'ret' => 0.0, 'left' => 1.0, 'done' => [], 'late' => ($entry - (float) $extreme) * $d / $entry];
+                    'ret' => 0.0, 'left' => 1.0, 'done' => [], 'late' => ($entry - (float) $extreme) * $d / $entry, 'tp' => $flip['tp']];
             }
         }
 
@@ -135,7 +147,7 @@ class SwingScorecard
         }
 
         $candidates = [];
-        if ($line !== null && ($cfg['trail'] ?? true)) {
+        if ($line !== null && ($cfg['trail'] ?? true)) { // only SuperTrend trades follow the line (null otherwise)
             $candidates[] = $line - $d * (float) ($cfg['stop_buffer_atr'] ?? 1.0) * $pos['atr'];
         }
         foreach ((array) ($cfg['ladder'] ?? []) as [$atR, $stopR]) {

@@ -41,6 +41,7 @@ class SwingScorecardTest extends TestCase
 
     public function test_trending_swings_score_as_winning_trades(): void
     {
+        config(['trading.swing_sar.signal_source' => 'supertrend']);
         $score = app(SwingScorecard::class)->score($this->swings(600));
 
         $this->assertGreaterThan(5, $score['trades']);
@@ -62,7 +63,7 @@ class SwingScorecardTest extends TestCase
         $market->shouldReceive('klines')->andReturnUsing(function (string $symbol, string $interval, int $limit) use (&$calls): array {
             $calls++;
 
-            return $this->swings(600, ['15m' => 900000, '30m' => 1800000, '1h' => 3600000, '4h' => 14400000][$interval]);
+            return $this->swings(600, ['15m' => 900000, '30m' => 1800000, '1h' => 3600000, '4h' => 14400000, '1d' => 86400000][$interval]);
         });
         $this->app->instance(BinanceClient::class, $market);
         $admin = User::factory()->create(['role' => 'admin']);
@@ -71,12 +72,13 @@ class SwingScorecardTest extends TestCase
         $this->assertSame(['15m', '30m', '1h', '4h'], array_column($res->json('rows'), 'interval'));
         $this->assertSame('SOLUSDT', $res->json('symbol'));
         $this->assertSame('15m', $res->json('bot_interval'));
-        $this->assertSame(4, $calls);
+        $this->assertSame(8, $calls, 'Each timeframe plus its higher timeframe (for the S/R columns)');
         $this->assertArrayHasKey('profit_factor', $res->json('rows.0.unconfirmed'), 'The "?" flips are scored too');
+        $this->assertArrayHasKey('profit_factor', $res->json('rows.0.sr'), 'And the S/R reversal engine');
 
         $this->actingAs($admin)->getJson(route('signals.swing_scorecard', ['symbol' => 'SOLUSDT']))->assertOk();
-        $this->assertSame(4, $calls, 'Second load comes from the cache');
+        $this->assertSame(8, $calls, 'Second load comes from the cache');
 
-        $this->actingAs($admin)->get('/signals')->assertSee('id="tf-30m"', false)->assertSee('id="swingScorecard"', false);
+        $this->actingAs($admin)->get('/signals')->assertSee('id="tf-30m"', false)->assertSee('id="swingScorecard"', false)->assertSee('id="sapToggle-sr"', false);
     }
 }

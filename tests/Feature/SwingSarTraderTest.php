@@ -497,6 +497,26 @@ class SwingSarTraderTest extends TestCase
             ->assertDontSee(route('signals.chart_trades'), false);
     }
 
+    public function test_with_v3_signals_the_trader_scores_with_the_higher_timeframe_and_keeps_the_signal_stop(): void
+    {
+        config(['trading.swing_sar.signal_source' => 'v3', 'trading.swing_sar.stop_buffer_atr' => 1.0]);
+        $seen = null;
+        $engine = Mockery::mock(StrategyEngine::class)->makePartial();
+        $engine->shouldReceive('swingSignals')->andReturnUsing(function (array $c, int $from, bool $incl, ?array $htf = null) use (&$seen): array {
+            $seen = $htf;
+
+            return [['source' => 'v3', 'score' => 86] + $this->flip('LONG', sl: 4.93)];
+        });
+        $this->app->instance(StrategyEngine::class, $engine);
+
+        $this->assertSame('opened', $this->runSar()[0]['action']);
+
+        $this->assertNotNull($seen, 'The higher-timeframe candles are passed in for the V3 HTF factor');
+        $trade = Trade::where('setup_tag', SwingSarTrader::SETUP)->sole();
+        $this->assertEqualsWithDelta(4.93, (float) $trade->initial_sl, 0.005, 'The V3 structure stop is used as is (no 1 ATR SuperTrend buffer: that would be 4.87)');
+        $this->assertArrayNotHasKey('sar_trail', (array) $trade->meta);
+    }
+
     public function test_sar_trades_have_their_own_slots(): void
     {
         config(['trading.swing_sar.max_open' => 2]);

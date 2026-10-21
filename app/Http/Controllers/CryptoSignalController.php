@@ -16,6 +16,7 @@ use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Strategy\SignalLedger;
 use App\Services\Strategy\SignalModel;
+use App\Services\Strategy\StrategyEngine;
 use App\Services\Strategy\SwingScorecard;
 use App\Services\Strategy\SymbolAnalyzer;
 use App\Services\Strategy\Watchlist;
@@ -106,7 +107,7 @@ class CryptoSignalController extends Controller
                 $analysis = $this->analyzer->analyze($symbol, $interval, lookback: 300);
 
                 return [
-                    'chart' => $this->overlays->build($analysis['candles'], $analysis['signals'], $interval),
+                    'chart' => $this->overlays->build($analysis['candles'], $analysis['signals'], $interval, htf: $analysis['regime_candles'] ?? null),
                     'state' => $analysis['state'],
                     'all_setup_stats' => $this->setupStats->all(),
                     'model' => $this->model->metrics(),
@@ -244,11 +245,18 @@ class CryptoSignalController extends Controller
         $rows = [];
         foreach (self::CHART_INTERVALS as $interval) {
             try {
-                $rows[] = ['interval' => $interval] + Cache::remember("swing-scorecard:v2:{$symbol}:{$interval}", 3600, function () use ($market, $scorecard, $symbol, $interval): array {
-                    $candles = CandleSanitizer::onlyClosedCandles($market->klines($symbol, $interval, 1500), now()->getTimestampMs());
+                $source = StrategyEngine::signalSource();
+                $rows[] = ['interval' => $interval] + Cache::remember("swing-scorecard:{$source}:{$symbol}:{$interval}", 3600, function () use ($market, $scorecard, $symbol, $interval): array {
+                    $now = now()->getTimestampMs();
+                    $candles = CandleSanitizer::onlyClosedCandles($market->klines($symbol, $interval, 1500), $now);
+                    // Higher timeframe for the V3 / S/R scores (the S/R columns are always shown).
+                    $htf = CandleSanitizer::onlyClosedCandles($market->klines($symbol, SymbolAnalyzer::regimeInterval($interval), 1500), $now);
 
-                    // Confirmed BUY/SELL, plus the "?" flips on their own (fixed tight stop, as the bot trades them).
-                    return $scorecard->score($candles) + ['unconfirmed' => $scorecard->score($candles, entries: 'unconfirmed')];
+                    // Bot signals: confirmed BUY/SELL and the "?" ones on their own (tight stop, as the bot trades them),
+                    // plus the S/R reversal engine with its own targets (chart-only unless it is the source).
+                    return $scorecard->score($candles, htf: $htf)
+                        + ['unconfirmed' => $scorecard->score($candles, entries: 'unconfirmed', htf: $htf)]
+                        + ['sr' => $scorecard->score($candles, entries: 'all', htf: $htf, source: 'sr', exits: 'target')];
                 });
             } catch (Throwable $e) {
                 $rows[] = ['interval' => $interval, 'error' => 'unavailable'];
@@ -257,6 +265,7 @@ class CryptoSignalController extends Controller
 
         return response()->json([
             'symbol' => $symbol,
+            'source' => StrategyEngine::signalSource(),
             'bot_interval' => SwingSarTrader::interval(),
             'rows' => $rows,
         ]);

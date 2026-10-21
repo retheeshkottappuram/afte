@@ -3,6 +3,7 @@
 namespace App\Services\Notifications;
 
 use App\Models\Trade;
+use App\Services\Trading\LabTrader;
 use App\Services\Trading\SwingSarTrader;
 
 /**
@@ -52,11 +53,15 @@ class TelegramNotifier
             .'Setup: '.e($setupLabel)."\n"
             ."Entry: <code>{$this->fmt($trade->entry_price)}</code>\n"
             ."Stop: <code>{$this->fmt($trade->initial_sl)}</code>\n"
-            .($trade->setup_tag === SwingSarTrader::SETUP
-                ? $this->sarPlan($trade)
-                : "TP1: <code>{$this->fmt($trade->tp1_price)}</code> · TP2: <code>{$this->fmt($trade->tp2_price)}</code>\n")
-            ."Size: \${$notional} at {$trade->leverage}x, margin \${$trade->margin_used}"
-            .($risk !== null ? "\nRisk: \${$risk} (".($trade->meta['risk_pct'] ?? '?').'% of equity)' : '');
+            .match ($trade->setup_tag) {
+                SwingSarTrader::SETUP => $this->sarPlan($trade),
+                LabTrader::SETUP => 'Exit: trailing stop moved on each 4h close'
+                    .(str_contains((string) ($trade->meta['setup_label'] ?? ''), 'momentum') ? ', or when the 7-day momentum turns' : '')
+                    ." (1-week live trial)\n",
+                default => "TP1: <code>{$this->fmt($trade->tp1_price)}</code> · TP2: <code>{$this->fmt($trade->tp2_price)}</code>\n",
+            }
+        ."Size: \${$notional} at {$trade->leverage}x, margin \${$trade->margin_used}"
+        .($risk !== null ? "\nRisk: \${$risk} (".($trade->meta['risk_pct'] ?? '?').'% of equity)' : '');
 
         $messageId = $this->gateway->send($html);
         if ($messageId !== null) {

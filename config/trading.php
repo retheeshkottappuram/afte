@@ -361,6 +361,33 @@ return [
         // 12-month test (bt_unconf.php, 8 coins, 15m, bot exits) was worse than confirmed flips: "?" only PF 0.63
         // (win 32%), confirmed only PF 0.85, both PF 0.80 with ~70% more trades. Off: SWING_SAR_UNCONFIRMED_ENTRIES=false.
         'unconfirmed_entries' => (bool) env('SWING_SAR_UNCONFIRMED_ENTRIES', true),
+        // Which signals the chart prints and the bot trades: 'supertrend' = SuperTrend(10,3) flips (default; the user
+        // reverted to it on 2026-10-21 after the V3 test below), 'v3' = SignalAlgo PRO V3 100-point confluence score
+        // (ConfluenceEngine), 'sr' = S/R reversal engine (ReversalEngine; chart-only until it passes its walk-forward test).
+        // 12-month test (bt_v3.php, 8 coins, 15m, bot exits): V3 >= 80 3.8 trades/day, win 39%, median PF 0.73;
+        // with the 70-79 "?" (0.6% stop) 8.2/day, PF 0.70; >= 85 only PF 0.79. SuperTrend confirmed: 10.3/day, PF 0.85.
+        // V3 signals come ~1.0% after the turn (SuperTrend ~1.4%). None of these made money in the test.
+        'signal_source' => env('SWING_SAR_SIGNAL_SOURCE', 'supertrend'),
+        // S/R reversal engine (ReversalEngine): sweep of a 2+ touch zone + reversal candle, trend from the higher timeframe.
+        'sr' => [
+            'zone_atr' => 0.5,           // pivots within this many ATR form one zone
+            'min_touches' => 2,          // higher-timeframe pivots count 2
+            'sweep_atr' => 1.0,          // the wick may poke through the zone by at most this
+            'volume_ratio' => 1.3,
+            'min_confirmations' => (int) env('SWING_SAR_SR_MIN_CONFIRMATIONS', 1), // RSI divergence / volume / follow-through
+            'min_rr' => (float) env('SWING_SAR_SR_MIN_RR', 2.0),                    // to the next opposite zone
+            'counter_trend' => (bool) env('SWING_SAR_SR_COUNTER_TREND', true),      // against the 1h trend only with RSI divergence
+            'lookback' => 300,
+        ],
+        'v3' => [
+            'min_score' => (float) env('SWING_SAR_V3_MIN_SCORE', 80),          // BUY / SELL
+            'unconfirmed_score' => (float) env('SWING_SAR_V3_Q_SCORE', 70),    // BUY? / SELL?
+            'conflict_score' => 60,       // the other side scoring this much = no signal
+            'breakout_lookback' => 20,    // candles of the range that must be broken
+            'max_rsi' => 75,              // no BUY above RSI 75 (no SELL below 25)
+            'max_extension_atr' => 2.0,   // no signal when the close is more than 2 ATR past EMA21
+            'min_rr' => 2.0,              // the next swing level must be at least 2R away
+        ],
         'unconfirmed_sl_pct' => (float) env('SWING_SAR_UNCONFIRMED_SL_PCT', 0.6),
         // Only enter when the 4h SuperTrend points the same way.
         'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', false),
@@ -387,6 +414,25 @@ return [
         'trail' => (bool) env('SWING_SAR_TRAIL', true),
         // Telegram "stop moved" reply only when the stop moved at least this % of price since the last one.
         'trail_notify_pct' => 0.5,
+    ],
+
+    /*
+    | Strategy-lab live trial (user's decision 2026-10-21): one week of the two lab candidates on 4h candles, each
+    | sized to lose about risk_pct of equity at its (wide, 8-12%) stop. No new entries after `until` (UTC); open
+    | trades keep their stops. Swing SAR leaves these coins alone while the lab owns them. Off: LAB_ENABLED=false.
+    */
+    'lab' => [
+        'enabled' => (bool) env('LAB_ENABLED', true),
+        'until' => env('LAB_UNTIL', '2026-10-28 12:00:00'),
+        'risk_pct' => (float) env('LAB_RISK_PCT', 3.0),
+        'leverage' => (int) env('LAB_LEVERAGE', 5),
+        'max_sl_pct' => 15.0,
+        'strategies' => [
+            // Lab: train / validation / last-2-months PF 1.13 / 1.22 / 1.87 (11 trades)
+            'SOLUSDT' => ['type' => 'tsmom', 'fast' => 42, 'slow' => 180, 'trail' => 4.5],
+            // Lab: 1.65 / 2.11 / 1.68 (5 trades)
+            'NEARUSDT' => ['type' => 'squeeze', 'len' => 20, 'sqz' => 0.35, 'stop' => 2.0, 'trail' => 2.5],
+        ],
     ],
 
     /*

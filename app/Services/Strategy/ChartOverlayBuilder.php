@@ -22,7 +22,7 @@ class ChartOverlayBuilder
      * @param  array<int, Signal>  $signals
      * @return array<string, mixed>
      */
-    public function build(array $candles, array $signals, string $interval, int $bars = 300): array
+    public function build(array $candles, array $signals, string $interval, int $bars = 300, ?array $htf = null): array
     {
         $count = count($candles['closes']);
         $start = max(0, $count - $bars);
@@ -45,6 +45,7 @@ class ChartOverlayBuilder
         $closes = $candles['closes'];
         // Outcomes use closed candles only, so a label never changes while a candle is still forming.
         $closed = CandleSanitizer::onlyClosedCandles($candles);
+        $htfClosed = $htf === null ? null : CandleSanitizer::onlyClosedCandles($htf);
         $outcomes = $this->outcomes($signals, $closed, $interval, $time($start));
 
         return [
@@ -59,8 +60,11 @@ class ChartOverlayBuilder
             'markers' => $outcomes['markers'],
             'signal_history' => $outcomes['history'],
             'stats_strip' => $outcomes['strip'],
-            // Swing BUY/SELL labels (SuperTrend flip on volume), closed candles only so a label never moves.
-            'swing_signals' => $this->engine->swingSignals($closed, $start, includeUnconfirmed: true),
+            // Swing BUY/SELL labels (V3 score, or SuperTrend flips), closed candles only so a label never moves.
+            'swing_signals' => $this->engine->swingSignals($closed, $start, includeUnconfirmed: true, htf: $htfClosed),
+            // S/R reversal engine (sweep of a zone + reversal candle): its own toggle; chart-only unless it is the source.
+            'sr_signals' => $this->engine->swingSignalsFrom('sr', $closed, $start, true, $htfClosed),
+            'sr_zones' => app(ReversalEngine::class)->zonesAt($closed, $htfClosed),
         ];
     }
 

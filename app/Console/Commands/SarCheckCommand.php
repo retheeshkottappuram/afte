@@ -39,7 +39,7 @@ class SarCheckCommand extends Command
         $bars = (int) ceil($hours * 3600 / SwingSarTrader::intervalSeconds());
         $this->info(sprintf('Swing SAR %s · %s candles · mode %s · %s · config cached: %s',
             SwingSarTrader::enabled() ? 'ON' : 'OFF (set SWING_SAR_ENABLED=true, then php artisan config:clear)', SwingSarTrader::interval(), strtoupper($mode),
-            config('trading.swing_sar.confirmed_only', true) ? 'confirmed flips only' : 'every flip incl. "?"',
+            (['v3' => 'V3 score signals', 'sr' => 'S/R reversal signals'][StrategyEngine::signalSource()] ?? 'SuperTrend flips').(config('trading.swing_sar.unconfirmed_entries', false) || ! config('trading.swing_sar.confirmed_only', true) ? ' incl. "?" (tight stop)' : ', confirmed only'),
             app()->configurationIsCached() ? 'yes' : 'no'));
         $account = TradingAccount::getForMode($mode);
         if (! $account->canTrade()) {
@@ -56,7 +56,7 @@ class SarCheckCommand extends Command
                 continue;
             }
             $from = max(60, count($c['closes'] ?? []) - $bars - 1);
-            foreach ($engine->swingSignals($c, $from, true) as $flip) {
+            foreach ($engine->swingSignals($c, $from, true, $sar->htfCandles($symbol, SwingSarTrader::interval(), now()->getTimestampMs(), 500)) as $flip) {
                 if ($flip['time'] < $since) {
                     continue;
                 }

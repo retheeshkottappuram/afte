@@ -13,6 +13,7 @@ use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
+use App\Services\Trading\LabTrader;
 use App\Services\Trading\SignalAlgoTrader;
 use App\Services\Trading\SwingSarTrader;
 use App\Services\Trading\TradingDaemonManager;
@@ -57,7 +58,8 @@ class TradingDaemonCommand extends Command
         SignalAlgoTrader $trader,
         SignalAlerts $alerts,
         BreakoutWatcher $watcher,
-        SwingSarTrader $sar
+        SwingSarTrader $sar,
+        LabTrader $lab
     ): int {
         @set_time_limit(120);
 
@@ -152,6 +154,24 @@ class TradingDaemonCommand extends Command
                     } catch (Throwable $e) {
                         $this->recordError($stats, 'Swing SAR: '.$e->getMessage());
                         Log::warning("[TradeEngine] Swing SAR: {$e->getMessage()}");
+                    }
+                }
+
+                // 3a'. Lab trial (SOL momentum / NEAR squeeze): once per closed 4h candle, 30s after the close.
+                if (LabTrader::enabled() && time() % 14400 >= 30 && Cache::add('engine:lab:'.intdiv(time(), 14400), true, 28800)) {
+                    try {
+                        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
+                        foreach ($lab->run($mode, $entriesAllowed) as $row) {
+                            if ($row['action'] !== 'none') {
+                                $this->log("[{$mode}] LAB {$row['symbol']} {$row['action']}: {$row['message']}");
+                            }
+                            if ($row['action'] === 'opened') {
+                                $stats['opened']++;
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        $this->recordError($stats, 'Lab: '.$e->getMessage());
+                        Log::warning("[TradeEngine] Lab: {$e->getMessage()}");
                     }
                 }
 

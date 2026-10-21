@@ -12,6 +12,7 @@ use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\SetupStats;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
+use App\Services\Trading\LabTrader;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SignalAlgoTrader;
 use App\Services\Trading\SwingSarTrader;
@@ -241,7 +242,7 @@ class DashboardController extends Controller
                 'id' => $pos->id,
                 'symbol' => $pos->symbol,
                 'side' => $pos->side,
-                'source' => $pos->setup_tag === SwingSarTrader::SETUP ? 'sar' : (($pos->meta['source'] ?? 'auto') === 'manual' ? 'manual' : 'auto'),
+                'source' => $pos->setup_tag === SwingSarTrader::SETUP ? 'sar' : ($pos->setup_tag === LabTrader::SETUP ? 'lab' : (($pos->meta['source'] ?? 'auto') === 'manual' ? 'manual' : 'auto')),
                 'stage' => $pos->stage,
                 'entry_price' => $pos->entry_price,
                 'mark_price' => $markPrice,

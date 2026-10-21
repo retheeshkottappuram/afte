@@ -94,7 +94,7 @@ class RiskManager
      */
     public function canOpenTrade(TradingAccount $account, string $symbol, ?string $side = null, bool $isManual = false, ?string $setup = null): array
     {
-        $isSar = $setup === SwingSarTrader::SETUP;
+        $isSar = SwingSarTrader::isSwingFamily($setup);
         if ($account->mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return ['allowed' => false, 'reason' => 'Live trading is disabled on this server (ALLOW_LIVE_TRADING=false).'];
         }
@@ -130,7 +130,7 @@ class RiskManager
         }
 
         // Swing SAR trades have their own slots and never block (or count toward) the main bot's positions.
-        $openTrades = $openTrades->filter(fn (Trade $t): bool => ($t->setup_tag === SwingSarTrader::SETUP) === $isSar);
+        $openTrades = $openTrades->filter(fn (Trade $t): bool => SwingSarTrader::isSwingFamily($t->setup_tag) === $isSar);
         $maxPositions = $isSar ? (int) config('trading.swing_sar.max_open', 2) : $this->maxPositions((float) $account->balance);
         if ($isSar && $openTrades->count() >= $maxPositions) {
             return ['allowed' => false, 'reason' => "Swing SAR positions ({$maxPositions}) reached."];
@@ -307,7 +307,7 @@ class RiskManager
         }
 
         $used = (float) Trade::where('mode', $account->mode)->where('status', 'OPEN')
-            ->where(fn ($q) => $q->whereNull('setup_tag')->orWhere('setup_tag', '!=', SwingSarTrader::SETUP))
+            ->where(fn ($q) => $q->whereNull('setup_tag')->orWhereNotIn('setup_tag', [SwingSarTrader::SETUP, LabTrader::SETUP]))
             ->sum('margin_used');
 
         return round(max(0.0, (float) $account->balance) * (1 - $share) - $used, 4);

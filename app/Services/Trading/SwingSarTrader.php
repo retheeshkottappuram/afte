@@ -9,6 +9,7 @@ use App\Services\Crypto\CandleSanitizer;
 use App\Services\Notifications\TelegramGateway;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\StrategyEngine;
+use App\Services\Strategy\SymbolAnalyzer;
 use App\Services\Strategy\Watchlist;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -67,7 +68,25 @@ class SwingSarTrader
             $symbols = array_merge(array_diff($symbols, ['WATCHLIST']), Watchlist::symbols());
         }
 
-        return array_values(array_unique(array_map(fn (string $s): string => TradingTargetManager::normalizeSymbol($s), $symbols)));
+        $symbols = array_values(array_unique(array_map(fn (string $s): string => TradingTargetManager::normalizeSymbol($s), $symbols)));
+
+        // The lab trial owns its coins while it runs (one position per coin on Binance); a Swing SAR trade already
+        // open on one keeps being handled (flip exit) until it closes.
+        $lab = LabTrader::activeSymbols();
+        if ($lab === []) {
+            return $symbols;
+        }
+        $ownOpen = Trade::where('status', 'OPEN')->where('setup_tag', self::SETUP)->whereIn('symbol', $lab)->pluck('symbol')->all();
+
+        return array_values(array_diff($symbols, array_diff($lab, $ownOpen)));
+    }
+
+    /**
+     * Swing-family setups (Swing SAR and the lab trial): their own slots and fund half, own exits, no TP order.
+     */
+    public static function isSwingFamily(?string $setup): bool
+    {
+        return in_array($setup, [self::SETUP, LabTrader::SETUP], true);
     }
 
     public static function interval(): string
@@ -141,9 +160,9 @@ class SwingSarTrader
         }
 
         $st = StrategyEngine::supertrendOf($c);
-        $line = $st['line'][$k] ?? null;
+        $line = StrategyEngine::signalSource() === 'supertrend' ? ($st['line'][$k] ?? null) : null; // only SuperTrend trades follow the line
         $open = Trade::where('mode', $mode)->where('symbol', $symbol)->where('status', 'OPEN')->where('setup_tag', self::SETUP)->first();
-        $flip = $this->engine->swingSignals($c, $k, true)[0] ?? null;
+        $flip = $this->engine->swingSignals($c, $k, true, $this->htfCandles($symbol, $interval, $nowMs))[0] ?? null;
 
         if ($flip === null || ($open !== null && $open->side === $flip['side'])) {
             if ($open !== null) {
@@ -187,8 +206,12 @@ class SwingSarTrader
         }
 
         $price = $this->price($symbol, (float) $flip['entry']);
-        $sl = $this->cappedStop($flip['side'], $price, $this->stopFrom($flip['side'], (float) $flip['sl'], (float) $flip['atr']));
-        $tight = ! $flip['confirmed'] && config('trading.swing_sar.unconfirmed_entries', false);
+        // V3 signals carry their own structure stop; SuperTrend flips get the line pushed out by stop_buffer_atr.
+        $sl = $this->cappedStop($flip['side'], $price, in_array($flip['source'] ?? null, ['v3', 'sr'], true)
+            ? (float) $flip['sl']
+            : $this->stopFrom($flip['side'], (float) $flip['sl'], (float) $flip['atr']));
+        // "?" SuperTrend / V3 signals get the fixed tight stop; S/R "?" (counter-trend) keep their wick stop.
+        $tight = ! $flip['confirmed'] && config('trading.swing_sar.unconfirmed_entries', false) && ($flip['source'] ?? null) !== 'sr';
         if ($tight) {
             // "?" flip: fixed tight stop; if the move does not follow through it is cut small.
             $sl = $price * (1 + ($flip['side'] === 'LONG' ? -1 : 1) * (float) config('trading.swing_sar.unconfirmed_sl_pct', 0.6) / 100);
@@ -199,10 +222,10 @@ class SwingSarTrader
             'price' => $price,
             'initial_sl' => $sl,
             'setup' => self::SETUP,
-            'setup_label' => self::LABEL.($flip['confirmed'] ? '' : ($tight ? sprintf(' · "?" flip, tight %s%% stop', (float) config('trading.swing_sar.unconfirmed_sl_pct', 0.6)) : ' · unconfirmed flip "?"')),
+            'setup_label' => self::LABEL.(isset($flip['score']) ? " · V3 score {$flip['score']}/100" : '').($flip['confirmed'] ? '' : ($tight ? sprintf(' · "?" flip, tight %s%% stop', (float) config('trading.swing_sar.unconfirmed_sl_pct', 0.6)) : ' · unconfirmed flip "?"')),
             'interval' => $interval,
             'grade' => 'B',
-            'indicators' => ['atr' => (float) $flip['atr'], 'rsi' => $flip['rsi'], 'volume_ratio' => $flip['volume_ratio']],
+            'indicators' => ['atr' => (float) $flip['atr'], 'rsi' => $flip['rsi'], 'volume_ratio' => $flip['volume_ratio']] + (isset($flip['breakdown']) ? ['v3' => $flip['breakdown']] : []),
             'fixed_margin' => self::marginPerTrade(TradingAccount::getForMode($mode)),
             'fixed_leverage' => (int) config('trading.swing_sar.leverage', 5),
         ], $mode);
@@ -222,6 +245,27 @@ class SwingSarTrader
         }
 
         return ['action' => $closedNote !== null ? 'reversed' : 'opened', 'message' => trim(($closedNote ?? '').' '.$result['message'])];
+    }
+
+    /**
+     * Closed higher-timeframe candles for the V3 score's HTF factor (1h for 15m), or null for SuperTrend signals or
+     * when they can't be fetched (the HTF factor then scores 0).
+     *
+     * @return array<string, array<int, float|int>>|null
+     */
+    public function htfCandles(string $symbol, string $interval, int $nowMs, int $limit = 300): ?array
+    {
+        if (! StrategyEngine::needsHtf()) {
+            return null;
+        }
+
+        try {
+            return CandleSanitizer::onlyClosedCandles($this->market->klines($symbol, SymbolAnalyzer::regimeInterval($interval), $limit), $nowMs);
+        } catch (Throwable $e) {
+            Log::warning("[SwingSar] {$symbol}: higher-timeframe candles failed: {$e->getMessage()}");
+
+            return null;
+        }
     }
 
     /**

@@ -82,7 +82,7 @@ class SignalAlgoTrader
         $exitMessage = null;
         if ($signal->isTradable()) {
             // Swing SAR trades follow their own flips only.
-            foreach (Trade::where('symbol', $signal->symbol)->where('status', 'OPEN')->where(fn ($q) => $q->whereNull('setup_tag')->orWhere('setup_tag', '!=', SwingSarTrader::SETUP))->get() as $openTrade) {
+            foreach (Trade::where('symbol', $signal->symbol)->where('status', 'OPEN')->where(fn ($q) => $q->whereNull('setup_tag')->orWhereNotIn('setup_tag', [SwingSarTrader::SETUP, LabTrader::SETUP]))->get() as $openTrade) {
                 if ($openTrade->side !== $signal->side) {
                     $price = (float) $this->market->tickerPrice($signal->symbol) ?: $signal->entry;
                     $result = $this->tradeManager->closeTrade($openTrade, $price, 'OPPOSITE_SIGNAL');

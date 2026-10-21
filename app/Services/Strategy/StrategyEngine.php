@@ -452,13 +452,58 @@ class StrategyEngine
     }
 
     /**
-     * Every swing signal from bar $from on (for the chart), one per bar.
+     * True when the chart and the swing bot use the SignalAlgo PRO V3 score (swing_sar.signal_source = v3).
+     */
+    public static function usesV3(): bool
+    {
+        return self::signalSource() === 'v3';
+    }
+
+    /**
+     * The swing signal source the chart labels and the bot trade: supertrend (default), v3 or sr.
+     */
+    public static function signalSource(): string
+    {
+        $source = (string) config('trading.swing_sar.signal_source', 'supertrend');
+
+        return in_array($source, ['supertrend', 'v3', 'sr'], true) ? $source : 'supertrend';
+    }
+
+    /**
+     * True when the signal source needs higher-timeframe candles (v3 and sr).
+     */
+    public static function needsHtf(?string $source = null): bool
+    {
+        return ($source ?? self::signalSource()) !== 'supertrend';
+    }
+
+    /**
+     * Every swing signal from bar $from on (for the chart), one per bar. With signal_source v3 these are the
+     * SignalAlgo PRO V3 confluence signals ($htf = the higher-timeframe candles for its HTF factor).
      *
      * @param  array<string, array<int, float|int>>  $c  Closed candles
      * @return array<int, array<string, mixed>>
      */
-    public function swingSignals(array $c, int $from = 0, bool $includeUnconfirmed = false): array
+    public function swingSignals(array $c, int $from = 0, bool $includeUnconfirmed = false, ?array $htf = null): array
     {
+        return $this->swingSignalsFrom(self::signalSource(), $c, $from, $includeUnconfirmed, $htf);
+    }
+
+    /**
+     * Swing signals of one source: 'supertrend' (SuperTrend flips), 'v3' (ConfluenceEngine) or 'sr' (ReversalEngine).
+     *
+     * @param  array<string, array<int, float|int>>  $c  Closed candles
+     * @return array<int, array<string, mixed>>
+     */
+    public function swingSignalsFrom(string $source, array $c, int $from = 0, bool $includeUnconfirmed = false, ?array $htf = null): array
+    {
+        if ($source === 'v3') {
+            return app(ConfluenceEngine::class)->signals($c, $htf, $from, $includeUnconfirmed);
+        }
+        if ($source === 'sr') {
+            return app(ReversalEngine::class)->signals($c, $htf, $from, $includeUnconfirmed);
+        }
+
         $n = count($c['closes'] ?? []);
         if ($n < 60) {
             return [];

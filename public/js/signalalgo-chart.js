@@ -23,7 +23,7 @@
 
     /** Chart display toggles, remembered per browser. */
     function loadToggles() {
-        const defaults = { results: true, filtered: true, shadow: false, levels: true, swings: true, trades: true, sound: true };
+        const defaults = { results: true, filtered: true, shadow: false, levels: true, swings: true, trades: true, sr: true, sound: true };
         try {
             return Object.assign(defaults, JSON.parse(localStorage.getItem('sap_chart_toggles') || '{}'));
         } catch (e) {
@@ -43,9 +43,39 @@
             .filter((m) => (m.kind !== 'result' || t.results) && (m.kind !== 'shadow' || t.shadow) && (m.kind !== 'filtered' || t.filtered))
             .map((m) => ({ time: m.time, position: m.position, shape: m.shape, color: m.color, text: m.text, size: m.size }))
             .concat(t.trades ? tradeMarkers() : (tradesNote(''), []))
+            .concat(t.sr ? srMarkers() : [])
             .sort((a, b) => a.time - b.time);
         state.candleSeries.setMarkers(markers);
         drawTradeLines();
+        drawSrZones();
+    }
+
+    /* ---------- S/R reversal signals (sweep of a support / resistance zone + reversal candle) ---------- */
+
+    function srMarkers() {
+        const candles = state.data.candles || [];
+        const times = new Set(candles.map((c) => c.time));
+        return (state.data.sr_signals || []).filter((s) => times.has(s.time)).map((s) => ({
+            time: s.time,
+            position: s.side === 'LONG' ? 'belowBar' : 'aboveBar',
+            shape: 'square',
+            color: s.side === 'LONG' ? (s.confirmed ? '#a855f7' : 'rgba(168,85,247,0.55)') : (s.confirmed ? '#f97316' : 'rgba(249,115,22,0.55)'),
+            text: `S/R ${s.side === 'LONG' ? 'BUY' : 'SELL'}${s.confirmed ? '' : '?'} ${Number(s.rr).toFixed(1)}R`,
+            size: 1,
+        }));
+    }
+
+    /** Support / resistance zones as faint lines (with the S/R toggle). */
+    function drawSrZones() {
+        (state.srLines || []).forEach((line) => { try { state.candleSeries.removePriceLine(line); } catch (e) { /* already gone */ } });
+        state.srLines = [];
+        if (!state.toggles.sr || !state.data) return;
+        (state.data.sr_zones || []).forEach((z) => {
+            state.srLines.push(state.candleSeries.createPriceLine({
+                price: z.price, color: 'rgba(168,85,247,0.35)', lineWidth: Math.min(4, Math.max(1, Math.round(z.touches / 2))), lineStyle: 1,
+                axisLabelVisible: false, title: `S/R x${z.touches}`,
+            }));
+        });
     }
 
     /* ---------- "My trades": the bot's own entries and exits on this coin ---------- */
@@ -81,7 +111,7 @@
             const long = tr.side === 'LONG';
             const inAt = barAt(tr.opened_at);
             if (inAt || barAt(tr.closed_at)) shown++; else older++;
-            const tag = (tr.mode === 'paper' ? '[P] ' : '') + (tr.setup === 'SWING_SAR' ? `SAR ${tr.interval || ''} `.replace('  ', ' ') : 'BRK ');
+            const tag = (tr.mode === 'paper' ? '[P] ' : '') + (tr.setup === 'SWING_SAR' ? `SAR ${tr.interval || ''} `.replace('  ', ' ') : (tr.setup === 'LAB' ? 'LAB 4h ' : 'BRK '));
             // Entry vs the chart signal: "worse" = paid more on a long / sold lower on a short.
             const slip = tr.signal_price ? (tr.entry - tr.signal_price) / tr.signal_price * 100 * (long ? 1 : -1) : null;
             const gap = slip === null ? '' : ` (signal ${fmt(tr.signal_price)}, ${Math.abs(slip).toFixed(2)}% ${slip > 0 ? 'worse' : 'better'})`;
@@ -347,8 +377,10 @@
         if (state.toggles.swings) {
             (data.swing_signals || []).forEach((s) => out.push({
                 time: s.time, side: s.side, price: s.entry, sl: s.sl, tp1: s.tp1, tp2: s.tp2, text: s.side === 'LONG' ? 'BUY' : 'SELL', kind: 'swing',
-                confirmed: s.confirmed !== false,
-                reason: s.confirmed === false ? `${s.reason}, stop ${s.sl_pct}%: unconfirmed (outside the measured set, no alert)` : s.reason,
+                confirmed: s.confirmed !== false, score: s.score || null,
+                reason: s.confirmed === false
+                    ? `${s.reason}, stop ${s.sl_pct}%: "?" ${s.score ? '(score below the BUY/SELL threshold)' : '(unconfirmed flip)'}, the bot trades it with a tight stop`
+                    : s.reason,
             }));
         }
         (data.signal_history || []).filter((h) => h.tradable && !h.is_shadow).forEach((h) => out.push({
@@ -410,13 +442,13 @@
             const top = isBuy ? anchorY + 18 : anchorY - 18 - 34;
             const lineTop = isBuy ? anchorY + 2 : anchorY - 18;
             const pulse = s.time === newest ? 'box-shadow:0 0 0 4px rgba(250,204,21,0.45);' : '';
-            const opacity = s.confirmed ? 1 : 0.45;
+            const opacity = s.confirmed ? 1 : 0.6;
             return `
                 <div style="position:absolute;left:${x - 0.5}px;top:${lineTop}px;width:1px;height:16px;background:${bg};"></div>
                 <div title="${esc(s.reason || '')} · SL ${fmt(s.sl)} · TP1 ${fmt(s.tp1)}" onclick="SignalAlgoPro.focusSignal(${s.time})"
                      style="position:absolute;left:${x}px;top:${top}px;transform:translateX(-50%);pointer-events:auto;cursor:pointer;opacity:${opacity};
                             background:${bg};color:#fff;border-radius:6px;padding:2px 7px;font:800 12px/1.25 ui-monospace,monospace;text-align:center;white-space:nowrap;${pulse}">
-                    ${isBuy ? '▲' : '▼'} ${esc(s.text)}${s.confirmed ? '' : '?'}<div style="font-weight:600;font-size:10px;opacity:0.9">${fmt(s.price)}</div>
+                    ${isBuy ? '▲' : '▼'} ${esc(s.text)}${s.confirmed ? '' : '?'}${s.score ? ` <span style="font-weight:600;opacity:0.85">${s.score}</span>` : ''}<div style="font-weight:600;font-size:10px;opacity:0.9">${fmt(s.price)}</div>
                 </div>`;
         }).join('');
     }

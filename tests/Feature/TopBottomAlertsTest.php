@@ -27,6 +27,7 @@ class TopBottomAlertsTest extends TestCase
     {
         parent::setUp();
         config([
+            'trading.swing_sar.signal_source' => 'supertrend', // these tests cover the SuperTrend flip signals
             'trading.telegram.enabled' => true,
             'trading.telegram.bot_token' => '123:TEST',
             'trading.telegram.chat_id' => '999',
@@ -108,6 +109,8 @@ class TopBottomAlertsTest extends TestCase
         $this->assertSame('LONG', end($payload['swing_signals'])['side']);
         $this->assertTrue(end($payload['swing_signals'])['confirmed']);
         $this->assertSame(intdiv($c['closeTimes'][80], 1000), end($payload['swing_signals'])['time']);
+        $this->assertIsArray($payload['sr_signals'], 'The S/R reversal layer is in the payload too');
+        $this->assertIsArray($payload['sr_zones']);
     }
 
     /**

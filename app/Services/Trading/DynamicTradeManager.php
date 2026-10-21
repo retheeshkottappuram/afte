@@ -66,6 +66,9 @@ class DynamicTradeManager
             if ($trade->setup_tag === SwingSarTrader::SETUP) {
                 return $this->manageSwingSar($trade, $price);
             }
+            if ($trade->setup_tag === LabTrader::SETUP) {
+                return $this->manageLab($trade, $price);
+            }
 
             // Early breakout: the hourly candle closed back inside the squeeze box, so the breakout failed.
             if (($failedClose = $this->failedBreakoutClose($trade)) !== null) {
@@ -208,6 +211,62 @@ class DynamicTradeManager
         $trade->save();
 
         return true;
+    }
+
+    /**
+     * Move the stop forward to $stop (never back), on the exchange too for live trades. Used by the lab trader's
+     * chandelier trail on each closed 4h candle. Returns true when the stop moved.
+     */
+    public function trailStopTo(Trade $trade, float $stop, string $why = 'trailing stop'): bool
+    {
+        $lock = Cache::lock("trade-manage:{$trade->id}", 30);
+        if (! $lock->block(10)) {
+            return false;
+        }
+
+        try {
+            $trade->refresh();
+            $before = (float) $trade->current_sl;
+            $dir = $trade->isLong() ? 1 : -1;
+            if (! $trade->isOpen() || ($stop - $before) * $dir <= 1e-12) {
+                return false;
+            }
+            $this->applyStop($trade, ['current_sl' => $stop, 'be_locked' => ($stop - (float) $trade->entry_price) * $dir >= 0]);
+            $trade->save();
+            $moved = abs((float) $trade->current_sl - $before) > 1e-12;
+            if ($moved) {
+                $this->notifier->notifyStopTrailed($trade, (float) $trade->current_sl, (float) $this->client->getMarkPrice($trade->symbol), $why);
+            }
+
+            return $moved;
+        } catch (Throwable $e) {
+            Log::warning("[DynamicTradeManager] Trail of trade {$trade->id} failed: {$e->getMessage()}");
+
+            return false;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Lab trial trades: only the stop (kept on the exchange for live) and the best price here; the lab trader moves
+     * the stop and takes the momentum exit on each closed 4h candle. No partials, no time stop.
+     *
+     * @return array{status: string, message: string}
+     */
+    protected function manageLab(Trade $trade, float $price): array
+    {
+        $trade->highest_price = max((float) ($trade->highest_price ?? $price), $price);
+        $trade->lowest_price = min((float) ($trade->lowest_price ?? $price), $price);
+        $stopHit = $trade->isLong() ? $price <= (float) $trade->current_sl : $price >= (float) $trade->current_sl;
+        if ($stopHit) {
+            $moved = abs((float) $trade->current_sl - (float) $trade->initial_sl) > 1e-12;
+
+            return $this->closeTradeUnlocked($trade, $trade->mode === 'live' ? $price : $this->paperExitPrice($trade, (float) $trade->current_sl, $price), $moved ? 'TRAILING_STOP' : 'STOP_LOSS');
+        }
+        $trade->save();
+
+        return ['status' => 'managed', 'message' => "Lab {$trade->id} {$trade->symbol} at {$price}, stop {$trade->current_sl}."];
     }
 
     /**
