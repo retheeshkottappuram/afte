@@ -405,7 +405,7 @@
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-filtered" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('filtered', this.checked)"> Filtered</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-shadow" class="accent-emerald-500" onchange="SignalAlgoPro.setToggle('shadow', this.checked)"> Shadow</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" id="sapToggle-levels" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('levels', this.checked)"> Levels</label>
-                <label class="inline-flex items-center gap-1 cursor-pointer" title="SuperTrend flip on volume. Confirmed flips (no ?) on the 15m chart of the swing coins are auto-traded by Swing SAR."><input type="checkbox" id="sapToggle-swings" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('swings', this.checked)"> Swing BUY/SELL</label>
+                <label class="inline-flex items-center gap-1 cursor-pointer" title="SuperTrend flip. On the 15m chart of the swing coins Swing SAR auto-trades every flip: confirmed BUY/SELL with the SuperTrend stop, BUY?/SELL? with a tight 0.6% stop."><input type="checkbox" id="sapToggle-swings" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('swings', this.checked)"> Swing BUY/SELL</label>
                 <label class="inline-flex items-center gap-1 cursor-pointer" title="The bot's own trades on this coin (last 7 days): IN / OUT markers with the result, and the entry and stop lines of an open trade."><input type="checkbox" id="sapToggle-trades" class="accent-emerald-500" checked onchange="SignalAlgoPro.setToggle('trades', this.checked)"> My trades <span id="sapTradesNote" class="text-[10px] text-slate-400"></span></label>
                 <button type="button" id="sap-alerts-btn" onclick="SignalAlgoPro.enableAlerts()" class="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 font-bold" title="Pop-up, sound and browser notification when a new BUY/SELL prints (this coin and every scanned coin)">🔔 Enable alerts</button>
             </div>
@@ -417,8 +417,8 @@
                     <span class="text-[10px] text-slate-500">Confirmed BUY/SELL replayed with the bot's exits on the last 1500 candles. Past results don't guarantee future ones.</span>
                 </div>
                 <table class="w-full font-mono">
-                    <thead class="text-slate-500 text-[10px] uppercase"><tr><th class="text-left">TF</th><th class="text-right">Trades</th><th class="text-right">Win</th><th class="text-right">PF</th><th class="text-right">Net ROE</th><th class="text-right" title="Average distance of the signal from the last 5 candles' extreme (how late after the turn)">Late</th><th class="text-right" title="Average best move in the trade's favour">Best move</th><th class="text-right">Period</th></tr></thead>
-                    <tbody id="swingScorecardBody"><tr><td colspan="8" class="text-slate-500">Loading…</td></tr></tbody>
+                    <thead class="text-slate-500 text-[10px] uppercase"><tr><th class="text-left">TF</th><th class="text-right">Trades</th><th class="text-right">Win</th><th class="text-right">PF</th><th class="text-right">Net ROE</th><th class="text-right" title="Average distance of the signal from the last 5 candles' extreme (how late after the turn)">Late</th><th class="text-right" title="Average best move in the trade's favour">Best move</th><th class="text-right">Period</th><th class="text-right" title="BUY?/SELL? flips only, fixed tight stop (as the bot trades them)">? trades</th><th class="text-right">? win</th><th class="text-right">? PF</th></tr></thead>
+                    <tbody id="swingScorecardBody"><tr><td colspan="11" class="text-slate-500">Loading…</td></tr></tbody>
                 </table>
             </div>
 
@@ -1180,7 +1180,7 @@
         const sym = document.getElementById('swingScorecardSym');
         if (!body) return;
         if (sym) sym.textContent = symbol;
-        body.innerHTML = '<tr><td colspan="8" class="text-slate-500">Loading…</td></tr>';
+        body.innerHTML = '<tr><td colspan="11" class="text-slate-500">Loading…</td></tr>';
         fetch(`{{ route('signals.swing_scorecard', [], false) }}?symbol=${encodeURIComponent(symbol)}`, { headers: { 'Accept': 'application/json' } })
             .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
             .then(data => {
@@ -1191,7 +1191,8 @@
                 const cls = (v, good) => v === null || v === undefined ? 'text-slate-500' : (good ? 'text-emerald-400' : 'text-rose-400');
                 const days = (d) => d >= 1 ? `${Math.round(d)}d` : '--';
                 body.innerHTML = rows.map(r => {
-                    if (r.error) return `<tr><td>${r.interval}</td><td colspan="7" class="text-slate-500">unavailable</td></tr>`;
+                    if (r.error) return `<tr><td>${r.interval}</td><td colspan="10" class="text-slate-500">unavailable</td></tr>`;
+                    const u = r.unconfirmed || {};
                     const isBest = best !== null && r.profit_factor === best;
                     const bot = r.interval === data.bot_interval ? ' <span class="text-sky-300">(bot)</span>' : '';
                     return `<tr class="${isBest ? 'bg-emerald-500/10' : ''}">
@@ -1203,13 +1204,16 @@
                         <td class="text-right">${r.late_pct === null ? '--' : r.late_pct + '%'}</td>
                         <td class="text-right">${r.mfe_pct === null ? '--' : r.mfe_pct + '%'}</td>
                         <td class="text-right text-slate-500">${days(r.days)}</td>
+                        <td class="text-right">${u.trades ?? '--'}</td>
+                        <td class="text-right">${u.win_pct == null ? '--' : u.win_pct + '%'}</td>
+                        <td class="text-right ${cls(u.profit_factor, u.profit_factor >= 1)}">${u.profit_factor == null ? '--' : u.profit_factor}</td>
                     </tr>`;
                 }).join('');
             })
             .catch(() => {
                 if (scorecardSymbol !== symbol) return;
                 scorecardSymbol = null;
-                body.innerHTML = '<tr><td colspan="8" class="text-slate-500">Accuracy unavailable right now.</td></tr>';
+                body.innerHTML = '<tr><td colspan="11" class="text-slate-500">Accuracy unavailable right now.</td></tr>';
             });
     }
 

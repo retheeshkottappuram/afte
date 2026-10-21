@@ -72,6 +72,7 @@ class SwingScorecardTest extends TestCase
         $this->assertSame('SOLUSDT', $res->json('symbol'));
         $this->assertSame('15m', $res->json('bot_interval'));
         $this->assertSame(4, $calls);
+        $this->assertArrayHasKey('profit_factor', $res->json('rows.0.unconfirmed'), 'The "?" flips are scored too');
 
         $this->actingAs($admin)->getJson(route('signals.swing_scorecard', ['symbol' => 'SOLUSDT']))->assertOk();
         $this->assertSame(4, $calls, 'Second load comes from the cache');

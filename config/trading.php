@@ -356,6 +356,12 @@ return [
         'max_order_sl_pct' => (float) env('SWING_SAR_MAX_ORDER_SL_PCT', 6.0),
         // true = confirmed flips only; "BUY?" / "SELL?" are never traded (an opposite "?" still closes an open trade).
         'confirmed_only' => (bool) env('SWING_SAR_CONFIRMED_ONLY', true),
+        // User's decision (2026-10-21): also trade "BUY?" / "SELL?" flips, with a fixed tight stop (unconfirmed_sl_pct
+        // from entry) instead of the SuperTrend stop; the dynamic rules then work on that small R. Kept on although the
+        // 12-month test (bt_unconf.php, 8 coins, 15m, bot exits) was worse than confirmed flips: "?" only PF 0.63
+        // (win 32%), confirmed only PF 0.85, both PF 0.80 with ~70% more trades. Off: SWING_SAR_UNCONFIRMED_ENTRIES=false.
+        'unconfirmed_entries' => (bool) env('SWING_SAR_UNCONFIRMED_ENTRIES', true),
+        'unconfirmed_sl_pct' => (float) env('SWING_SAR_UNCONFIRMED_SL_PCT', 0.6),
         // Only enter when the 4h SuperTrend points the same way.
         'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', false),
         // Checked every 5s, best price in R (1R = the entry-to-stop distance). User's decision (2026-10-20):

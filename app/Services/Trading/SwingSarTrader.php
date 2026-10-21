@@ -188,13 +188,18 @@ class SwingSarTrader
 
         $price = $this->price($symbol, (float) $flip['entry']);
         $sl = $this->cappedStop($flip['side'], $price, $this->stopFrom($flip['side'], (float) $flip['sl'], (float) $flip['atr']));
+        $tight = ! $flip['confirmed'] && config('trading.swing_sar.unconfirmed_entries', false);
+        if ($tight) {
+            // "?" flip: fixed tight stop; if the move does not follow through it is cut small.
+            $sl = $price * (1 + ($flip['side'] === 'LONG' ? -1 : 1) * (float) config('trading.swing_sar.unconfirmed_sl_pct', 0.6) / 100);
+        }
         $result = $this->executor->executeSignal([
             'symbol' => $symbol,
             'side' => $flip['side'],
             'price' => $price,
             'initial_sl' => $sl,
             'setup' => self::SETUP,
-            'setup_label' => self::LABEL.($flip['confirmed'] ? '' : ' · unconfirmed flip "?"'),
+            'setup_label' => self::LABEL.($flip['confirmed'] ? '' : ($tight ? sprintf(' · "?" flip, tight %s%% stop', (float) config('trading.swing_sar.unconfirmed_sl_pct', 0.6)) : ' · unconfirmed flip "?"')),
             'interval' => $interval,
             'grade' => 'B',
             'indicators' => ['atr' => (float) $flip['atr'], 'rsi' => $flip['rsi'], 'volume_ratio' => $flip['volume_ratio']],
@@ -212,7 +217,7 @@ class SwingSarTrader
 
         if (($trade = $result['trade'] ?? null) instanceof Trade) {
             // The chart signal this trade came from (the flip candle's close), to show the entry gap on the chart.
-            $trade->meta = array_merge($trade->meta ?? [], ['signal_price' => (float) $flip['entry'], 'signal_time' => (int) $flip['time']]);
+            $trade->meta = array_merge($trade->meta ?? [], ['signal_price' => (float) $flip['entry'], 'signal_time' => (int) $flip['time'], 'unconfirmed' => ! $flip['confirmed']]);
             $trade->save();
         }
 
@@ -229,7 +234,7 @@ class SwingSarTrader
         if (! $entriesAllowed) {
             return 'auto-trading is stopped or paused';
         }
-        if (config('trading.swing_sar.confirmed_only', true) && ! $flip['confirmed']) {
+        if (config('trading.swing_sar.confirmed_only', true) && ! $flip['confirmed'] && ! config('trading.swing_sar.unconfirmed_entries', false)) {
             return sprintf('unconfirmed flip (volume %.1fx, stop %.2f%%; needs >= 1.5x and <= 4%%)', $flip['volume_ratio'], $flip['sl_pct']);
         }
         if (config('trading.swing_sar.require_4h_trend', false)) {

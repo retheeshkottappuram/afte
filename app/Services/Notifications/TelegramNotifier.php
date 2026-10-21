@@ -149,7 +149,8 @@ class TelegramNotifier
         $qty = (float) $trade->quantity;
         $risk = abs($entry - (float) $trade->initial_sl);
         $dir = $trade->isLong() ? 1 : -1;
-        $lines = sprintf("Stop loss: −\$%.2f (%.2f%%) if hit\n", $qty * $risk, $entry > 0 ? $risk / $entry * 100 : 0);
+        $lines = sprintf("Stop loss: −\$%.2f (%.2f%%) if hit%s\n", $qty * $risk, $entry > 0 ? $risk / $entry * 100 : 0,
+            str_contains((string) ($trade->meta['setup_label'] ?? ''), '"?" flip') ? ' (unconfirmed "?" flip: tight stop)' : '');
         foreach ((array) config('trading.swing_sar.partials', []) as [$atR, $share]) {
             $lines .= sprintf("Book %d%% at <code>%s</code> (+%sR, +\$%.2f)\n", round($share * 100), $this->fmt($entry + $dir * $atR * $risk), $atR, $qty * $share * $atR * $risk);
         }

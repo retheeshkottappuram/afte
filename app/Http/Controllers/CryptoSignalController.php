@@ -244,8 +244,11 @@ class CryptoSignalController extends Controller
         $rows = [];
         foreach (self::CHART_INTERVALS as $interval) {
             try {
-                $rows[] = ['interval' => $interval] + Cache::remember("swing-scorecard:{$symbol}:{$interval}", 3600, function () use ($market, $scorecard, $symbol, $interval): array {
-                    return $scorecard->score(CandleSanitizer::onlyClosedCandles($market->klines($symbol, $interval, 1500), now()->getTimestampMs()));
+                $rows[] = ['interval' => $interval] + Cache::remember("swing-scorecard:v2:{$symbol}:{$interval}", 3600, function () use ($market, $scorecard, $symbol, $interval): array {
+                    $candles = CandleSanitizer::onlyClosedCandles($market->klines($symbol, $interval, 1500), now()->getTimestampMs());
+
+                    // Confirmed BUY/SELL, plus the "?" flips on their own (fixed tight stop, as the bot trades them).
+                    return $scorecard->score($candles) + ['unconfirmed' => $scorecard->score($candles, entries: 'unconfirmed')];
                 });
             } catch (Throwable $e) {
                 $rows[] = ['interval' => $interval, 'error' => 'unavailable'];

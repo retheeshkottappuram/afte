@@ -129,7 +129,7 @@ class SwingSarTraderTest extends TestCase
 
     public function test_with_confirmed_only_an_unconfirmed_flip_closes_but_never_opens(): void
     {
-        config(['trading.swing_sar.confirmed_only' => true]);
+        config(['trading.swing_sar.confirmed_only' => true, 'trading.swing_sar.unconfirmed_entries' => false]);
         $long = $this->sarTrade('LONG');
         $this->flips = [$this->flip('SHORT', confirmed: false, sl: 5.15)];
 
@@ -141,8 +141,36 @@ class SwingSarTraderTest extends TestCase
         Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'No new trade'));
     }
 
-    public function test_by_default_an_unconfirmed_flip_is_skipped_silently(): void
+    public function test_by_default_an_unconfirmed_flip_opens_with_a_tight_stop(): void
     {
+        $this->flips = [$this->flip('LONG', confirmed: false)];
+
+        $row = $this->runSar()[0];
+
+        $this->assertSame('opened', $row['action'], $row['message']);
+        $trade = Trade::where('setup_tag', SwingSarTrader::SETUP)->sole();
+        $this->assertEqualsWithDelta((float) $trade->entry_price * 0.994, (float) $trade->initial_sl, 1e-4, 'Fixed 0.6% stop, not the SuperTrend stop');
+        $this->assertTrue((bool) $trade->meta['unconfirmed']);
+        $this->assertStringContainsString('"?" flip, tight 0.6% stop', (string) $trade->meta['setup_label']);
+        Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'tight stop'));
+    }
+
+    public function test_an_unconfirmed_short_gets_its_tight_stop_above_and_reverses_an_open_long(): void
+    {
+        $long = $this->sarTrade('LONG');
+        $this->flips = [$this->flip('SHORT', confirmed: false, sl: 5.15)];
+
+        $this->assertSame('reversed', $this->runSar()[0]['action']);
+
+        $this->assertSame('OPPOSITE_SIGNAL', $long->fresh()->exit_reason);
+        $short = Trade::where('status', 'OPEN')->where('setup_tag', SwingSarTrader::SETUP)->sole();
+        $this->assertSame('SHORT', $short->side);
+        $this->assertEqualsWithDelta((float) $short->entry_price * 1.006, (float) $short->initial_sl, 1e-4);
+    }
+
+    public function test_with_unconfirmed_entries_off_a_question_mark_flip_is_skipped_silently(): void
+    {
+        config(['trading.swing_sar.unconfirmed_entries' => false]);
         $this->flips = [$this->flip('LONG', confirmed: false)];
 
         $row = $this->runSar()[0];
@@ -154,7 +182,7 @@ class SwingSarTraderTest extends TestCase
 
     public function test_with_confirmed_only_off_every_flip_trades(): void
     {
-        config(['trading.swing_sar.confirmed_only' => false]);
+        config(['trading.swing_sar.confirmed_only' => false, 'trading.swing_sar.unconfirmed_entries' => false]);
         $this->flips = [$this->flip('LONG', confirmed: false)];
 
         $row = $this->runSar()[0];

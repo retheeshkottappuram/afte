@@ -17,9 +17,10 @@ class SwingScorecard
 
     /**
      * @param  array<string, array<int, float|int>>  $c  Closed candles, oldest first
+     * @param  string  $entries  'confirmed' (BUY/SELL), 'unconfirmed' (BUY?/SELL?, fixed unconfirmed_sl_pct stop) or 'all'
      * @return array{trades: int, win_pct: ?float, profit_factor: ?float, net_pct: float, avg_r: ?float, late_pct: ?float, mfe_pct: ?float, days: float}
      */
-    public function score(array $c, int $warmup = 60): array
+    public function score(array $c, int $warmup = 60, string $entries = 'confirmed'): array
     {
         $n = count($c['closes'] ?? []);
         $empty = ['trades' => 0, 'win_pct' => null, 'profit_factor' => null, 'net_pct' => 0.0, 'avg_r' => null, 'late_pct' => null, 'mfe_pct' => null, 'days' => 0.0];
@@ -31,6 +32,7 @@ class SwingScorecard
         $lev = max(1, (int) ($cfg['leverage'] ?? 5));
         $maxSl = (float) ($cfg['max_sl_pct'] ?? 2.0) / 100;
         $buffer = (float) ($cfg['stop_buffer_atr'] ?? 1.0);
+        $tightSl = (float) ($cfg['unconfirmed_sl_pct'] ?? 0.6) / 100;
         $st = StrategyEngine::supertrendOf($c);
         $atr = Indicators::atr($c['highs'], $c['lows'], $c['closes'], 14);
 
@@ -70,13 +72,17 @@ class SwingScorecard
             if ($pos !== null && $flip['dir'] !== $pos['dir']) {
                 $close($q, (float) $c['closes'][$q]);
             }
-            if ($pos === null && $flip['confirmed'] && ($st['line'][$q] ?? null) !== null && ($atr[$q] ?? null) !== null) {
+            $wanted = $entries === 'all' || ($entries === 'unconfirmed' ? ! $flip['confirmed'] : $flip['confirmed']);
+            if ($pos === null && $wanted && ($st['line'][$q] ?? null) !== null && ($atr[$q] ?? null) !== null) {
                 $d = $flip['dir'];
                 $entry = (float) $c['closes'][$q];
                 $stop = (float) $st['line'][$q] - $d * $buffer * (float) $atr[$q];
                 $cap = $entry * (1 - $d * $maxSl);
                 if ($d > 0 ? $stop < $cap : $stop > $cap) {
                     $stop = $cap;
+                }
+                if (! $flip['confirmed']) {
+                    $stop = $entry * (1 - $d * $tightSl); // "?" flip: fixed tight stop, as the bot trades it
                 }
                 // How far the signal came after the turn: entry vs the extreme of the last 5 candles.
                 $from = max(0, $q - 4);
