@@ -10,6 +10,7 @@ use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\SetupStats;
+use App\Services\Trading\BotSwitches;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\LabTrader;
@@ -166,6 +167,7 @@ class DashboardController extends Controller
             'cooldown_remaining_human' => $pausedRemainingHuman,
             'cooldown_until_time' => $pausedUntilFormatted,
             'paused_reason' => $pausedReason,
+            'bot_switches' => BotSwitches::all(),
             'open_positions_count' => $openPositions->count(),
             'used_margin' => $usedMargin,
             'available_margin' => $availMargin,
@@ -587,6 +589,20 @@ class DashboardController extends Controller
                 ? 'Kill switch ACTIVATED. Positions closed.'.($failed !== [] ? ' NOT confirmed closed: '.implode('; ', $failed) : '')
                 : 'Kill switch deactivated. Drawdown reference reset to the current balance.',
         ]);
+    }
+
+    /**
+     * Turn one bot's new entries on or off (swing, breakout or lab). Open trades keep being managed.
+     */
+    public function setBotSwitch(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'bot' => ['required', 'string', 'in:'.implode(',', BotSwitches::BOTS)],
+            'enabled' => ['required', 'boolean'],
+        ]);
+        BotSwitches::set($data['bot'], (bool) $data['enabled']);
+
+        return response()->json(['success' => true, 'bot_switches' => BotSwitches::all()]);
     }
 
     /**

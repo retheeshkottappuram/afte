@@ -38,7 +38,13 @@ class LabTrader
 
     public static function enabled(): bool
     {
-        return (bool) config('trading.lab.enabled', false) && self::strategies() !== [];
+        return BotSwitches::on('lab') && self::strategies() !== [];
+    }
+
+    /** Open lab trades still need their 4h trail and momentum exit when the switch is off. */
+    public static function hasOpenTrades(): bool
+    {
+        return Trade::where('status', 'OPEN')->where('setup_tag', self::SETUP)->exists();
     }
 
     /** New entries allowed until lab.until (UTC). */
@@ -64,10 +70,10 @@ class LabTrader
      */
     public static function activeSymbols(): array
     {
-        if (! self::enabled()) {
-            return [];
-        }
         $open = Trade::where('status', 'OPEN')->where('setup_tag', self::SETUP)->pluck('symbol')->all();
+        if (! self::enabled()) {
+            return array_values(array_unique($open));
+        }
 
         return array_values(array_unique(array_merge(self::entriesOpen() ? array_keys(self::strategies()) : [], $open)));
     }

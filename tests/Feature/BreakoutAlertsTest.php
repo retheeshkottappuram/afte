@@ -116,8 +116,17 @@ class BreakoutAlertsTest extends TestCase
         $this->assertStringContainsString('⚠️ unproven', $this->telegramMessages()[0]['text']);
     }
 
-    public function test_by_default_unproven_setups_within_two_and_a_half_percent_are_announced_and_tagged(): void
+    public function test_by_default_unproven_setups_are_not_announced(): void
     {
+        $levels = ['entry' => 99.85, 'sl' => 98.5, 'tp1' => 101.9, 'tp2' => 103.9, 'tp3' => 105.9];
+        $near = ['proven_subset' => false] + $this->watch('ZROUSDT', 'LONG', 100.0, 97.9) + ['levels' => $levels];
+
+        $this->assertFalse(app(SignalAlerts::class)->breakoutWatchAlert(['ZROUSDT:LONG' => $near]));
+    }
+
+    public function test_with_proven_only_off_unproven_setups_within_two_and_a_half_percent_are_announced_and_tagged(): void
+    {
+        config(['trading.strategy.setup_alerts.proven_only' => false, 'trading.strategy.setup_alerts.max_distance_pct' => 2.5, 'trading.strategy.early_breakout.trade_all_breakouts' => true]);
         $levels = ['entry' => 99.85, 'sl' => 98.5, 'tp1' => 101.9, 'tp2' => 103.9, 'tp3' => 105.9];
         $near = ['proven_subset' => false] + $this->watch('ZROUSDT', 'LONG', 100.0, 97.9) + ['levels' => $levels];
 

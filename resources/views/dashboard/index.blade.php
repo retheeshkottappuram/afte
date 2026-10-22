@@ -133,6 +133,20 @@
                             </div>
                         @endif
 
+                        {{-- Per-bot switches: new entries only; open trades keep their stops and exits. --}}
+                        @php($botSwitches = \App\Services\Trading\BotSwitches::all())
+                        @php($canSwitchBots = (bool) (Auth::user()?->isAdmin() || Auth::user()?->hasPermission('manage_trading')))
+                        <div class="flex items-center gap-1 flex-shrink-0" title="Turn each auto-trading bot on or off. Open trades keep their stops and exits.">
+                            @foreach (['swing' => 'Swing', 'breakout' => 'Breakout', 'lab' => 'Lab SOL/NEAR'] as $bot => $botLabel)
+                                <button type="button" id="bot-switch-{{ $bot }}" data-bot="{{ $bot }}" data-label="{{ $botLabel }}" data-on="{{ $botSwitches[$bot] ? '1' : '0' }}"
+                                    @if ($canSwitchBots) onclick="toggleBot('{{ $bot }}')" @else disabled @endif
+                                    class="bot-switch px-2 py-1.5 text-[11px] font-mono font-bold rounded-lg border transition flex items-center gap-1 {{ $botSwitches[$bot] ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700' }}">
+                                    <span class="w-1.5 h-1.5 rounded-full {{ $botSwitches[$bot] ? 'bg-emerald-400' : 'bg-slate-500' }}"></span>
+                                    <span>{{ $botLabel }} {{ $botSwitches[$bot] ? 'ON' : 'OFF' }}</span>
+                                </button>
+                            @endforeach
+                        </div>
+
                         <button onclick="toggleKillSwitch()" id="btn-kill-switch" class="px-2.5 sm:px-3 py-1.5 text-xs font-mono font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 rounded-lg transition flex items-center space-x-1.5 flex-shrink-0">
                             <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
                             <span id="kill-switch-text">KILL SWITCH</span>
@@ -802,6 +816,7 @@
 
         function updateStatsUI(stats) {
             if (!stats) return;
+            renderBotSwitches(stats.bot_switches);
 
             const statEquity = document.getElementById('stat-equity');
             const statBal = document.getElementById('stat-balance');
@@ -2030,6 +2045,38 @@
                 }
             } catch (err) {
                 console.error("Auto-trading toggle error:", err);
+            }
+        }
+
+        function renderBotSwitches(switches) {
+            if (!switches) return;
+            document.querySelectorAll('.bot-switch').forEach(btn => {
+                const on = !!switches[btn.dataset.bot];
+                btn.dataset.on = on ? '1' : '0';
+                btn.className = 'bot-switch px-2 py-1.5 text-[11px] font-mono font-bold rounded-lg border transition flex items-center gap-1 '
+                    + (on ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700');
+                btn.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${on ? 'bg-emerald-400' : 'bg-slate-500'}"></span><span>${btn.dataset.label} ${on ? 'ON' : 'OFF'}</span>`;
+            });
+        }
+
+        async function toggleBot(bot) {
+            const btn = document.getElementById('bot-switch-' + bot);
+            if (!btn) return;
+            const enable = btn.dataset.on !== '1';
+            try {
+                const res = await fetch('/api/bot-switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                    body: JSON.stringify({ bot, enabled: enable })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    renderBotSwitches(data.bot_switches);
+                } else {
+                    alert(data.message || 'Could not change the bot switch.');
+                }
+            } catch (err) {
+                console.error('Bot switch error:', err);
             }
         }
 

@@ -259,9 +259,10 @@ return [
         // + stop <= 4% + entry <= 1.5% away: ~1/day, PF 1.03 / 2.91, the only subset not losing in either period.
         // User's decision (2026-10-20): send every leaning setup within 2.5% (tagged proven / unproven) and let the
         // bot trade them all, knowing the full list lost in that audit. true / 1.5 = the measured subset only.
+        // 2026-10-22: user reported wrong-way / late breakouts; back to the measured subset (env restores the old).
         'setup_alerts' => [
-            'max_distance_pct' => (float) env('STRATEGY_SETUP_ALERT_MAX_DISTANCE_PCT', 2.5),
-            'proven_only' => (bool) env('STRATEGY_SETUP_ALERT_PROVEN_ONLY', false), // top-10 + 4h trend + box lean
+            'max_distance_pct' => (float) env('STRATEGY_SETUP_ALERT_MAX_DISTANCE_PCT', 1.5),
+            'proven_only' => (bool) env('STRATEGY_SETUP_ALERT_PROVEN_ONLY', true), // top-10 + 4h trend + box lean
         ],
         // Swing BUY/SELL Telegram alerts (SuperTrend 10,3 flip on 1.5x volume), never auto-traded (user's decision
         // 2026-10-13). 12-month test: 43.9% won, about breakeven (PF 0.98). The message states this.
@@ -288,7 +289,10 @@ return [
             // $5 -> $6.27-$6.87, max DD 5-7%. false = alert every breakout, trade only that subset.
             // User's decision (2026-10-12): trade only the profitable subset; the others are alerted, not traded.
             // User's decision (2026-10-20): trade them all again.
-            'trade_all_breakouts' => (bool) env('STRATEGY_EARLY_TRADE_ALL', true),
+            // 2026-10-22: user reported most breakouts going the wrong way; back to the profitable subset only.
+            // (A 1-minute "ignition" detector was tested the same day as a replacement: 30 coins, 90 days, no
+            // setting made money even before fees -- best unseen -0.13R, PF 0.64. Not shipped.)
+            'trade_all_breakouts' => (bool) env('STRATEGY_EARLY_TRADE_ALL', false),
             // Minute watcher confirmation: volume so far on pace for this x the 20-bar average, judged on at
             // least this share of the candle. Skip the entry when price is already this many R past the trigger.
             'volume_pace' => (float) env('STRATEGY_EARLY_VOLUME_PACE', 1.5),

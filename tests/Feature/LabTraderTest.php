@@ -4,7 +4,10 @@ namespace Tests\Feature;
 
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Models\User;
 use App\Services\Crypto\BinanceClient;
+use App\Services\Strategy\BreakoutWatcher;
+use App\Services\Trading\BotSwitches;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\LabTrader;
 use App\Services\Trading\RiskManager;
@@ -141,6 +144,39 @@ class LabTraderTest extends TestCase
         $this->assertSame('skipped', $row['action']);
         $this->assertSame(0, Trade::count());
         $this->assertSame(['SOLUSDT', 'NEARUSDT', 'XRPUSDT'], SwingSarTrader::symbols());
+    }
+
+    public function test_switched_off_the_lab_opens_nothing_but_keeps_the_coin_of_an_open_trade(): void
+    {
+        BotSwitches::set('lab', false);
+        $this->candles['SOLUSDT'] = $this->series(fn (int $i): float => 100 + $i * 0.3 + sin($i) * 0.5);
+
+        $this->lab()->run('paper', true);
+
+        $this->assertSame(0, Trade::count());
+        $this->assertSame(['SOLUSDT', 'NEARUSDT', 'XRPUSDT'], SwingSarTrader::symbols(), 'Off: Swing SAR gets the coins back');
+
+        BotSwitches::set('lab', true);
+        Cache::flush();
+        $this->lab()->run('paper', true);
+        BotSwitches::set('lab', false);
+        $this->assertTrue(LabTrader::hasOpenTrades());
+        $this->assertSame(['NEARUSDT', 'XRPUSDT'], SwingSarTrader::symbols(), 'The open lab trade keeps its coin until it closes');
+    }
+
+    public function test_the_dashboard_switches_need_trading_permission(): void
+    {
+        $this->actingAs(User::factory()->create(['role' => 'user']))
+            ->postJson(route('api.bot_switch'), ['bot' => 'lab', 'enabled' => false])->assertForbidden();
+        $this->assertTrue(BotSwitches::on('lab'));
+
+        $this->actingAs(User::factory()->create(['role' => 'admin']))
+            ->postJson(route('api.bot_switch'), ['bot' => 'breakout', 'enabled' => false])
+            ->assertOk()->assertJsonPath('bot_switches.breakout', false)->assertJsonPath('bot_switches.lab', true);
+        $this->assertFalse(BreakoutWatcher::tradingEnabled());
+
+        $this->actingAs(User::factory()->create(['role' => 'admin']))
+            ->postJson(route('api.bot_switch'), ['bot' => 'nope', 'enabled' => true])->assertStatus(422);
     }
 
     public function test_lab_trades_use_the_swing_slots_not_the_breakout_bots(): void

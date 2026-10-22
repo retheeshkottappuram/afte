@@ -53,9 +53,16 @@ class SwingSarTrader
         protected TelegramGateway $telegram
     ) {}
 
+    /** New swing entries on (dashboard switch, default SWING_SAR_ENABLED). */
     public static function enabled(): bool
     {
-        return (bool) config('trading.swing_sar.enabled', false);
+        return BotSwitches::on('swing');
+    }
+
+    /** Open Swing SAR trades still need their flip exits when the switch is off. */
+    public static function hasOpenTrades(): bool
+    {
+        return Trade::where('status', 'OPEN')->where('setup_tag', self::SETUP)->exists();
     }
 
     /**
@@ -195,7 +202,8 @@ class SwingSarTrader
         $skip = $this->entryBlock($symbol, $flip, $entriesAllowed, $nowMs);
         if ($skip !== null) {
             // "?" flips are skipped silently (on 15m there are many); a close is always reported.
-            if ($closedNote === null && ! $flip['confirmed'] && config('trading.swing_sar.confirmed_only', true)) {
+            // Switched off on the dashboard: no "not traded" message for every flip either.
+            if ($closedNote === null && (! self::enabled() || (! $flip['confirmed'] && config('trading.swing_sar.confirmed_only', true)))) {
                 return ['action' => 'skipped', 'message' => 'New entry skipped: '.$skip];
             }
             $this->telegram->send($closedNote !== null
@@ -276,7 +284,7 @@ class SwingSarTrader
     public function entryBlock(string $symbol, array $flip, bool $entriesAllowed, int $nowMs): ?string
     {
         if (! $entriesAllowed) {
-            return 'auto-trading is stopped or paused';
+            return self::enabled() ? 'auto-trading is stopped or paused' : 'swing bot switched off';
         }
         if (config('trading.swing_sar.confirmed_only', true) && ! $flip['confirmed'] && ! config('trading.swing_sar.unconfirmed_entries', false)) {
             return sprintf('unconfirmed flip (volume %.1fx, stop %.2f%%; needs >= 1.5x and <= 4%%)', $flip['volume_ratio'], $flip['sl_pct']);

@@ -8,12 +8,14 @@ use App\Models\User;
 use App\Services\Crypto\BinanceClient;
 use App\Services\Strategy\StrategyEngine;
 use App\Services\Strategy\Watchlist;
+use App\Services\Trading\BotSwitches;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\RiskManager;
 use App\Services\Trading\SwingSarTrader;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Mockery;
 use Tests\TestCase;
@@ -381,6 +383,29 @@ class SwingSarTraderTest extends TestCase
         $this->runSar(entriesAllowed: false);
 
         $this->assertSame('CLOSED', $long->fresh()->status);
+        $this->assertSame(0, Trade::where('status', 'OPEN')->count());
+    }
+
+    public function test_switched_off_no_new_trade_and_no_skip_message_but_an_open_trade_still_closes_on_the_flip(): void
+    {
+        BotSwitches::set('swing', false);
+        $this->assertFalse(SwingSarTrader::enabled());
+        $this->flips = [$this->flip('LONG')];
+
+        $row = $this->runSar(SwingSarTrader::enabled())[0];
+
+        $this->assertSame('skipped', $row['action'], $row['message']);
+        $this->assertStringContainsString('switched off', $row['message']);
+        $this->assertSame(0, Trade::count());
+        $this->assertCount(0, Http::recorded(), 'No Telegram message for every flip while the bot is off');
+
+        $long = $this->sarTrade('LONG');
+        $this->assertTrue(SwingSarTrader::hasOpenTrades());
+        $this->flips = [$this->flip('SHORT', sl: 5.15)];
+        Cache::flush();
+        $this->runSar(SwingSarTrader::enabled());
+
+        $this->assertSame('OPPOSITE_SIGNAL', $long->fresh()->exit_reason);
         $this->assertSame(0, Trade::where('status', 'OPEN')->count());
     }
 

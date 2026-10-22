@@ -11,6 +11,7 @@ use App\Services\Strategy\BreakoutWatcher;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
+use App\Services\Trading\BotSwitches;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\LabTrader;
@@ -140,9 +141,9 @@ class TradingDaemonCommand extends Command
                 // 3a. Swing SAR: once per closed candle (30s after the close, like the scan). Closes always run;
                 //     new entries follow the same pause / stop / breaker state as the main bot.
                 $sarSeconds = SwingSarTrader::intervalSeconds();
-                if (SwingSarTrader::enabled() && time() % $sarSeconds >= 30 && Cache::add('engine:swing-sar:'.$sarSeconds.':'.intdiv(time(), $sarSeconds), true, 2 * $sarSeconds)) {
+                if ((SwingSarTrader::enabled() || SwingSarTrader::hasOpenTrades()) && time() % $sarSeconds >= 30 && Cache::add('engine:swing-sar:'.$sarSeconds.':'.intdiv(time(), $sarSeconds), true, 2 * $sarSeconds)) {
                     try {
-                        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
+                        $entriesAllowed = SwingSarTrader::enabled() && $pausedReason === null && $account->fresh()->canTrade();
                         foreach ($sar->run($mode, $entriesAllowed) as $row) {
                             if ($row['action'] !== 'none') {
                                 $this->log("[{$mode}] SWING SAR {$row['symbol']} {$row['action']}: {$row['message']}");
@@ -158,7 +159,7 @@ class TradingDaemonCommand extends Command
                 }
 
                 // 3a'. Lab trial (SOL momentum / NEAR squeeze): once per closed 4h candle, 30s after the close.
-                if (LabTrader::enabled() && time() % 14400 >= 30 && Cache::add('engine:lab:'.intdiv(time(), 14400), true, 28800)) {
+                if ((LabTrader::enabled() || LabTrader::hasOpenTrades()) && time() % 14400 >= 30 && Cache::add('engine:lab:'.intdiv(time(), 14400), true, 28800)) {
                     try {
                         $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
                         foreach ($lab->run($mode, $entriesAllowed) as $row) {
@@ -191,7 +192,7 @@ class TradingDaemonCommand extends Command
                                     $this->log("OPENED {$signal->symbol} {$signal->side} Early Breakout");
                                 }
                             } else {
-                                $status = 'Alert only: not auto-traded (early entries lost in the realistic replay test)';
+                                $status = BotSwitches::on('breakout') ? 'Alert only: not auto-traded (early entries lost in the realistic replay test)' : 'Alert only: breakout bot switched off';
                             }
 
                             $this->log(sprintf('[%s] BREAKOUT %s %s at %s (level %s, volume %.1fx pace)%s', strtoupper($mode), $signal->symbol, $signal->side, $signal->entry, $breakout['level'], $breakout['volume_pace'], $status ? ' · '.preg_replace('/^\[\w+\] /', '', $status) : ''));
@@ -258,9 +259,9 @@ class TradingDaemonCommand extends Command
             return;
         }
 
-        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
+        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade() && BotSwitches::on('breakout');
         if (! $entriesAllowed) {
-            $this->log("[{$mode}] New entries blocked: ".($pausedReason ?? $this->accountBlockReason($account->fresh())));
+            $this->log("[{$mode}] New entries blocked: ".(! BotSwitches::on('breakout') ? 'Breakout bot switched off' : ($pausedReason ?? $this->accountBlockReason($account->fresh()))));
         }
 
         $decisions = $trader->processFreshSignals($fresh, $mode, $entriesAllowed);

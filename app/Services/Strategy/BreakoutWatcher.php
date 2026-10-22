@@ -5,6 +5,7 @@ namespace App\Services\Strategy;
 use App\Models\CryptoSignal;
 use App\Models\Setting;
 use App\Services\Crypto\BinanceClient;
+use App\Services\Trading\BotSwitches;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -41,7 +42,7 @@ class BreakoutWatcher
 
     public static function tradingEnabled(): bool
     {
-        return (bool) config('trading.strategy.intrabar_breakouts', true);
+        return (bool) config('trading.strategy.intrabar_breakouts', true) && BotSwitches::on('breakout');
     }
 
     /**
