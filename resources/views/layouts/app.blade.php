@@ -58,6 +58,7 @@
         .animate-pulse-slow { animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
     </style>
     @stack('styles')
+    @include('partials.notify')
 </head>
 <body class="bg-cyber-900 text-slate-200 min-h-screen antialiased flex flex-col overflow-x-hidden">
     <div class="flex-1 flex min-h-screen w-full max-w-full overflow-x-hidden">

@@ -20,8 +20,6 @@
         <a href="{{ route('signals.dashboard') }}" class="self-start sm:self-auto px-4 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 transition">📈 Signals &amp; Charts</a>
     </div>
 
-    <div id="toastNotification" class="hidden mb-4 p-3 rounded-xl text-xs font-semibold flex items-center justify-between transition-all"></div>
-
     <!-- On-Demand Whole-Market Scanner (queued, runs via cron: crypto:scan --manual) -->
     <div class="p-4 sm:p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/40 border border-slate-800 hover:border-indigo-500/30 shadow-2xl mb-6 sm:mb-8 relative overflow-hidden transition">
         <div class="absolute -right-16 -top-16 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none"></div>
@@ -189,25 +187,7 @@
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
     function showToast(message, isSuccess = true) {
-        const toast = document.getElementById('toastNotification');
-        if (!toast) return;
-
-        toast.className = isSuccess
-            ? 'mb-4 p-3 rounded-xl text-xs font-semibold flex items-center justify-between transition-all bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
-            : 'mb-4 p-3 rounded-xl text-xs font-semibold flex items-center justify-between transition-all bg-rose-500/20 border border-rose-500/40 text-rose-300';
-
-        toast.innerHTML = `
-            <div class="flex items-center space-x-2">
-                <span>${isSuccess ? '✅' : '⚠️'}</span>
-                <span>${message}</span>
-            </div>
-            <button type="button" onclick="this.parentElement.classList.add('hidden')" class="text-slate-400 hover:text-white text-sm font-bold ml-4">&times;</button>
-        `;
-        toast.classList.remove('hidden');
-
-        setTimeout(() => {
-            if (toast) toast.classList.add('hidden');
-        }, 6000);
+        Notify.toast(message, isSuccess ? 'success' : 'error');
     }
 
     function copyToClipboard(text, successMsg = 'Copied to clipboard!') {
@@ -673,7 +653,7 @@
 
     async function executeManualScanTrade(symbol, direction, btnEl) {
         const mode = scanAccount ? String(scanAccount.mode).toUpperCase() : 'ACTIVE';
-        const confirmed = confirm(`Place ${direction} ${symbol} in ${mode} mode?\nRisk is capped at ${scanAccount ? scanAccount.risk_pct : 2}% of the balance and the stop-loss is placed with the order.${mode === 'LIVE' ? '\n\nLIVE: this is a REAL order with REAL money.' : ''}`);
+        const confirmed = await Notify.confirm({ title: `Place ${direction} ${symbol}?`, message: `${mode} mode. Risk is capped at ${scanAccount ? scanAccount.risk_pct : 2}% of the balance and the stop-loss is placed with the order.${mode === 'LIVE' ? '\n\nLIVE: this is a REAL order with REAL money.' : ''}`, okText: `Place ${direction}`, danger: mode === 'LIVE' });
         if (!confirmed) return;
 
         const originalHtml = btnEl ? btnEl.innerHTML : null;

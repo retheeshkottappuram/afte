@@ -231,7 +231,6 @@
         </div>
 
         <!-- Notification Toast Container -->
-        <div id="toastNotification" class="hidden mb-4 p-3 rounded-xl text-xs font-semibold flex items-center justify-between transition-all"></div>
 
         <!-- SignalAlgo PRO Live Perpetual Setup & Trade Options HUD -->
         <div class="mb-5 p-4 rounded-xl bg-slate-950/90 border border-slate-800/90 shadow-inner">
@@ -691,25 +690,7 @@
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
     function showToast(message, isSuccess = true) {
-        const toast = document.getElementById('toastNotification');
-        if (!toast) return;
-
-        toast.className = isSuccess
-            ? 'mb-4 p-3 rounded-xl text-xs font-semibold flex items-center justify-between transition-all bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
-            : 'mb-4 p-3 rounded-xl text-xs font-semibold flex items-center justify-between transition-all bg-rose-500/20 border border-rose-500/40 text-rose-300';
-
-        toast.innerHTML = `
-            <div class="flex items-center space-x-2">
-                <span>${isSuccess ? '✅' : '⚠️'}</span>
-                <span>${message}</span>
-            </div>
-            <button type="button" onclick="this.parentElement.classList.add('hidden')" class="text-slate-400 hover:text-white text-sm font-bold ml-4">&times;</button>
-        `;
-        toast.classList.remove('hidden');
-
-        setTimeout(() => {
-            if (toast) toast.classList.add('hidden');
-        }, 6000);
+        Notify.toast(message, isSuccess ? 'success' : 'error');
     }
 
     function showChartLoading(coin, tf) {
@@ -1753,9 +1734,9 @@
     // ==========================================
     // 24/7 Sentinel Background Watcher Functions
     // ==========================================
-    function resumeAutoTrading() {
+    async function resumeAutoTrading() {
         const bar = document.getElementById('tradingPauseBar');
-        if (!confirm('Reset the pause and let the bot open new trades again now?')) return;
+        if (!(await Notify.confirm({ title: 'Resume auto-trading?', message: 'Reset the pause and let the bot open new trades again now.', okText: 'Resume' }))) return;
         fetch('{{ route('api.resume_cooldown', [], false) }}', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' },
@@ -2002,8 +1983,8 @@
         input.value = '';
     }
 
-    function removeCoinFromChart(symbol) {
-        if (!confirm(`Remove ${symbol} from the monitored coins? Alerts and new swing trades on it stop (an open trade is still managed).`)) {
+    async function removeCoinFromChart(symbol) {
+        if (!(await Notify.confirm({ title: `Remove ${symbol}?`, message: 'Alerts and new swing trades on it stop. An open trade is still managed.', okText: 'Remove', danger: true }))) {
             return;
         }
         removeMonitoredCoin(symbol);
@@ -2112,8 +2093,8 @@
         });
     }
 
-    function resetMonitoredCoins() {
-        if (!confirm('Reset monitored coins back to the default 10 institutional core pairs (BTC, ETH, SOL, BNB, XRP, DOGE, NEAR, AVAX, SUI, PEPE)?')) {
+    async function resetMonitoredCoins() {
+        if (!(await Notify.confirm({ title: 'Reset monitored coins?', message: 'Back to the default 10 core pairs: BTC, ETH, SOL, BNB, XRP, DOGE, NEAR, AVAX, SUI, PEPE.', okText: 'Reset', danger: true }))) {
             return;
         }
 

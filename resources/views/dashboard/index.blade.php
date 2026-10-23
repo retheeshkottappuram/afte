@@ -51,6 +51,7 @@
             border: 1px solid #233358;
         }
     </style>
+    @include('partials.notify')
 </head>
 <body class="bg-cyber-900 text-slate-200 min-h-screen overflow-x-hidden">
     @include('layouts.sidebar')
@@ -697,7 +698,7 @@
          */
         async function switchMode(mode) {
             if (canManageTrading && mode !== engineMode) {
-                if (mode === 'live' && !confirm('Switch the trading ENGINE to LIVE?\n\nNew trades will be REAL Binance orders with REAL money. Open paper trades keep being managed until they close.')) {
+                if (mode === 'live' && !(await Notify.confirm({ title: 'Switch the engine to LIVE?', message: 'New trades will be REAL Binance orders with REAL money. Open paper trades keep being managed until they close.', okText: 'Go LIVE', danger: true }))) {
                     return;
                 }
                 try {
@@ -708,12 +709,13 @@
                     });
                     const json = await res.json();
                     if (!res.ok || !json.success) {
-                        alert('Mode not changed: ' + (json.message || 'request failed'));
+                        Notify.error('Mode not changed: ' + (json.message || 'request failed'));
                         return;
                     }
                     engineMode = mode;
+                    Notify.success(`Engine switched to ${mode.toUpperCase()}.`);
                 } catch (err) {
-                    alert('Mode not changed: ' + err.message);
+                    Notify.error('Mode not changed: ' + err.message);
                     return;
                 }
             }
@@ -762,6 +764,9 @@
 
         let liveSyncAbort = null;
         let isSyncing = false;
+        let syncStartedAt = 0;
+        let botSwitchChangedAt = 0;
+        let botSwitchBusy = false;
         let isManualScanning = false;
         let activePositionsData = [];
 
@@ -772,6 +777,7 @@
                 liveSyncAbort = null;
             }
             isSyncing = true;
+            syncStartedAt = Date.now();
 
             try {
                 liveSyncAbort = new AbortController();
@@ -816,7 +822,8 @@
 
         function updateStatsUI(stats) {
             if (!stats) return;
-            renderBotSwitches(stats.bot_switches);
+            // A refresh that started before the last switch change carries the old state: skip it.
+            if (syncStartedAt > botSwitchChangedAt) renderBotSwitches(stats.bot_switches);
 
             const statEquity = document.getElementById('stat-equity');
             const statBal = document.getElementById('stat-balance');
@@ -1277,18 +1284,7 @@
         }
 
         function showToast(message, ok = true) {
-            let box = document.getElementById('afte-toasts');
-            if (!box) {
-                box = document.createElement('div');
-                box.id = 'afte-toasts';
-                box.className = 'fixed bottom-4 right-4 left-4 sm:left-auto z-[60] flex flex-col gap-2 items-end pointer-events-none';
-                document.body.appendChild(box);
-            }
-            const el = document.createElement('div');
-            el.className = `pointer-events-auto max-w-sm w-full sm:w-auto px-3.5 py-2.5 rounded-lg text-xs font-mono shadow-xl border ${ok ? 'bg-emerald-950/95 border-emerald-500/50 text-emerald-200' : 'bg-rose-950/95 border-rose-500/50 text-rose-200'}`;
-            el.textContent = message;
-            box.appendChild(el);
-            setTimeout(() => el.remove(), 7000);
+            Notify.toast(message, ok ? 'success' : 'error');
         }
 
         /** Recompute live numbers from the mark price (PnL, ROE on initial margin, liquidation distance). */
@@ -1896,8 +1892,9 @@
         }
 
         async function executeRadarTrade(symbol, direction, btnEl = null) {
-            const warning = engineMode === 'live' ? '\n\nLIVE MODE: this places a REAL order with REAL money.' : '';
-            if (!confirm(`Place ${direction} ${symbol} in ${engineMode.toUpperCase()} mode?\nRisk is capped at the strategy's per-trade limit and the stop-loss is placed with the order.${warning}`)) {
+            const live = engineMode === 'live';
+            const warning = live ? '\n\nLIVE MODE: this places a REAL order with REAL money.' : '';
+            if (!(await Notify.confirm({ title: `Place ${direction} ${symbol}?`, message: `${engineMode.toUpperCase()} mode. Risk is capped at the strategy's per-trade limit and the stop-loss is placed with the order.${warning}`, okText: `Place ${direction}`, danger: live }))) {
                 return;
             }
             const originalHtml = btnEl ? btnEl.innerHTML : null;
@@ -1923,14 +1920,14 @@
 
                 const data = await res.json();
                 if (data.success) {
-                    alert(`✅ ${data.message}`);
+                    Notify.success(data.message);
                     liveSync();
                 } else {
-                    alert(`❌ Trade Failed: ${data.message}`);
+                    Notify.error(data.message, { title: 'Trade failed' });
                 }
             } catch (err) {
                 console.error("Execute radar trade error:", err);
-                alert(`Execution error: ${err.message}`);
+                Notify.error(`Execution error: ${err.message}`);
             } finally {
                 if (btnEl && originalHtml) {
                     btnEl.innerHTML = originalHtml;
@@ -1942,12 +1939,18 @@
         async function editStopLoss(tradeId) {
             const pos = activePositionsData.find((p) => p.id === tradeId);
             if (!pos) { showToast('Position not loaded yet, try again.', false); return; }
-            const input = prompt(`${pos.symbol} ${pos.side}\nEntry ${pos.entry_price} | Mark ${pos.mark_price} | Current SL ${pos.current_sl}\n\nNew stop-loss price:\n(The bot keeps moving it forward with its rules. If you loosen it after a lock level was reached, the bot moves it back to that level.)`, pos.current_sl);
+            const input = await Notify.prompt({
+                title: `Edit stop loss: ${pos.symbol} ${pos.side}`,
+                message: `Entry ${pos.entry_price} | Mark ${pos.mark_price} | Current SL ${pos.current_sl}\n\nThe bot keeps moving the stop forward with its rules. If you loosen it after a lock level was reached, the bot moves it back to that level.`,
+                value: pos.current_sl,
+                inputType: 'number',
+                okText: 'Next',
+            });
             if (input === null) return;
             const sl = parseFloat(String(input).replace(',', '.'));
             if (!(sl > 0)) { showToast('Enter a valid price.', false); return; }
             const atStop = (sl - Number(pos.entry_price)) * Number(pos.quantity) * (pos.side === 'LONG' ? 1 : -1);
-            if (!confirm(`Set ${pos.symbol} stop to ${sl}?\nResult if hit: ${atStop >= 0 ? '+' : '-'}$${Math.abs(atStop).toFixed(2)} (before fees).`)) return;
+            if (!(await Notify.confirm({ title: `Set ${pos.symbol} stop to ${sl}?`, message: `Result if hit: ${atStop >= 0 ? '+' : '-'}$${Math.abs(atStop).toFixed(2)} (before fees).`, okText: 'Set stop', danger: atStop < 0 }))) return;
             try {
                 const res = await fetch('{{ route('api.update_stop_loss', [], false) }}', {
                     method: 'POST',
@@ -1979,7 +1982,7 @@
         }
 
         async function closePosition(tradeId) {
-            if (!confirm('Are you sure you want to market-close this position?')) return;
+            if (!(await Notify.confirm({ title: 'Close this position?', message: 'It will be closed now at the market price.', okText: 'Close position', danger: true }))) return;
             try {
                 const res = await fetch('/api/close-position', {
                     method: 'POST',
@@ -1988,17 +1991,17 @@
                 });
                 const data = await res.json();
                 if (data.message) {
-                    console.log("[Close Position]", data.message);
+                    Notify.toast(data.message, data.success === false ? 'error' : 'success');
                 }
                 liveSync();
             } catch (err) {
                 console.error("Close position error:", err);
-                alert("Error closing position. Please refresh and try again.");
+                Notify.error("Error closing position. Please refresh and try again.");
             }
         }
 
         async function closeAllPositions() {
-            if (!confirm('Are you sure you want to close ALL active open positions immediately?')) return;
+            if (!(await Notify.confirm({ title: 'Close ALL positions?', message: 'Every open position will be closed now at the market price.', okText: 'Close all', danger: true }))) return;
             try {
                 const res = await fetch('/api/close-all-positions', {
                     method: 'POST',
@@ -2006,16 +2009,16 @@
                     body: JSON.stringify({ mode: currentMode })
                 });
                 const data = await res.json();
-                alert(data.message || 'All positions closed.');
+                Notify.toast(data.message || 'All positions closed.', data.success === false ? 'error' : 'success');
                 liveSync();
             } catch (err) {
                 console.error("Close all positions error:", err);
-                alert("Error closing all positions. Please try again.");
+                Notify.error("Error closing all positions. Please try again.");
             }
         }
 
         async function toggleKillSwitch() {
-            if (!confirm('EMERGENCY: Toggle Kill Switch? When activated, ALL active trades are liquidated immediately and the bot halts.')) return;
+            if (!(await Notify.confirm({ title: 'EMERGENCY: toggle the kill switch?', message: 'When activated, ALL active trades are liquidated immediately and the bot halts.', okText: 'Toggle kill switch', danger: true }))) return;
             try {
                 const res = await fetch('/api/kill-switch', {
                     method: 'POST',
@@ -2023,10 +2026,11 @@
                     body: JSON.stringify({ mode: currentMode })
                 });
                 const data = await res.json();
-                alert(data.message);
+                Notify.warning(data.message, { title: 'Kill switch' });
                 liveSync();
             } catch (err) {
                 console.error("Kill switch error:", err);
+                Notify.error('Kill switch request failed. Please try again.');
             }
         }
 
@@ -2041,7 +2045,7 @@
                 if (data.success) {
                     liveSync();
                 } else {
-                    alert(data.message || 'Error updating auto-trading state.');
+                    Notify.error(data.message || 'Error updating auto-trading state.');
                 }
             } catch (err) {
                 console.error("Auto-trading toggle error:", err);
@@ -2061,22 +2065,44 @@
 
         async function toggleBot(bot) {
             const btn = document.getElementById('bot-switch-' + bot);
-            if (!btn) return;
+            if (!btn || botSwitchBusy) return;
             const enable = btn.dataset.on !== '1';
+            const label = btn.dataset.label;
+            const confirmed = await Notify.confirm(enable
+                ? { title: `Turn ON the ${label} bot?`, message: 'It will start opening new trades automatically.', okText: 'Turn ON' }
+                : { title: `Turn OFF the ${label} bot?`, message: 'It will stop opening new trades. Trades already open keep their stop loss and exits.', okText: 'Turn OFF', danger: true });
+            if (!confirmed) return;
+
+            botSwitchBusy = true;
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+            botSwitchChangedAt = Date.now();
             try {
                 const res = await fetch('/api/bot-switch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
                     body: JSON.stringify({ bot, enabled: enable })
                 });
-                const data = await res.json();
-                if (data.success) {
+                const data = await res.json().catch(() => ({}));
+                botSwitchChangedAt = Date.now();
+                if (res.ok && data.success) {
                     renderBotSwitches(data.bot_switches);
+                    const now = data.bot_switches[bot];
+                    Notify.toast(`${label} bot is now ${now ? 'ON' : 'OFF'}.`, now ? 'success' : 'warning');
+                } else if (res.status === 419) {
+                    Notify.error('Session expired. Reload the page (Ctrl+F5) and try again.');
+                } else if (res.status === 403) {
+                    Notify.error('You do not have permission to change the bots.');
                 } else {
-                    alert(data.message || 'Could not change the bot switch.');
+                    Notify.error(data.message || `Could not change the ${label} bot (error ${res.status}).`);
                 }
             } catch (err) {
                 console.error('Bot switch error:', err);
+                Notify.error('Network error: the bot switch was not changed.');
+            } finally {
+                botSwitchBusy = false;
+                btn.disabled = false;
+                btn.style.opacity = '';
             }
         }
 
@@ -2183,11 +2209,11 @@
                 if (data.success) {
                     liveSync();
                 } else {
-                    alert(data.message || 'Error resetting cooldown.');
+                    Notify.error(data.message || 'Error resetting cooldown.');
                 }
             } catch (err) {
                 console.error("Resume cooldown error:", err);
-                alert(`Error: ${err.message}`);
+                Notify.error(`Error: ${err.message}`);
             } finally {
                 if (btn && originalHtml) {
                     btn.innerHTML = originalHtml;
