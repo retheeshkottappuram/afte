@@ -35,14 +35,15 @@ class BreakoutWatcher
         return self::alertsEnabled() || self::tradingEnabled();
     }
 
+    /** Legacy engine only: with STRATEGY_BREAKOUT_ENGINE=ebd (default) EBD v1 replaces this watcher. */
     public static function alertsEnabled(): bool
     {
-        return (bool) config('trading.strategy.breakout_alerts', true);
+        return StrategyEngine::legacyBreakoutsConfigured() && (bool) config('trading.strategy.breakout_alerts', true);
     }
 
     public static function tradingEnabled(): bool
     {
-        return (bool) config('trading.strategy.intrabar_breakouts', true) && BotSwitches::on('breakout');
+        return StrategyEngine::legacyBreakoutsConfigured() && (bool) config('trading.strategy.intrabar_breakouts', true) && BotSwitches::on('breakout');
     }
 
     /**

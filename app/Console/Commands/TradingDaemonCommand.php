@@ -2,10 +2,13 @@
 
 namespace App\Console\Commands;
 
+use App\Models\BreakoutSetup;
 use App\Models\CryptoSignal;
 use App\Models\EquitySnapshot;
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\Breakout\BreakoutStrategyService;
+use App\Services\Breakout\SignalLifecycleService;
 use App\Services\Notifications\SignalAlerts;
 use App\Services\Strategy\BreakoutWatcher;
 use App\Services\Strategy\MarketScanService;
@@ -222,7 +225,7 @@ class TradingDaemonCommand extends Command
                     'paused_reason' => $pausedReason ?? (! $account->is_running ? 'Auto-trading is stopped (open trades are still managed).' : null),
                     'open_trades' => Trade::where('status', 'OPEN')->count(),
                     'cycle_ms' => (int) round((microtime(true) - $passStarted) * 1000),
-                    'watching' => BreakoutWatcher::enabled() ? $watcher->watchingCoins() : 0,
+                    'watching' => BreakoutWatcher::enabled() ? $watcher->watchingCoins() : (BreakoutStrategyService::enabled() ? BreakoutSetup::query()->where('state', SignalLifecycleService::COMPRESSION)->count() : 0),
                     'next_scan_at' => $this->nextScanAt(MarketScanService::scanIntervals()),
                 ] + $stats);
 

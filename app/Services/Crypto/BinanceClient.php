@@ -47,6 +47,50 @@ class BinanceClient
         return $this->market === 'spot' ? 'Binance Spot' : 'Binance USDⓈ-M Futures';
     }
 
+    public const BACKOFF_KEY = 'binance:backoff_until';
+
+    public const WEIGHT_KEY = 'binance:used_weight_1m';
+
+    /** Seconds left of a Binance 418/429 back-off (0 = free to call). */
+    public static function backoffSeconds(): int
+    {
+        return max(0, (int) Cache::get(self::BACKOFF_KEY, 0) - time());
+    }
+
+    /** Last X-MBX-USED-WEIGHT-1M seen this minute (0 when unknown). */
+    public static function usedWeight(): int
+    {
+        $row = Cache::get(self::WEIGHT_KEY);
+
+        return is_array($row) && ($row['minute'] ?? null) === intdiv(time(), 60) ? (int) $row['weight'] : 0;
+    }
+
+    /**
+     * Record the request weight and honour Binance rate limits: a 429 (too many requests) or 418
+     * (IP banned) stops further public calls until Retry-After has passed, instead of extending the ban.
+     */
+    protected function noteResponse(Response $response): void
+    {
+        $weight = $response->header('X-MBX-USED-WEIGHT-1M');
+        if ($weight !== '' && is_numeric($weight)) {
+            Cache::put(self::WEIGHT_KEY, ['minute' => intdiv(time(), 60), 'weight' => (int) $weight], 120);
+        }
+
+        if (in_array($response->status(), [418, 429], true)) {
+            $retry = (int) $response->header('Retry-After');
+            $retry = $retry > 0 ? $retry : ($response->status() === 418 ? 300 : 60);
+            Cache::put(self::BACKOFF_KEY, time() + $retry, $retry + 5);
+            Log::warning("BinanceClient: HTTP {$response->status()} rate limit, backing off {$retry}s");
+        }
+    }
+
+    protected function assertNotBackedOff(): void
+    {
+        if (($wait = self::backoffSeconds()) > 0) {
+            throw new RuntimeException("Binance rate-limit back-off active ({$wait}s left)");
+        }
+    }
+
     /**
      * Fetch OHLCV klines from Binance public REST API (Futures or Spot).
      *
@@ -85,6 +129,10 @@ class BinanceClient
         $closes = [];
         $volumes = [];
         $closeTimes = [];
+        $openTimes = [];
+        $quoteVolumes = [];
+        $trades = [];
+        $takerBuyQuote = [];
 
         foreach ($rawKlines as $kline) {
             $opens[] = (float) $kline[1];
@@ -93,16 +141,30 @@ class BinanceClient
             $closes[] = (float) $kline[4];
             $volumes[] = (float) $kline[5];
             $closeTimes[] = (int) $kline[6];
+            $openTimes[] = (int) $kline[0];
+            $quoteVolumes[] = isset($kline[7]) ? (float) $kline[7] : null;
+            $trades[] = isset($kline[8]) ? (int) $kline[8] : null;
+            $takerBuyQuote[] = isset($kline[10]) ? (float) $kline[10] : null;
         }
 
-        return [
+        $parsed = [
             'opens' => $opens,
             'highs' => $highs,
             'lows' => $lows,
             'closes' => $closes,
             'volumes' => $volumes,
             'closeTimes' => $closeTimes,
+            'openTimes' => $openTimes,
         ];
+
+        // Extra Binance fields (USDT quote volume, trade count, taker-buy quote volume) when every row has them.
+        if (! in_array(null, $quoteVolumes, true)) {
+            $parsed['quoteVolumes'] = $quoteVolumes;
+            $parsed['trades'] = $trades;
+            $parsed['takerBuyQuote'] = $takerBuyQuote;
+        }
+
+        return $parsed;
     }
 
     /**
@@ -130,6 +192,7 @@ class BinanceClient
 
         return Cache::remember($cacheKey, 15, function () use ($symbol, $interval, $limit): array {
             $url = "{$this->baseUrl}{$this->endpoint}";
+            $this->assertNotBackedOff();
 
             $response = Http::timeout(10)
                 ->acceptJson()
@@ -138,6 +201,7 @@ class BinanceClient
                     'interval' => $interval,
                     'limit' => $limit,
                 ]);
+            $this->noteResponse($response);
 
             if (! $response->successful()) {
                 throw new RuntimeException("Failed to fetch klines for {$symbol} ({$interval}) from {$this->getMarketLabel()}: HTTP {$response->status()} - {$response->body()}");
@@ -170,6 +234,7 @@ class BinanceClient
             $pageLimit = $this->market === 'spot' ? 1000 : 1500;
 
             while ($cursor < $endMs) {
+                $this->assertNotBackedOff();
                 $response = Http::timeout(15)->acceptJson()->get("{$this->baseUrl}{$this->endpoint}", [
                     'symbol' => $symbol,
                     'interval' => $interval,
@@ -177,6 +242,7 @@ class BinanceClient
                     'endTime' => $endMs,
                     'limit' => $pageLimit,
                 ]);
+                $this->noteResponse($response);
 
                 if (! $response->successful()) {
                     throw new RuntimeException("Failed to fetch historical klines for {$symbol} ({$interval}): HTTP {$response->status()}");
@@ -313,7 +379,7 @@ class BinanceClient
             }
         }
 
-        if (! empty($needFetch)) {
+        if (! empty($needFetch) && self::backoffSeconds() === 0) {
             $url = "{$this->baseUrl}{$this->endpoint}";
             $poolResponses = Http::pool(function (Pool $pool) use ($needFetch, $interval, $limit, $url): array {
                 $requests = [];
@@ -330,6 +396,9 @@ class BinanceClient
 
             foreach ($needFetch as $symbol) {
                 $resp = $poolResponses[$symbol] ?? null;
+                if ($resp instanceof Response) {
+                    $this->noteResponse($resp);
+                }
                 if ($resp instanceof Response && $resp->successful()) {
                     $parsed = $this->parseRawKlines((array) $resp->json());
                     $results[$symbol] = $parsed;
@@ -354,7 +423,11 @@ class BinanceClient
                 ? "{$this->baseUrl}/api/v3/ticker/24hr"
                 : "{$this->baseUrl}/fapi/v1/ticker/24hr";
 
+            if (self::backoffSeconds() > 0) {
+                return [];
+            }
             $response = Http::timeout(12)->acceptJson()->get($url);
+            $this->noteResponse($response);
             if (! $response->successful()) {
                 Log::warning("BinanceClient: Failed to fetch 24hr tickers: HTTP {$response->status()}");
 
@@ -408,7 +481,11 @@ class BinanceClient
                 ? "{$this->baseUrl}/api/v3/ticker/bookTicker"
                 : "{$this->baseUrl}/fapi/v1/ticker/bookTicker";
 
+            if (self::backoffSeconds() > 0) {
+                return [];
+            }
             $response = Http::timeout(10)->acceptJson()->get($url);
+            $this->noteResponse($response);
             if (! $response->successful()) {
                 Log::warning("BinanceClient: Failed to fetch book tickers: HTTP {$response->status()}");
 

@@ -106,7 +106,7 @@
             <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
                 <div>
                     <h4 class="text-sm font-black text-amber-200">🔭 Breakout watch <span id="breakoutWatchCount" class="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30">0</span></h4>
-                    <p class="text-[11px] text-slate-400 mt-0.5">Coins squeezed tight near their 20-candle high/low with every filter passing. ⚡ = trading through its trigger now. Telegram alerts both.</p>
+                    <p id="breakoutWatchHelp" class="text-[11px] text-slate-400 mt-0.5">EBD v1: coins coiled on the 5m chart (20-candle range, bandwidth in its lowest 30%), and where each breakout stands: early (unconfirmed), confirmed, retest or extended. Alerts only, never auto-traded.</p>
                 </div>
                 <div id="earlyBreakoutStatus" class="text-[11px] font-mono text-slate-400"></div>
             </div>
@@ -731,7 +731,11 @@
 
             const eb = data.early_breakout || {};
             const status = document.getElementById('earlyBreakoutStatus');
-            if (status) {
+            const ebd = eb.engine === 'ebd';
+            if (status && ebd) {
+                const last = eb.last_run ? new Date(eb.last_run).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'never';
+                status.innerHTML = `<span>EBD v1 · ${eb.alerts ? 'Telegram alerts ON' : 'shadow mode (no Telegram)'} · no auto-trade · last run ${escHtml(last)} (${eb.symbols} coins${eb.errors ? `, <span class="text-amber-300">${eb.errors} errors</span>` : ''})</span>`;
+            } else if (status) {
                 const auto = eb.auto_trade
                     ? (eb.paused
                         ? `<span class="text-rose-300">⏸ ${escHtml(eb.paused)}</span> <button type="button" onclick="resumeEarlyBreakout(this)" class="ml-1 px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold">Resume</button>`
@@ -741,12 +745,14 @@
             }
 
             if (coins.length === 0) {
-                list.innerHTML = '<div class="col-span-full text-slate-500 text-[11px]">No coin is coiled for a breakout on this candle. The list refreshes after each hourly scan.</div>';
+                list.innerHTML = `<div class="col-span-full text-slate-500 text-[11px]">${ebd ? 'No coin is coiled on the 5m chart right now. The list refreshes after every 5-minute candle.' : 'No coin is coiled for a breakout on this candle. The list refreshes after each hourly scan.'}</div>`;
                 return;
             }
             list.innerHTML = coins.map(c => {
                 const isLong = c.side === 'LONG';
-                const away = c.distance_pct === null ? '—' : (c.triggered ? '⚡ breaking out' : `${Number(c.distance_pct).toFixed(2)}% away`);
+                const away = c.state && c.state !== 'COMPRESSION_DETECTED'
+                    ? `${escHtml(c.state_label)}${c.score ? ` · ${c.score}/100` : ''}`
+                    : (c.distance_pct === null ? '—' : (c.triggered ? '⚡ breaking out' : `${Number(c.distance_pct).toFixed(2)}% away`));
                 return `
                     <button type="button" onclick="openScanChart('${c.symbol}', 0, '1h')" class="text-left rounded-lg border ${c.triggered ? 'border-amber-400 bg-amber-500/10' : 'border-slate-800 bg-slate-950/70 hover:bg-slate-900'} px-2.5 py-2 min-w-0">
                         <div class="flex items-center justify-between gap-2">

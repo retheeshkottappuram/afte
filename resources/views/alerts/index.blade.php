@@ -267,7 +267,7 @@
                                     <span class="px-2 py-0.5 rounded text-[10px] bg-cyber-700 text-slate-300 border border-cyber-border">Not sent</span>
                                     <div class="text-[10px] text-slate-500 mt-0.5 max-w-[220px] whitespace-normal">{{ $decision['reason'] }}</div>
                                 @endif
-                                <div class="text-[10px] text-slate-500 mt-0.5">{{ $a->source === 'watcher' ? 'Early breakout' : ucfirst((string) $a->source) }}</div>
+                                <div class="text-[10px] text-slate-500 mt-0.5">{{ match ($a->source) { 'watcher' => 'Early breakout', 'ebd' => 'EBD v1 breakout (alert only)', default => ucfirst((string) $a->source) } }}</div>
                             </td>
 
                             <!-- Actions -->

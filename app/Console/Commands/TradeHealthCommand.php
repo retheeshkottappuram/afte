@@ -3,9 +3,12 @@
 namespace App\Console\Commands;
 
 use App\Models\CryptoSignal;
+use App\Models\Setting;
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\Breakout\BreakoutStrategyService;
 use App\Services\Notifications\TelegramGateway;
+use App\Services\Strategy\BreakoutWatcher;
 use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\Watchlist;
 use App\Services\Trading\SwingSarTrader;
@@ -90,13 +93,28 @@ class TradeHealthCommand extends Command
             $results['scanned_at'] ?? 'never', (int) ($results['symbols_scanned'] ?? 0), (int) ($results['fresh_signals'] ?? 0),
             count((array) ($results['reversals'] ?? [])), (int) ($results['watching'] ?? 0)));
 
+        // 3b. EBD v1 breakout scanner (breakout:scan, every minute)
+        $ebd = (array) Setting::getValue(BreakoutStrategyService::LAST_RUN_KEY, []);
+        $this->newLine();
+        $this->info('Early Breakout Detection (EBD v1, alerts only)');
+        if (! BreakoutStrategyService::enabled()) {
+            $this->line('  Disabled (BREAKOUT_EBD_ENABLED / STRATEGY_BREAKOUT_ENGINE).');
+        } else {
+            $this->line(sprintf('  Last run %s · %d coins · %d evaluated · %d active setups · %d errors · mode %s',
+                $ebd['started_at'] ?? 'never', (int) ($ebd['symbols'] ?? 0), (int) ($ebd['evaluated'] ?? 0),
+                (int) ($ebd['active_setups'] ?? 0), count((array) ($ebd['errors'] ?? [])), (string) config('breakout.mode')));
+            foreach ((array) ($ebd['errors'] ?? []) as $error) {
+                $this->line('  ! '.$error);
+            }
+        }
+
         // 4. Telegram
         $health = $telegram->health();
         $this->newLine();
         $this->info('Telegram');
         $this->line('  Configured and enabled: '.($health['enabled'] ? 'yes' : 'NO'));
         $this->line('  Alerts switch (dashboard): '.(Watchlist::alertsEnabled() ? 'ON' : 'OFF'));
-        $this->line('  Swing turn alerts: '.(config('trading.strategy.topbottom_alerts', true) ? 'on' : 'off').' · breakout alerts: '.(config('trading.strategy.breakout_alerts', true) ? 'on' : 'off'));
+        $this->line('  Swing turn alerts: '.(config('trading.strategy.topbottom_alerts', true) ? 'on' : 'off').' · breakout alerts: '.(BreakoutStrategyService::enabled() ? 'EBD v1 ('.config('breakout.mode').')' : (BreakoutWatcher::alertsEnabled() ? 'on (legacy)' : 'off')));
         $this->line('  Last sent OK: '.($health['last_ok_at'] ?? 'never').' · last error: '.($health['last_error'] ?? 'none').($health['last_error_at'] ? " ({$health['last_error_at']})" : ''));
         if ($health['problem'] !== null) {
             $causes[] = $health['problem'];

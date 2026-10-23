@@ -55,6 +55,20 @@ class StrategyEngine
     }
 
     /**
+     * Squeeze Breakout / Early Breakout (1h box) only run on the legacy engine. With the default 'ebd' engine
+     * the 5m Early Breakout Detection engine (app/Services/Breakout) is the only breakout signal source.
+     */
+    public function legacyBreakouts(): bool
+    {
+        return ($this->config['breakout_engine'] ?? 'ebd') === 'legacy';
+    }
+
+    public static function legacyBreakoutsConfigured(): bool
+    {
+        return config('trading.strategy.breakout_engine', 'ebd') === 'legacy';
+    }
+
+    /**
      * Widest allowed stop (in %) for a setup, from the app config (used outside the engine).
      */
     public static function configuredMaxSlPct(?string $setup = null): float
@@ -144,7 +158,7 @@ class StrategyEngine
                 $suppressed = $suppressed || $previous['setup'] === 'SQUEEZE_BREAKOUT';
             }
         }
-        if (! $suppressed) {
+        if (! $suppressed && $this->legacyBreakouts()) {
             $watches = $this->watchCandidates($symbol, $interval, $lastIndex, $base, $s, $regimeAt[$lastIndex], $btc[$lastIndex], $context);
         }
 
@@ -184,7 +198,7 @@ class StrategyEngine
         $symbol = strtoupper((string) ($context['symbol'] ?? 'UNKNOWN'));
         $interval = (string) ($context['interval'] ?? '1h');
         $n = count($base['closes']);
-        if ($n < 120) {
+        if ($n < 120 || ! $this->legacyBreakouts()) {
             return [];
         }
 
@@ -765,8 +779,8 @@ class StrategyEngine
 
         $triggers = [];
 
-        // 1. Squeeze Breakout
-        $squeezePct = $this->recentSqueezePercentile($i, $s['bbw']);
+        // 1. Squeeze Breakout (legacy engine only; replaced by EBD v1)
+        $squeezePct = $this->legacyBreakouts() ? $this->recentSqueezePercentile($i, $s['bbw']) : null;
         if ($squeezePct !== null && $squeezePct <= 0.20 && $i >= 21) {
             $priorHigh = max(array_slice($c['highs'], $i - 20, 20));
             $priorLow = min(array_slice($c['lows'], $i - 20, 20));

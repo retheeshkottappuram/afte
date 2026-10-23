@@ -138,7 +138,8 @@
                         @php($botSwitches = \App\Services\Trading\BotSwitches::all())
                         @php($canSwitchBots = (bool) (Auth::user()?->isAdmin() || Auth::user()?->hasPermission('manage_trading')))
                         <div class="flex items-center gap-1 flex-shrink-0" title="Turn each auto-trading bot on or off. Open trades keep their stops and exits.">
-                            @foreach (['swing' => 'Swing', 'breakout' => 'Breakout', 'lab' => 'Lab SOL/NEAR'] as $bot => $botLabel)
+                            {{-- With EBD v1 (alerts only) the 'breakout' switch only gates Trend Pullback entries. --}}
+                            @foreach (['swing' => 'Swing', 'breakout' => \App\Services\Strategy\StrategyEngine::legacyBreakoutsConfigured() ? 'Breakout' : 'Pullback', 'lab' => 'Lab SOL/NEAR'] as $bot => $botLabel)
                                 <button type="button" id="bot-switch-{{ $bot }}" data-bot="{{ $bot }}" data-label="{{ $botLabel }}" data-on="{{ $botSwitches[$bot] ? '1' : '0' }}"
                                     @if ($canSwitchBots) onclick="toggleBot('{{ $bot }}')" @else disabled @endif
                                     class="bot-switch px-2 py-1.5 text-[11px] font-mono font-bold rounded-lg border transition flex items-center gap-1 {{ $botSwitches[$bot] ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700' }}">
@@ -565,7 +566,11 @@
                         <div class="space-y-2">
                             <h4 class="text-white font-bold uppercase tracking-wider text-xs">When a trade is taken</h4>
                             <ul class="space-y-1.5 list-disc pl-4 text-slate-300">
+                                @if (\App\Services\Strategy\StrategyEngine::legacyBreakoutsConfigured())
                                 <li><strong class="text-emerald-400">Setup:</strong> a Squeeze Breakout (or Trend Pullback while its measured edge stays above +0.05R per trade).</li>
+                                @else
+                                <li><strong class="text-emerald-400">Setup:</strong> Trend Pullback while its measured edge stays above +0.05R per trade. Breakouts come from EBD v1 (5m), which sends alerts only and never trades.</li>
+                                @endif
                                 <li><strong class="text-emerald-400">Filters:</strong> 4h trend agrees (ADX ≥ 18), BTC not strongly against, 24h volume ≥ ${{ number_format((float) config('trading.strategy.min_quote_volume_24h', 2e7) / 1e6) }}M, ATR 0.35–4%, funding not crowded, stop 0.6–1.8% from entry.</li>
                                 <li><strong class="text-emerald-400">Quality:</strong> grade A or B from the setup's measured track record. In LIVE mode the setup must also be proven (30+ resolved signals with a real edge).</li>
                                 <li><strong class="text-emerald-400">Freshness:</strong> price still within 0.3R of the signal candle, otherwise the entry is skipped.</li>

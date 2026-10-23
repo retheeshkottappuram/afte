@@ -251,7 +251,11 @@ return [
             'SQUEEZE_BREAKOUT' => (float) env('STRATEGY_BREAKOUT_MAX_SL_PCT', 4.0),
             'EARLY_BREAKOUT' => (float) env('STRATEGY_BREAKOUT_MAX_SL_PCT', 4.0),
         ],
-        // Minute breakout watcher: Telegram alerts ("coiled" after each scan, "breaking out" in real time).
+        // Breakout signal engine. 'ebd' (default, 2026-10-23 user decision): EBD v1 (config/breakout.php, breakout:scan)
+        // is the only breakout signal and alert source, alerts only; Squeeze Breakout, the hourly watch list and the
+        // minute watcher below are off and the bot opens no breakout trades. 'legacy' restores the old path (rollback).
+        'breakout_engine' => env('STRATEGY_BREAKOUT_ENGINE', 'ebd'),
+        // Minute breakout watcher (legacy engine): Telegram alerts ("coiled" after each scan, "breaking out" in real time).
         'breakout_alerts' => (bool) env('STRATEGY_BREAKOUT_ALERTS', true),
         // "Breakout setups" message (before the break). 12-month audit, top 50 (2026-10-18, bt_setup_alerts.php): all
         // ~26/day as sent then: only ~33% went 2 ATR the right way first, PF 0.81 (months 1-10) / 1.18 (last 2).

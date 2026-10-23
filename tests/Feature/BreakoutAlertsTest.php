@@ -29,6 +29,7 @@ class BreakoutAlertsTest extends TestCase
     {
         parent::setUp();
         config([
+            'trading.strategy.breakout_engine' => 'legacy', // these tests cover the old 1h watcher (EBD v1 is the default)
             'trading.mode' => 'paper',
             'trading.telegram.enabled' => true,
             'trading.telegram.bot_token' => '123:TEST',

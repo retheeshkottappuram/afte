@@ -28,6 +28,7 @@ class TrainSignalModelCommand extends Command
             ->whereNotNull('setup')
             ->whereNotNull('features')
             ->where('passed_filters', true)
+            ->where('source', '!=', 'ebd') // EBD v1 (5m, alerts only) has its own features; the model scores the 1h engine
             ->whereIn('outcome', ['TP1', 'TP2', 'SL', 'BE', 'EXPIRED'])
             ->orderBy('candle_close_time')
             ->get(['features', 'outcome', 'r_multiple'])

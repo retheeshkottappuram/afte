@@ -30,6 +30,12 @@ Schedule::command('crypto:scan --manual')
     ->everyMinute()
     ->runInBackground();
 
+// 1c. Early Breakout Detection (EBD v1): live early checks every minute, closed-candle pass after each 5m close.
+// Alerts only, never orders. Its own cache lock replaces withoutOverlapping (see the note above).
+Schedule::command('breakout:scan')
+    ->everyMinute()
+    ->runInBackground();
+
 // 2. Signal outcome tracking (feeds the measured win rates and the AI model)
 Schedule::command('crypto:resolve-signals')
     ->everyFiveMinutes()

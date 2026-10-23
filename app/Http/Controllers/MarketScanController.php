@@ -2,8 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BreakoutSetup;
 use App\Models\Setting;
 use App\Models\TradingAccount;
+use App\Services\Breakout\BreakoutStrategyService;
+use App\Services\Breakout\SignalLifecycleService;
 use App\Services\Crypto\BinanceClient;
 use App\Services\Strategy\BreakoutWatcher;
 use App\Services\Strategy\MarketScanService;
@@ -53,6 +56,10 @@ class MarketScanController extends Controller
      */
     public function watch(BreakoutWatcher $watcher, StrategyEngine $engine): JsonResponse
     {
+        if (! StrategyEngine::legacyBreakoutsConfigured()) {
+            return $this->ebdWatch();
+        }
+
         $prices = $this->livePrices();
         $mode = $this->modeManager->activeMode();
         $coins = [];
@@ -88,6 +95,68 @@ class MarketScanController extends Controller
                 'paused' => EarlyBreakoutGuard::pauseReason($mode),
                 'risk_pct' => (float) config('trading.strategy.early_breakout.risk_pct', 1.0),
                 'max_per_day' => (int) config('trading.strategy.early_breakout.max_per_day', 3),
+            ],
+        ]);
+    }
+
+    /**
+     * EBD v1 setups in their lifecycle (compression, early watch, confirmed, retest, extended), same shape as
+     * the legacy watch list plus `state` and `score`. EBD is alerts only, so auto_trade is always false.
+     */
+    protected function ebdWatch(): JsonResponse
+    {
+        $prices = $this->livePrices();
+        $labels = [
+            SignalLifecycleService::COMPRESSION => 'coiled',
+            SignalLifecycleService::EARLY => 'early break (unconfirmed)',
+            SignalLifecycleService::CONFIRMED => 'confirmed breakout',
+            SignalLifecycleService::RETEST_WAIT => 'retesting the level',
+            SignalLifecycleService::EXTENDED => 'extended, do not chase',
+        ];
+        $coins = [];
+
+        foreach (BreakoutSetup::query()->active()->get() as $setup) {
+            $price = (float) ($prices[$setup->symbol] ?? 0);
+            $direction = $setup->direction;
+            if ($direction === null) {
+                // Still coiled: show the nearer edge.
+                $direction = $price > 0 && ((float) $setup->long_trigger - $price) > ($price - (float) $setup->short_trigger) ? 'SHORT' : 'LONG';
+            }
+            $isLong = $direction === 'LONG';
+            $level = (float) ($isLong ? $setup->resistance : $setup->support);
+            $trigger = (float) ($isLong ? $setup->long_trigger : $setup->short_trigger);
+            $coins[] = [
+                'symbol' => $setup->symbol,
+                'side' => $direction,
+                'level' => round($level, MarketScanService::priceDecimals($level)),
+                'trigger' => round($trigger, MarketScanService::priceDecimals($trigger)),
+                'price' => $price,
+                'price_decimals' => MarketScanService::priceDecimals($price ?: $level),
+                'distance_pct' => $price > 0 ? round(($isLong ? $trigger - $price : $price - $trigger) / $price * 100, 2) : null,
+                'triggered' => $setup->state !== SignalLifecycleService::COMPRESSION || ($price > 0 && ($isLong ? $price >= $trigger : $price <= $trigger)),
+                'state' => $setup->state,
+                'state_label' => $labels[$setup->state] ?? strtolower($setup->state),
+                'score' => $setup->confirmed_score ?? $setup->early_score,
+            ];
+        }
+        usort($coins, fn (array $a, array $b): int => [$a['state'] === SignalLifecycleService::COMPRESSION, $a['distance_pct'] ?? 99] <=> [$b['state'] === SignalLifecycleService::COMPRESSION, $b['distance_pct'] ?? 99]);
+
+        $run = (array) Setting::getValue(BreakoutStrategyService::LAST_RUN_KEY, []);
+
+        return response()->json([
+            'coins' => $coins,
+            'candle_closes_at' => null,
+            'engine' => 'ebd',
+            'early_breakout' => [
+                'engine' => 'ebd',
+                'alerts' => config('breakout.mode') === 'alerts',
+                'auto_trade' => false,
+                'mode' => $this->modeManager->activeMode(),
+                'blocked' => null,
+                'paused' => null,
+                'last_run' => $run['started_at'] ?? null,
+                'symbols' => $run['symbols'] ?? 0,
+                'errors' => count((array) ($run['errors'] ?? [])),
             ],
         ]);
     }
