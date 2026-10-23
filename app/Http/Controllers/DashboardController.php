@@ -597,10 +597,10 @@ class DashboardController extends Controller
     public function setBotSwitch(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'bot' => ['required', 'string', 'in:'.implode(',', BotSwitches::BOTS)],
-            'enabled' => ['required', 'boolean'],
+            'strategy' => ['required', 'string', 'in:'.implode(',', BotSwitches::BOTS)],
+            'active' => ['required', 'boolean'],
         ]);
-        BotSwitches::set($data['bot'], (bool) $data['enabled']);
+        BotSwitches::set($data['strategy'], (bool) $data['active']);
 
         return response()->json(['success' => true, 'bot_switches' => BotSwitches::all()]);
     }

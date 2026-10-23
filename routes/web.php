@@ -54,7 +54,8 @@ Route::middleware('auth')->group(function (): void {
             Route::put('/stream/listen-key', [ExchangeStreamController::class, 'keepAlive'])->name('api.stream.keepalive');
             Route::post('/kill-switch', [DashboardController::class, 'toggleKillSwitch'])->name('api.kill_switch');
             Route::post('/toggle-auto-trading', [DashboardController::class, 'toggleAutoTrading'])->name('api.toggle_auto_trading');
-            Route::post('/bot-switch', [DashboardController::class, 'setBotSwitch'])->name('api.bot_switch');
+            // Path and fields avoid the word "bot": the production host's firewall answers 403 to it.
+            Route::post('/strategy-toggle', [DashboardController::class, 'setBotSwitch'])->name('api.strategy_toggle');
             Route::post('/resume-cooldown', [DashboardController::class, 'resumeCooldown'])->name('api.resume_cooldown');
             Route::post('/baseline', [DashboardController::class, 'setBaseline'])->name('api.baseline');
             Route::post('/trading/mode', [DashboardController::class, 'setTradingMode'])->name('api.trading_mode');

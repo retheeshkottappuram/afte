@@ -167,16 +167,16 @@ class LabTraderTest extends TestCase
     public function test_the_dashboard_switches_need_trading_permission(): void
     {
         $this->actingAs(User::factory()->create(['role' => 'user']))
-            ->postJson(route('api.bot_switch'), ['bot' => 'lab', 'enabled' => false])->assertForbidden();
+            ->postJson(route('api.strategy_toggle'), ['strategy' => 'lab', 'active' => false])->assertForbidden();
         $this->assertTrue(BotSwitches::on('lab'));
 
         $this->actingAs(User::factory()->create(['role' => 'admin']))
-            ->postJson(route('api.bot_switch'), ['bot' => 'breakout', 'enabled' => false])
+            ->postJson(route('api.strategy_toggle'), ['strategy' => 'breakout', 'active' => false])
             ->assertOk()->assertJsonPath('bot_switches.breakout', false)->assertJsonPath('bot_switches.lab', true);
         $this->assertFalse(BreakoutWatcher::tradingEnabled());
 
         $this->actingAs(User::factory()->create(['role' => 'admin']))
-            ->postJson(route('api.bot_switch'), ['bot' => 'nope', 'enabled' => true])->assertStatus(422);
+            ->postJson(route('api.strategy_toggle'), ['strategy' => 'nope', 'active' => true])->assertStatus(422);
     }
 
     public function test_lab_trades_use_the_swing_slots_not_the_breakout_bots(): void

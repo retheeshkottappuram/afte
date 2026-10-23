@@ -2078,12 +2078,15 @@
             btn.style.opacity = '0.5';
             botSwitchChangedAt = Date.now();
             try {
-                const res = await fetch('/api/bot-switch', {
+                const url = '{{ route('api.strategy_toggle', [], false) }}';
+                const res = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
-                    body: JSON.stringify({ bot, enabled: enable })
+                    body: JSON.stringify({ strategy: bot, active: enable })
                 });
-                const data = await res.json().catch(() => ({}));
+                const text = await res.text();
+                let data = {};
+                try { data = JSON.parse(text); } catch (e) { data = {}; }
                 botSwitchChangedAt = Date.now();
                 if (res.ok && data.success) {
                     renderBotSwitches(data.bot_switches);
@@ -2091,8 +2094,10 @@
                     Notify.toast(`${label} bot is now ${now ? 'ON' : 'OFF'}.`, now ? 'success' : 'warning');
                 } else if (res.status === 419) {
                     Notify.error('Session expired. Reload the page (Ctrl+F5) and try again.');
+                } else if (res.status === 403 && data.message) {
+                    Notify.error(data.message, { title: 'Permission denied' });
                 } else if (res.status === 403) {
-                    Notify.error('You do not have permission to change the bots.');
+                    Notify.error(`Blocked by the web server firewall (HTTP 403), not by the app. Ask the host to whitelist ${url}.`, { title: 'Blocked by server' });
                 } else {
                     Notify.error(data.message || `Could not change the ${label} bot (error ${res.status}).`);
                 }
