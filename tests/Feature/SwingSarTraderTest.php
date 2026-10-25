@@ -112,6 +112,7 @@ class SwingSarTraderTest extends TestCase
         $this->assertEqualsWithDelta(5.0, (float) $trade->meta['signal_price'], 1e-9, 'The chart signal it came from');
         $text = implode("\n", array_map(fn (array $pair): string => (string) ($pair[0]->data()['text'] ?? ''), Http::recorded()->all()));
         $this->assertStringContainsString('opposite swing flip', $text);
+        $this->assertMatchesRegularExpression('/signal candle \(1h\) low [\d.]+ \/ high [\d.]+/', $text);
         $this->assertStringContainsString('Stop loss: −$', $text);
         $this->assertStringContainsString('the stop moves to', $text);
     }
@@ -143,8 +144,19 @@ class SwingSarTraderTest extends TestCase
         Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'No new trade'));
     }
 
-    public function test_by_default_an_unconfirmed_flip_opens_with_a_tight_stop(): void
+    public function test_by_default_an_unconfirmed_flip_is_not_traded(): void
     {
+        $this->flips = [$this->flip('LONG', confirmed: false)];
+
+        $row = $this->runSar()[0];
+
+        $this->assertSame('skipped', $row['action'], $row['message']);
+        $this->assertSame(0, Trade::count());
+    }
+
+    public function test_with_unconfirmed_entries_on_a_question_flip_opens_with_a_tight_stop(): void
+    {
+        config(['trading.swing_sar.unconfirmed_entries' => true]);
         $this->flips = [$this->flip('LONG', confirmed: false)];
 
         $row = $this->runSar()[0];
@@ -159,6 +171,7 @@ class SwingSarTraderTest extends TestCase
 
     public function test_an_unconfirmed_short_gets_its_tight_stop_above_and_reverses_an_open_long(): void
     {
+        config(['trading.swing_sar.unconfirmed_entries' => true]);
         $long = $this->sarTrade('LONG');
         $this->flips = [$this->flip('SHORT', confirmed: false, sl: 5.15)];
 
@@ -320,11 +333,15 @@ class SwingSarTraderTest extends TestCase
         $this->assertFalse($risk->canOpenTrade($account, 'ADAUSDT', 'SHORT', setup: SwingSarTrader::SETUP)['allowed'], 'All 4 slots in use');
     }
 
-    public function test_sar_runs_once_per_closed_fifteen_minute_candle(): void
+    public function test_sar_runs_once_per_closed_one_hour_candle_by_default(): void
     {
-        $this->assertSame(900, SwingSarTrader::intervalSeconds());
-        config(['trading.swing_sar.interval' => '1h']);
+        $this->assertSame('1h', SwingSarTrader::interval());
         $this->assertSame(3600, SwingSarTrader::intervalSeconds());
+        $defaults = require config_path('trading.php');
+        $this->assertTrue((bool) $defaults['swing_sar']['require_4h_trend']);
+        $this->assertFalse((bool) $defaults['swing_sar']['unconfirmed_entries'], '"?" flips lost on 1h (PF 0.52)');
+        config(['trading.swing_sar.interval' => '15m']);
+        $this->assertSame(900, SwingSarTrader::intervalSeconds());
     }
 
     public function test_the_breakout_bot_only_uses_the_other_half_of_the_fund(): void
@@ -370,7 +387,7 @@ class SwingSarTraderTest extends TestCase
         $this->sarTrade('SHORT', ['symbol' => 'DOGEUSDT', 'opened_at' => Carbon::now()->subHours(3)]);
 
         $this->artisan('trade:sar-check', ['--hours' => 24])
-            ->expectsOutputToContain('15m candles')
+            ->expectsOutputToContain('1h candles')
             ->expectsOutputToContain('skipped: all 2 SAR slots were in use')
             ->assertSuccessful();
     }

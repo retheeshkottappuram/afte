@@ -96,6 +96,9 @@ final class EbdConfig
             'score.watchlist' => [0, 100],
             'universe.max_symbols' => [1, 300],
             'notifications.cooldown_minutes' => [0, 1440],
+            'notifications.record_days' => [1, 365],
+            'notifications.record_min_signals' => [1, 1000],
+            'notifications.record_min_pf' => [0, 100],
         ];
 
         foreach ($ranges as $key => [$min, $max]) {
@@ -113,6 +116,7 @@ final class EbdConfig
             'score thresholds must be watchlist < valid < high' => $this->float('score.watchlist') < $this->float('score.valid') && $this->float('score.valid') < $this->float('score.high'),
             'mode must be alerts or shadow' => in_array($this->get('mode'), ['alerts', 'shadow'], true),
             'timeframes.signal must be 5m' => $this->get('timeframes.signal') === '5m',
+            'notifications.min_bucket must be HIGH, VALID or WATCHLIST' => in_array($this->get('notifications.min_bucket'), ['HIGH', 'VALID', 'WATCHLIST'], true),
         ];
         foreach ($rules as $message => $ok) {
             if (! $ok) {

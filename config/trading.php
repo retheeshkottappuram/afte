@@ -352,7 +352,12 @@ return [
         // (bt_sar_15m.php, $30 trades): every stop variant LOST on months 1-10 (PF 0.72-0.85, ~15 trades/week);
         // the shipped one (2% cap, breakeven at +1R, then 1.5 ATR trail) PF 0.85 / 0.83, max drawdown $37.
         // 1h on the same coins: ~1.5 trades/week, PF 0.83-1.42.
-        'interval' => (string) env('SWING_SAR_INTERVAL', '15m'),
+        // User's decision (2026-10-25): back to 1h candles, the chart timeframe. 12-month test (swing1h_bot.py, 30 coins
+        // from the EBD cache, bot exits below, fees + slippage, confirmed flips + 4h filter): PF 0.94 (train / validation /
+        // last 3 months 0.83 / 0.86 / 1.20), 553 trades, win 53%. Without the 4h filter PF 0.95. Not a proven edge.
+        // Entry stays at the flip candle's close: a limit at that candle's low / high (where the chart arrow sits) filled
+        // only 137 of 553 flips with no better PF (0.98 vs 1.00 with simple exits).
+        'interval' => (string) env('SWING_SAR_INTERVAL', '1h'),
         // Margin per trade = balance x fund_share / max_open (the other half is for the breakout bot); the fixed
         // margin_usd is used only when fund_share is 0.
         'fund_share' => (float) env('SWING_SAR_FUND_SHARE', 0.5),
@@ -368,7 +373,8 @@ return [
         // from entry) instead of the SuperTrend stop; the dynamic rules then work on that small R. Kept on although the
         // 12-month test (bt_unconf.php, 8 coins, 15m, bot exits) was worse than confirmed flips: "?" only PF 0.63
         // (win 32%), confirmed only PF 0.85, both PF 0.80 with ~70% more trades. Off: SWING_SAR_UNCONFIRMED_ENTRIES=false.
-        'unconfirmed_entries' => (bool) env('SWING_SAR_UNCONFIRMED_ENTRIES', true),
+        // 2026-10-25, 1h: "?" flips with the 0.6% stop lost heavily (PF 0.52, 2146 trades, every period), so off by default.
+        'unconfirmed_entries' => (bool) env('SWING_SAR_UNCONFIRMED_ENTRIES', false),
         // Which signals the chart prints and the bot trades: 'supertrend' = SuperTrend(10,3) flips (default; the user
         // reverted to it on 2026-10-21 after the V3 test below), 'v3' = SignalAlgo PRO V3 100-point confluence score
         // (ConfluenceEngine), 'sr' = S/R reversal engine (ReversalEngine; chart-only until it passes its walk-forward test).
@@ -398,7 +404,7 @@ return [
         ],
         'unconfirmed_sl_pct' => (float) env('SWING_SAR_UNCONFIRMED_SL_PCT', 0.6),
         // Only enter when the 4h SuperTrend points the same way.
-        'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', false),
+        'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', true),
         // Checked every 5s, best price in R (1R = the entry-to-stop distance). User's decision (2026-10-20):
         //  - partials [at R, share of the original size]: book 1/3 at +0.75R and 1/3 at +1.5R;
         //  - ladder [at R, stop at R] (0 = breakeven + fees): at +0.75R the stop goes to -0.25R, at +1.5R to +0.5R;

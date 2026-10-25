@@ -138,6 +138,19 @@ return [
         // every variant lost (PF 0.67-0.68, -0.22R per trade), also on the unseen last 3 months.
         'backtest_note' => env('BREAKOUT_EBD_BACKTEST_NOTE', 'Backtest (12 months, 30 coins, after costs): EBD lost, PF 0.67. Unproven.'),
         'notify_extended' => true,        // only for setups that already sent an alert
+        // User's decision (2026-10-25): Telegram gets only confirmed entries from coins with a good live record. Live chat
+        // 22-25 Oct: 213 early alerts, 45% failed; 12-month backtest: early PF 0.67. Early watches stay on the dashboard.
+        'early' => (bool) env('BREAKOUT_EBD_NOTIFY_EARLY', false),
+        'min_bucket' => env('BREAKOUT_EBD_MIN_BUCKET', 'VALID'),   // CONFIRMED / RETEST entries need this score bucket
+        // Coin record gate: entry alerts only for a coin + direction with >= record_min_signals resolved EBD confirmed /
+        // retest signals in the last record_days and a profit factor >= record_min_pf (R after fees, from crypto_signals).
+        // Every signal is still recorded silently, so a coin earns (and loses) its place. Warning (2026-10-25 test,
+        // percoin.php): coins picked this way on months 1-6 did NOT stay profitable afterwards (validation PF 0.53-0.63).
+        'record_gate' => (bool) env('BREAKOUT_EBD_RECORD_GATE', true),
+        'record_days' => (int) env('BREAKOUT_EBD_RECORD_DAYS', 30),
+        'record_min_signals' => (int) env('BREAKOUT_EBD_RECORD_MIN_SIGNALS', 5),
+        'record_min_pf' => (float) env('BREAKOUT_EBD_RECORD_MIN_PF', 1.3),
+        'record_by_direction' => true,    // LONG and SHORT records apart (live: shorts +0.45R, longs -0.26R)
     ],
 
     'scan' => [

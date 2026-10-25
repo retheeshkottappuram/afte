@@ -13,6 +13,9 @@ use Throwable;
 
 class TradeReconciler
 {
+    /** clientOrderId of the exit order seen by the last classifyExitReason() call. */
+    public ?string $lastExitClientOrderId = null;
+
     public function __construct(
         protected BinanceFuturesClient $client,
         protected RiskManager $riskManager,
@@ -286,6 +289,10 @@ class TradeReconciler
 
         // 7. Classify Exit Reason
         $classifiedReason = $this->classifyExitReason($trade, $detectedExitOrderId, $trueExitPrice, $hintedReason, $fapi);
+        if ($this->lastExitClientOrderId !== null) {
+            // Who placed the exit (web_ / ios_ / android_ = Binance app or site), shown in the close message.
+            $trade->meta = array_merge($trade->meta ?? [], ['exit_client_order_id' => $this->lastExitClientOrderId]);
+        }
 
         // 8. Analytics: MAE, MFE, stop distance
         $stopDistance = round(abs($trade->entry_price - $trade->initial_sl), 8);
@@ -360,6 +367,8 @@ class TradeReconciler
         $orderType = strtoupper((string) ($orderInfo['origType'] ?? $orderInfo['type'] ?? ''));
         $clientOrderId = (string) ($orderInfo['clientOrderId'] ?? '');
         $isReduceOnly = ! empty($orderInfo['reduceOnly']);
+        $this->lastExitClientOrderId = $clientOrderId !== '' ? $clientOrderId : null;
+        $external = in_array($hintedReason, [null, '', 'EXCHANGE_CLOSED', 'EXCHANGE_OR_MANUAL_CLOSE'], true);
 
         // 1. Liquidation
         if ($orderType === 'LIQUIDATION' || str_starts_with($clientOrderId, 'autoclose-')) {
@@ -369,15 +378,17 @@ class TradeReconciler
         // 2. Native Stop Loss hit on exchange
         $slAlgoId = (string) ($trade->meta['binance_sl_algo_id'] ?? '');
         $isSlOrder = ($orderType === 'STOP_MARKET' || $orderType === 'STOP');
+        // A stop that was moved after entry (breakeven / trail / profit lock) is reported as a trailing stop.
+        $stopReason = $trade->tp1_hit || ($trade->initial_sl > 0 && abs((float) $trade->current_sl - (float) $trade->initial_sl) > 1e-12) ? 'TRAILING_STOP' : 'STOP_LOSS';
         if ($isSlOrder || ($slAlgoId && (string) $exitOrderId === $slAlgoId)) {
-            return 'STOP_LOSS';
+            return $stopReason;
         }
         if ($trade->current_sl > 0) {
             $slDiffPct = abs($exitPrice - $trade->current_sl) / $trade->current_sl;
             if ($slDiffPct <= 0.005) {
                 $isAdverseMove = $trade->isLong() ? ($exitPrice <= $trade->current_sl * 1.002) : ($exitPrice >= $trade->current_sl * 0.998);
                 if ($isAdverseMove) {
-                    return 'STOP_LOSS';
+                    return $stopReason;
                 }
             }
         }
@@ -400,7 +411,14 @@ class TradeReconciler
             return $hintedReason;
         }
 
-        // 5. Reduce-only market order from bot
+        // 5. Closed outside the bot: orders from the Binance app / site carry these clientOrderId prefixes. A manual
+        //    "Close" there is reduceOnly too, so reduceOnly alone does not mean the bot did it.
+        if ($external && preg_match('/^(web_|ios_|android_|electron_)/', $clientOrderId)) {
+            return 'MANUAL_CLOSE';
+        }
+        if ($external) {
+            return 'EXCHANGE_OR_MANUAL_CLOSE';
+        }
         if ($isReduceOnly) {
             return 'BOT_REDUCE_ONLY';
         }

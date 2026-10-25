@@ -336,13 +336,30 @@ class RiskManager
             return $reject(sprintf('Free margin $%.2f is below the $%.2f this trade needs.', $availMargin, $marginUsd));
         }
 
-        $quantity = $this->client->formatQuantity($symbol, $marginUsd * $leverage / $entryPrice);
+        $planned = $marginUsd * $leverage / $entryPrice;
+        $quantity = $this->client->formatQuantity($symbol, $planned);
         $notional = $quantity * $entryPrice;
-        if ($quantity <= 0 || $notional < max(5.0, $this->client->getMinNotional($symbol))) {
-            return $reject(sprintf('$%.2f at %dx is below the Binance minimum order size for %s.', $marginUsd, $leverage, $symbol));
+        $equity = max(0.0, (float) $account->balance);
+        $minNotional = max(5.0, $this->client->getMinNotional($symbol));
+        if ($quantity <= 0 || $notional < $minNotional) {
+            // Coarse lot steps (NEAR trades in whole coins) can floor a valid size under the minimum: round up to the
+            // smallest tradable size when the margin is free and the risk stays within 1.5x the planned risk.
+            $info = $this->client->getExchangeInfo()[$symbol] ?? null;
+            $step = (float) ($info['stepSize'] ?? 0.0);
+            $minQty = $step > 0
+                ? round(ceil($minNotional * 1.01 / $entryPrice / $step) * $step, (int) ($info['quantityPrecision'] ?? 3))
+                : 0.0;
+            $slDistance = abs($entryPrice - $slPrice);
+            $fits = $minQty > 0 && $minQty * $entryPrice / $leverage <= $availMargin
+                && $minQty * $slDistance <= max(1.5 * $planned * $slDistance, 0.0)
+                && $minQty * $slDistance <= $equity * (float) config('trading.sizing.small_account_max_risk_pct', 5.0) / 100;
+            if (! $fits) {
+                return $reject(sprintf('$%.2f at %dx is below the Binance minimum order size for %s.', $marginUsd, $leverage, $symbol));
+            }
+            $quantity = $minQty;
+            $notional = $quantity * $entryPrice;
         }
 
-        $equity = max(0.0, (float) $account->balance);
         $riskUsd = round($quantity * abs($entryPrice - $slPrice), 4);
 
         return [

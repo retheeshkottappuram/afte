@@ -36,5 +36,11 @@
         <env name="TELEGRAM_NOTIFICATIONS_ENABLED" value="false"/>
         <env name="TELEGRAM_BOT_TOKEN" value=""/>
         <env name="TELEGRAM_CHAT_ID" value=""/>
+        <!-- Never the real account: dummy keys, live trading off, and Http::preventStrayRequests() in TestCase. -->
+        <env name="BINANCE_API_KEY" value="test-key"/>
+        <env name="BINANCE_API_SECRET" value="test-secret"/>
+        <env name="BINANCE_TESTNET_KEY" value="test-key"/>
+        <env name="BINANCE_TESTNET_SECRET" value="test-secret"/>
+        <env name="ALLOW_LIVE_TRADING" value="false"/>
     </php>
 </phpunit>

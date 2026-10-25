@@ -285,4 +285,42 @@ class TradeReconcilerTest extends TestCase
         $reason = $reconciler->classifyExitReason($trade, 9999, 97.95, 'EXCHANGE_CLOSED', $fapi);
         $this->assertEquals('STOP_LOSS', $reason);
     }
+
+    /**
+     * @return array{0: TradeReconciler, 1: Trade, 2: BinanceFuturesClient}
+     */
+    protected function externalClose(array $order): array
+    {
+        $reconciler = new TradeReconciler(Mockery::mock(BinanceFuturesClient::class), app(RiskManager::class), Mockery::mock(TelegramNotifier::class));
+        $trade = new Trade(['symbol' => 'SOLUSDT', 'side' => 'SHORT', 'entry_price' => 104.66, 'initial_sl' => 112.67, 'current_sl' => 106.12, 'tp1_price' => 0, 'tp2_price' => 0]);
+        $fapi = Mockery::mock(BinanceFuturesClient::class);
+        $fapi->shouldReceive('getOrder')->andReturn($order);
+
+        return [$reconciler, $trade, $fapi];
+    }
+
+    public function test_a_close_from_the_binance_app_is_manual_not_a_bot_reduce_only_or_trailing_stop(): void
+    {
+        [$reconciler, $trade, $fapi] = $this->externalClose(['type' => 'MARKET', 'origType' => 'MARKET', 'reduceOnly' => true, 'clientOrderId' => 'android_8f2c1a']);
+
+        // Exit 101.01 while the stop sat at 106.12: not a stop fill.
+        $this->assertSame('MANUAL_CLOSE', $reconciler->classifyExitReason($trade, 1, 101.01, 'EXCHANGE_CLOSED', $fapi));
+        $this->assertSame('android_8f2c1a', $reconciler->lastExitClientOrderId);
+    }
+
+    public function test_an_unknown_reduce_only_close_outside_the_bot_is_labelled_as_such(): void
+    {
+        [$reconciler, $trade, $fapi] = $this->externalClose(['type' => 'MARKET', 'origType' => 'MARKET', 'reduceOnly' => true, 'clientOrderId' => 'x-abc123']);
+
+        $this->assertSame('EXCHANGE_OR_MANUAL_CLOSE', $reconciler->classifyExitReason($trade, 1, 104.0, 'EXCHANGE_CLOSED', $fapi));
+        // The bot's own reduce-only close keeps its reason.
+        $this->assertSame('OPPOSITE_SIGNAL', $reconciler->classifyExitReason($trade, 1, 104.0, 'OPPOSITE_SIGNAL', $fapi));
+    }
+
+    public function test_a_moved_stop_filled_on_binance_is_a_trailing_stop(): void
+    {
+        [$reconciler, $trade, $fapi] = $this->externalClose(['type' => 'STOP_MARKET', 'origType' => 'STOP_MARKET']);
+
+        $this->assertSame('TRAILING_STOP', $reconciler->classifyExitReason($trade, 1, 106.15, 'EXCHANGE_CLOSED', $fapi));
+    }
 }

@@ -7,6 +7,7 @@ use App\Models\TradingAccount;
 use App\Services\Trading\RiskManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -198,5 +199,35 @@ class RiskManagerTest extends TestCase
         $this->assertEqualsWithDelta(99.4, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 99.8), 1e-9);
         $this->assertEqualsWithDelta(101.8, $risk->calculateAssetProtectionStopLoss('SHORT', 100.0, 104.0), 1e-9);
         $this->assertEqualsWithDelta(98.75, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 101.0), 1e-9, 'Wrong-side stop falls back to the default distance');
+    }
+
+    public function test_fixed_margin_rounds_a_whole_coin_lot_up_to_the_binance_minimum(): void
+    {
+        // NEAR trades in whole coins: $1.67 x 5x = $8.35 = 1.87 NEAR floors to 1 NEAR ($4.45), under the $5 minimum.
+        Cache::put('binance:futures:exchange_info:live', ['NEARUSDT' => [
+            'symbol' => 'NEARUSDT', 'pricePrecision' => 4, 'quantityPrecision' => 0, 'minNotional' => 5.0, 'stepSize' => 1.0, 'tickSize' => 0.001,
+        ]], 3600);
+        $risk = app(RiskManager::class);
+        $account = $this->account(22.0);
+
+        $sized = $risk->fixedMarginSize($account, 'NEARUSDT', 4.45, 4.80, 1.67, 5);
+
+        $this->assertTrue($sized['allowed'], $sized['reason']);
+        $this->assertSame(2.0, (float) $sized['quantity'], '2 NEAR = $8.90, within 1.5x of the planned 1.87 NEAR');
+        $this->assertEqualsWithDelta(0.70, $sized['risk_usd'], 0.01);
+    }
+
+    public function test_fixed_margin_still_rejects_when_the_minimum_lot_would_overshoot_the_planned_risk(): void
+    {
+        Cache::put('binance:futures:exchange_info:live', ['NEARUSDT' => [
+            'symbol' => 'NEARUSDT', 'pricePrecision' => 4, 'quantityPrecision' => 0, 'minNotional' => 5.0, 'stepSize' => 1.0, 'tickSize' => 0.001,
+        ]], 3600);
+        $risk = app(RiskManager::class);
+
+        // $0.50 x 5x = 0.56 NEAR planned; the minimum 2 NEAR is 3.6x that.
+        $sized = $risk->fixedMarginSize($this->account(22.0), 'NEARUSDT', 4.45, 4.80, 0.50, 5);
+
+        $this->assertFalse($sized['allowed']);
+        $this->assertStringContainsString('below the Binance minimum', $sized['reason']);
     }
 }

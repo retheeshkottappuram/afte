@@ -198,4 +198,33 @@ class LabTraderTest extends TestCase
 
         $this->assertSame('STOP_LOSS', $trade->fresh()->exit_reason);
     }
+
+    public function test_a_setup_while_entries_are_off_is_reported_on_telegram_once(): void
+    {
+        config(['trading.telegram.enabled' => true, 'trading.telegram.bot_token' => '123:SECRET', 'trading.telegram.chat_id' => '999']);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 7]])]);
+        $this->candles['SOLUSDT'] = $this->series(fn (int $i): float => 100 + $i * 0.3 + sin($i) * 0.5);
+
+        $row = $this->lab()->run('paper', false)[0];
+        $this->lab()->run('paper', false);
+
+        $this->assertSame('skipped', $row['action']);
+        $this->assertStringContainsString('stopped or paused', $row['message']);
+        $this->assertSame(0, Trade::count());
+        $sent = collect(Http::recorded())->filter(fn (array $pair): bool => str_contains((string) ($pair[0]->data()['text'] ?? ''), 'Lab SOLUSDT LONG'));
+        $this->assertCount(1, $sent, 'One message per 4h candle');
+    }
+
+    public function test_an_error_does_not_use_up_the_candle(): void
+    {
+        $this->candles['SOLUSDT'] = $this->series(fn (int $i): float => 100 + $i * 0.3 + sin($i) * 0.5);
+        $market = Mockery::mock(BinanceClient::class);
+        $market->shouldReceive('klines')->andReturnUsing(fn (string $symbol): array => $this->candles[$symbol] ?? $this->series(fn (int $i): float => 100.0));
+        $market->shouldReceive('tickerPrice')->once()->andThrow(new \RuntimeException('timeout'));
+        $market->shouldReceive('tickerPrice')->andReturnUsing(fn (string $symbol): float => (float) end($this->candles[$symbol]['closes']));
+        $this->app->instance(BinanceClient::class, $market);
+
+        $this->assertSame('error', $this->lab()->run('paper', true)[0]['action']);
+        $this->assertSame('opened', $this->lab()->run('paper', true)[0]['action'], 'Retried on the next pass');
+    }
 }

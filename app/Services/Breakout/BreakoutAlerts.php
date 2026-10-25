@@ -15,34 +15,69 @@ use Illuminate\Support\Facades\Cache;
  */
 class BreakoutAlerts
 {
-    public function __construct(protected TelegramGateway $gateway, protected EbdConfig $config) {}
+    public const ENTRIES = ['CONFIRMED', 'RETEST'];
+
+    public function __construct(protected TelegramGateway $gateway, protected EbdConfig $config, protected BreakoutCoinRecord $record) {}
 
     /**
-     * Why an event is not sent, or null when it should be.
+     * Why an event is not sent, or null when it should be. Entries (CONFIRMED / RETEST) need a valid entry, the
+     * minimum score bucket and the coin's live record; follow-ups only go to setups whose entry alert was sent.
      */
-    public function skipReason(BreakoutSetupEvent $event, int $nowMs): ?string
+    public function skipReason(BreakoutSetupEvent $event, int $nowMs, ?BreakoutSetup $setup = null): ?string
     {
         $payload = $event->payload;
+        $type = (string) $event->event;
+        $sent = $setup?->telegram_message_id !== null;
 
         return match (true) {
             ! $event->notify => 'event is not announced',
             $this->config->get('mode') !== 'alerts' => 'EBD in shadow mode',
             ! Watchlist::alertsEnabled() => 'Telegram alerts switched off',
             $nowMs - (int) $payload['at_ms'] > $this->config->int('notifications.max_event_age_minutes') * 60_000 => 'event too old (missed cron runs)',
+            $type === 'EARLY' && ! $this->config->bool('notifications.early') => 'early alerts off (confirmed entries only)',
+            in_array($type, self::ENTRIES, true) => $this->entrySkip($payload, $setup),
+            ! in_array($type, ['EARLY', ...self::ENTRIES], true) && $setup !== null && ! $sent => 'no entry alert was sent for this setup',
             default => null,
         };
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    protected function entrySkip(array $payload, ?BreakoutSetup $setup): ?string
+    {
+        if (! ($payload['entry_valid'] ?? false) || ! ($payload['levels']['ok'] ?? false)) {
+            return 'no valid entry';
+        }
+        $score = (float) ($payload['score']['score'] ?? $setup?->confirmed_score ?? 0);
+        $min = match ((string) $this->config->get('notifications.min_bucket', 'VALID')) {
+            'HIGH' => $this->config->float('score.high'),
+            'WATCHLIST' => $this->config->float('score.watchlist'),
+            default => $this->config->float('score.valid'),
+        };
+        if ($score < $min) {
+            return sprintf('score %d below the %s bucket', $score, $this->config->get('notifications.min_bucket'));
+        }
+        if ($setup !== null && $this->config->bool('notifications.record_gate')) {
+            $direction = (string) ($payload['direction'] ?? $setup->direction);
+            if (! $this->record->of($setup->symbol, $direction)['qualifies']) {
+                return 'coin record not good enough yet: '.$this->record->line($setup->symbol, $direction);
+            }
+        }
+
+        return null;
     }
 
     /** Sends the event; returns the Telegram message id, or null when not sent. */
     public function dispatch(BreakoutSetup $setup, BreakoutSetupEvent $event, int $nowMs): ?int
     {
-        if ($this->skipReason($event, $nowMs) !== null) {
+        if ($this->skipReason($event, $nowMs, $setup) !== null) {
             return null;
         }
 
         $payload = $event->payload;
         $direction = $payload['direction'] ?? $setup->direction ?? '';
-        if (in_array($event->event, ['EARLY', 'CONFIRMED'], true) && $setup->telegram_message_id === null) {
+        if (in_array($event->event, ['EARLY', ...self::ENTRIES], true) && $setup->telegram_message_id === null) {
             $minutes = $this->config->int('notifications.cooldown_minutes');
             if ($minutes > 0 && ! Cache::add("ebd:cooldown:{$setup->symbol}:{$direction}:{$event->event}", true, now()->addMinutes($minutes))) {
                 return null;
@@ -50,6 +85,10 @@ class BreakoutAlerts
         }
 
         $html = $this->format($setup->toEngine(), $payload);
+        if (in_array($event->event, self::ENTRIES, true)) {
+            $html .= '
+🏅 '.e($this->record->line($setup->symbol, (string) $direction));
+        }
         $replyTo = $setup->telegram_message_id !== null ? (int) $setup->telegram_message_id : null;
 
         return $this->gateway->send($html, $replyTo, $event->event === 'EARLY');

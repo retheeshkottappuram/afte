@@ -414,11 +414,9 @@ class DynamicTradeManager
         $liveQty = $amount * $expectedSign > 0 ? abs($amount) : 0.0;
 
         if ($liveQty <= 0) {
-            // Stop or target filled on the exchange (a stop that was moved is a trailing / profit stop).
-            $moved = abs((float) $trade->current_sl - (float) $trade->initial_sl) > 1e-12;
-            $hint = $trade->tp1_hit || $moved ? 'TRAILING_STOP' : 'EXCHANGE_CLOSED';
-
-            return $this->closeTradeUnlocked($trade, (float) $trade->current_sl, $hint);
+            // Gone on the exchange: the reconciler tells a stop / target fill from a close made outside the bot
+            // (a "trailing stop" hint here used to label manual closes far from the stop as trailing stops).
+            return $this->closeTradeUnlocked($trade, (float) $trade->current_sl, 'EXCHANGE_CLOSED');
         }
 
         if (! $trade->tp1_hit && $liveQty < (float) $trade->remaining_quantity * 0.98) {

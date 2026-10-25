@@ -124,7 +124,10 @@ class TelegramNotifier
         $this->reply($trade, "{$icon} <b>{$this->tag($trade)} {$trade->symbol} closed</b> ({$this->reason($trade->exit_reason)})\n"
             ."Exit: <code>{$this->fmt((float) $trade->exit_price)}</code>\n"
             ."Net PnL: <b>{$sign}\$".round($pnl, 4).'</b>'.($rMultiple !== null ? " ({$sign}{$rMultiple}R)" : '')." after fees\n"
-            ."Held: {$held} · Balance: \${$accountBalance}");
+            ."Held: {$held} · Balance: \${$accountBalance}"
+            .(isset($trade->meta['exit_client_order_id']) && in_array($trade->exit_reason, ['MANUAL_CLOSE', 'EXCHANGE_OR_MANUAL_CLOSE'], true)
+                ? '
+Exit order: <code>'.e((string) $trade->meta['exit_client_order_id']).'</code>' : ''));
     }
 
     /**
@@ -184,6 +187,8 @@ class TelegramNotifier
             'MAX_HOLD_TIME' => 'max hold time',
             'OPPOSITE_SIGNAL' => 'opposite signal',
             'MANUAL_CLOSE' => 'closed manually',
+            'EXCHANGE_OR_MANUAL_CLOSE', 'EXCHANGE_CLOSED' => 'closed on Binance, not by the bot',
+            'BOT_REDUCE_ONLY' => 'bot reduce-only close',
             'KILL_SWITCH' => 'kill switch',
             default => strtolower(str_replace('_', ' ', (string) $reason)),
         };

@@ -17,7 +17,7 @@ use Throwable;
 
 /**
  * Swing SAR: stop-and-reverse on the chart's swing BUY/SELL flips (SuperTrend(10,3), StrategyEngine::swingSignalAt).
- * After every closed candle of swing_sar.interval (15m), for each SAR coin (default: the monitored coins):
+ * After every closed candle of swing_sar.interval (1h), for each SAR coin (default: the monitored coins):
  *  - an opposite flip (also a "?") closes the open SAR trade;
  *  - a confirmed flip opens the new side with balance x fund_share / max_open margin ("?" only when
  *    confirmed_only is off); the stop sits 1 ATR beyond the SuperTrend line, capped at max_sl_pct from entry;
@@ -98,7 +98,7 @@ class SwingSarTrader
 
     public static function interval(): string
     {
-        return (string) config('trading.swing_sar.interval', '15m');
+        return (string) config('trading.swing_sar.interval', '1h');
     }
 
     /**
@@ -230,7 +230,9 @@ class SwingSarTrader
             'price' => $price,
             'initial_sl' => $sl,
             'setup' => self::SETUP,
-            'setup_label' => self::LABEL.(isset($flip['score']) ? " · V3 score {$flip['score']}/100" : '').($flip['confirmed'] ? '' : ($tight ? sprintf(' · "?" flip, tight %s%% stop', (float) config('trading.swing_sar.unconfirmed_sl_pct', 0.6)) : ' · unconfirmed flip "?"')),
+            'setup_label' => self::LABEL.(isset($flip['score']) ? " · V3 score {$flip['score']}/100" : '').($flip['confirmed'] ? '' : ($tight ? sprintf(' · "?" flip, tight %s%% stop', (float) config('trading.swing_sar.unconfirmed_sl_pct', 0.6)) : ' · unconfirmed flip "?"'))
+                // The chart arrow sits at this candle's low / high; the flip only exists at its close, where the bot enters.
+                .sprintf(' · signal candle (%s) low %s / high %s', $interval, $c['lows'][$k], $c['highs'][$k]),
             'interval' => $interval,
             'grade' => 'B',
             'indicators' => ['atr' => (float) $flip['atr'], 'rsi' => $flip['rsi'], 'volume_ratio' => $flip['volume_ratio']] + (isset($flip['breakdown']) ? ['v3' => $flip['breakdown']] : []),

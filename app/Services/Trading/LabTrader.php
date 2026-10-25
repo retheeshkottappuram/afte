@@ -109,9 +109,24 @@ class LabTrader
         if ($k < 220) {
             return ['action' => 'none', 'message' => 'Not enough 4h candles.'];
         }
-        if (! Cache::add("lab:{$mode}:{$symbol}:{$c['closeTimes'][$k]}", true, now()->addHours(8))) {
+        // Marked handled only after the candle was processed, so an API error is retried on the next engine pass.
+        $doneKey = "lab:{$mode}:{$symbol}:{$c['closeTimes'][$k]}";
+        if (Cache::has($doneKey)) {
             return ['action' => 'none', 'message' => 'Candle already handled.'];
         }
+        $result = $this->handleCandle($symbol, $p, $mode, $entriesAllowed, $c, $k);
+        Cache::put($doneKey, true, now()->addHours(8));
+
+        return $result;
+    }
+
+    /**
+     * @param  array<string, mixed>  $p
+     * @param  array<string, array<int, float|int>>  $c
+     * @return array{action: string, message: string}
+     */
+    protected function handleCandle(string $symbol, array $p, string $mode, bool $entriesAllowed, array $c, int $k): array
+    {
 
         $atr = Indicators::atr($c['highs'], $c['lows'], $c['closes'], 14);
         $open = Trade::where('mode', $mode)->where('symbol', $symbol)->where('status', 'OPEN')->where('setup_tag', self::SETUP)->first();
@@ -141,7 +156,14 @@ class LabTrader
             return ['action' => 'none', 'message' => 'No entry.'];
         }
         if (! $entriesAllowed) {
-            return ['action' => 'skipped', 'message' => "{$side} setup, but new lab entries are off (paused, stopped or the trial ended)."];
+            $why = match (true) {
+                ! self::enabled() => 'the Lab switch is off',
+                ! self::entriesOpen() => 'the trial ended ('.config('trading.lab.until').' UTC)',
+                default => 'auto-trading is stopped or paused (or a loss breaker is active)',
+            };
+            $this->telegram->send(sprintf('⏭ <b>Lab %s %s</b> (4h) not traded: %s.', e($symbol), $side, e($why)));
+
+            return ['action' => 'skipped', 'message' => "{$side} setup, but new lab entries are off: {$why}."];
         }
 
         $d = $side === 'LONG' ? 1 : -1;

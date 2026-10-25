@@ -71,7 +71,7 @@ class SwingScorecardTest extends TestCase
         $res = $this->actingAs($admin)->getJson(route('signals.swing_scorecard', ['symbol' => 'SOL']))->assertOk();
         $this->assertSame(['15m', '30m', '1h', '4h'], array_column($res->json('rows'), 'interval'));
         $this->assertSame('SOLUSDT', $res->json('symbol'));
-        $this->assertSame('15m', $res->json('bot_interval'));
+        $this->assertSame('1h', $res->json('bot_interval'));
         $this->assertSame(8, $calls, 'Each timeframe plus its higher timeframe (for the S/R columns)');
         $this->assertArrayHasKey('profit_factor', $res->json('rows.0.unconfirmed'), 'The "?" flips are scored too');
         $this->assertArrayHasKey('profit_factor', $res->json('rows.0.sr'), 'And the S/R reversal engine');

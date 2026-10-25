@@ -100,6 +100,19 @@ class BreakoutScanTest extends TestCase
             ->map(fn ($pair) => (string) ($pair[0]->data()['text'] ?? ''))->values()->all();
     }
 
+    /** Resolved live EBD signals for the coin record gate. */
+    protected function record(int $n, float $r, string $side = 'LONG', string $symbol = 'TESTUSDT'): void
+    {
+        for ($i = 0; $i < $n; $i++) {
+            CryptoSignal::create([
+                'symbol' => $symbol, 'interval' => '5m', 'side' => $side, 'setup' => 'EBD_CONFIRMED', 'source' => 'ebd', 'is_shadow' => true,
+                'entry_price' => 100, 'stop_loss' => 99, 'take_profit_1' => 101.5, 'take_profit_2' => 102, 'take_profit_3' => 102, 'risk_reward' => 1.5,
+                'outcome' => $r > 0 ? 'TP2' : 'SL', 'r_multiple' => $r, 'resolved_at' => now(),
+                'candle_close_time' => Carbon::createFromTimestampMsUTC(EbdFixtures::T0 - ($i + 10) * 3_600_000),
+            ]);
+        }
+    }
+
     protected function confirmBar(): void
     {
         $this->five->bar(100.02, 100.225, 100.0, 100.21, 3200);
@@ -123,6 +136,9 @@ class BreakoutScanTest extends TestCase
 
     public function test_confirmation_is_stored_linked_and_sent_once(): void
     {
+        Carbon::setTestNow(Carbon::createFromTimestampMsUTC(EbdFixtures::T0));
+        $this->record(4, 1.5);
+        $this->record(2, -1.0);
         $this->scan(EbdFixtures::T0 + 30_000);
         $this->confirmBar();
 
@@ -140,8 +156,9 @@ class BreakoutScanTest extends TestCase
         $this->assertStringContainsString('TESTUSDT', $texts[0]);
         $this->assertStringContainsString('Alert only, no order placed', $texts[0]);
         $this->assertStringContainsString('EBD lost, PF 0.67', $texts[0], 'Every entry alert carries the backtest result');
+        $this->assertStringContainsString('TEST LONG live 30d: 6 signals, 4 won, PF 3.00', $texts[0], 'The coin record that let it through');
 
-        $signal = CryptoSignal::sole();
+        $signal = CryptoSignal::where('source', 'ebd')->whereNull('resolved_at')->sole();
         $this->assertSame('EBD_CONFIRMED', $signal->setup);
         $this->assertTrue($signal->is_shadow, 'EBD signals are never auto-traded');
         $this->assertSame('ebd', $signal->source);
@@ -163,6 +180,7 @@ class BreakoutScanTest extends TestCase
 
     public function test_live_price_through_the_trigger_with_volume_pace_sends_an_early_alert(): void
     {
+        config(['breakout.notifications.early' => true]);
         $this->scan(EbdFixtures::T0 + 30_000);
         $setup = BreakoutSetup::sole()->toEngine();
         $this->price = $setup['long_trigger'] + 0.1 * $setup['atr'];
@@ -185,6 +203,53 @@ class BreakoutScanTest extends TestCase
         $this->assertCount(1, $texts);
         $this->assertStringContainsString('EARLY BREAKOUT WATCH — LONG', $texts[0]);
         $this->assertStringContainsString('Provisional: breakout NOT confirmed', $texts[0]);
+        $this->assertSame('EBD_EARLY', CryptoSignal::sole()->setup);
+    }
+
+    public function test_without_a_good_coin_record_the_confirmation_is_tracked_but_not_sent(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestampMsUTC(EbdFixtures::T0));
+        $this->record(3, 1.5); // too few signals
+        $this->record(5, -1.0, 'SHORT'); // the other direction does not count
+        $this->scan(EbdFixtures::T0 + 30_000);
+        $this->confirmBar();
+
+        $this->scan(EbdFixtures::T0 + EbdFixtures::BAR_MS + 30_000);
+
+        $this->assertSame(L::CONFIRMED, BreakoutSetup::sole()->state);
+        $this->assertSame([], $this->telegramTexts());
+        $this->assertSame('EBD_CONFIRMED', CryptoSignal::where('source', 'ebd')->whereNull('resolved_at')->sole()->setup, 'Still recorded, so the coin can earn its place');
+        $this->assertNull(BreakoutSetup::sole()->telegram_message_id);
+    }
+
+    public function test_a_losing_coin_record_blocks_entries(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestampMsUTC(EbdFixtures::T0));
+        $this->record(3, 1.0);
+        $this->record(4, -1.0); // PF 0.75
+        $this->scan(EbdFixtures::T0 + 30_000);
+        $this->confirmBar();
+
+        $this->scan(EbdFixtures::T0 + EbdFixtures::BAR_MS + 30_000);
+
+        $this->assertSame([], $this->telegramTexts());
+    }
+
+    public function test_early_alerts_are_off_by_default_but_still_recorded(): void
+    {
+        $this->scan(EbdFixtures::T0 + 30_000);
+        $setup = BreakoutSetup::sole()->toEngine();
+        $this->price = $setup['long_trigger'] + 0.1 * $setup['atr'];
+        $first = EbdFixtures::T0 - 20 * EbdFixtures::BAR_MS;
+        foreach (array_merge(array_fill(0, 100, 100.0), [300.0, 300.0, 120.0]) as $i => $v) {
+            $open = $first + $i * 60_000;
+            $this->minuteRows[] = [$open, '100', (string) max(100, $this->price), '99.97', '100.05', '1', $open + 59_999, (string) $v, 10, '0', '0', '0'];
+        }
+
+        $this->scan(EbdFixtures::T0 + 150_000);
+
+        $this->assertSame(L::EARLY, BreakoutSetup::sole()->state);
+        $this->assertSame([], $this->telegramTexts());
         $this->assertSame('EBD_EARLY', CryptoSignal::sole()->setup);
     }
 
