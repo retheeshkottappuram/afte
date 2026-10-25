@@ -69,6 +69,9 @@ class DynamicTradeManager
             if ($trade->setup_tag === LabTrader::SETUP) {
                 return $this->manageLab($trade, $price);
             }
+            if ($trade->setup_tag === DayRangeTrader::SETUP) {
+                return $this->manageDayRange($trade, $price);
+            }
 
             // Early breakout: the hourly candle closed back inside the squeeze box, so the breakout failed.
             if (($failedClose = $this->failedBreakoutClose($trade)) !== null) {
@@ -267,6 +270,32 @@ class DynamicTradeManager
         $trade->save();
 
         return ['status' => 'managed', 'message' => "Lab {$trade->id} {$trade->symbol} at {$price}, stop {$trade->current_sl}."];
+    }
+
+    /**
+     * Day dip BUY: fixed stop, one full exit at the day target, and a close at 23:55 UTC (the trade lives one day).
+     *
+     * @return array{status: string, message: string}
+     */
+    protected function manageDayRange(Trade $trade, float $price): array
+    {
+        $trade->highest_price = max((float) ($trade->highest_price ?? $price), $price);
+        $trade->lowest_price = min((float) ($trade->lowest_price ?? $price), $price);
+        $dir = $trade->isLong() ? 1 : -1;
+        $target = (float) ($trade->meta['day_target'] ?? 0);
+
+        if (($price - (float) $trade->current_sl) * $dir <= 0) {
+            return $this->closeTradeUnlocked($trade, $trade->mode === 'live' ? $price : $this->paperExitPrice($trade, (float) $trade->current_sl, $price), 'STOP_LOSS');
+        }
+        if ($target > 0 && ($price - $target) * $dir >= 0) {
+            return $this->closeTradeUnlocked($trade, $trade->mode === 'live' ? $price : $target, 'TAKE_PROFIT');
+        }
+        if (now()->getTimestampMs() >= (int) ($trade->meta['day_close_at'] ?? PHP_INT_MAX)) {
+            return $this->closeTradeUnlocked($trade, $price, 'DAY_END');
+        }
+        $trade->save();
+
+        return ['status' => 'managed', 'message' => "Day range {$trade->id} {$trade->symbol} at {$price}, stop {$trade->current_sl}, target {$target}."];
     }
 
     /**

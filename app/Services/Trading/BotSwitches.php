@@ -14,7 +14,7 @@ class BotSwitches
 {
     public const KEY = 'bot_switches';
 
-    public const BOTS = ['swing', 'breakout', 'lab'];
+    public const BOTS = ['swing', 'breakout', 'lab', 'dayrange'];
 
     public static function on(string $bot): bool
     {
@@ -48,6 +48,7 @@ class BotSwitches
         return match ($bot) {
             'swing' => (bool) config('trading.swing_sar.enabled', false),
             'lab' => (bool) config('trading.lab.enabled', false),
+            'dayrange' => (bool) config('trading.day_range.enabled', false),
             'breakout' => true,
             default => false,
         };

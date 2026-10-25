@@ -15,6 +15,7 @@ use App\Services\Strategy\MarketScanService;
 use App\Services\Strategy\SetupStats;
 use App\Services\Strategy\Signal;
 use App\Services\Trading\BotSwitches;
+use App\Services\Trading\DayRangeTrader;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
 use App\Services\Trading\LabTrader;
@@ -63,7 +64,8 @@ class TradingDaemonCommand extends Command
         SignalAlerts $alerts,
         BreakoutWatcher $watcher,
         SwingSarTrader $sar,
-        LabTrader $lab
+        LabTrader $lab,
+        DayRangeTrader $dayRange
     ): int {
         @set_time_limit(120);
 
@@ -176,6 +178,22 @@ class TradingDaemonCommand extends Command
                     } catch (Throwable $e) {
                         $this->recordError($stats, 'Lab: '.$e->getMessage());
                         Log::warning("[TradeEngine] Lab: {$e->getMessage()}");
+                    }
+                }
+
+                // 3a''. Day dip BUY: levels after 00:05 UTC, then a price check every ~15s (virtual limit).
+                if (DayRangeTrader::enabled() && Cache::add('engine:day-range:'.intdiv(time(), 15), true, 30)) {
+                    try {
+                        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
+                        foreach ($dayRange->check($mode, $entriesAllowed, now()->getTimestampMs()) as $row) {
+                            $this->log("[{$mode}] DAY DIP {$row['symbol']} {$row['action']}: {$row['message']}");
+                            if ($row['action'] === 'opened') {
+                                $stats['opened']++;
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        $this->recordError($stats, 'Day range: '.$e->getMessage());
+                        Log::warning("[TradeEngine] Day range: {$e->getMessage()}");
                     }
                 }
 

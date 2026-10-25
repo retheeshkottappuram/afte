@@ -362,6 +362,11 @@ return [
         // margin_usd is used only when fund_share is 0.
         'fund_share' => (float) env('SWING_SAR_FUND_SHARE', 0.5),
         'margin_usd' => (float) env('SWING_SAR_MARGIN_USD', 10.0),
+        // User's decision (2026-10-25, "medium fund"): size each trade to lose risk_pct of equity at its stop (margin from
+        // the swing fund share, leverage 5x-10x as needed). 12-month 1h replay (sizing.py, runner exit, $24): 3% risk ->
+        // $28.6 after 12 months, max drawdown 77%, 24% chance of the balance halving at some point; 1.25% -> 45% / 0%.
+        // 0 = the old fixed margin (balance x fund_share / max_open).
+        'risk_pct' => (float) env('SWING_SAR_RISK_PCT', 3.0),
         'leverage' => (int) env('SWING_SAR_LEVERAGE', 5),
         'max_open' => (int) env('SWING_SAR_MAX_OPEN', 4),
         // The placed stop (line + ATR buffer) is capped at this % from entry (flips often print at a top / bottom).
@@ -405,21 +410,22 @@ return [
         'unconfirmed_sl_pct' => (float) env('SWING_SAR_UNCONFIRMED_SL_PCT', 0.6),
         // Only enter when the 4h SuperTrend points the same way.
         'require_4h_trend' => (bool) env('SWING_SAR_REQUIRE_4H', true),
-        // Checked every 5s, best price in R (1R = the entry-to-stop distance). User's decision (2026-10-20):
-        //  - partials [at R, share of the original size]: book 1/3 at +0.75R and 1/3 at +1.5R;
-        //  - ladder [at R, stop at R] (0 = breakeven + fees): at +0.75R the stop goes to -0.25R, at +1.5R to +0.5R;
+        // Checked every 5s, best price in R (1R = the entry-to-stop distance). User's decision (2026-10-25, "book maximum
+        // profit"): the "runner" exit, no partials. 12-month 1h test (swing_conf.py, 30 coins, 553 trades): runner PF 1.08
+        // (train / validation / last 3 months 1.11 / 0.78 / 1.38) vs the old partials 1/3 at +0.75R and 1/3 at +1.5R with
+        // ladder and ROE lock PF 0.94 (0.83 / 0.86 / 1.20); a full exit at 1.5R / 2R / 3R PF 1.00-1.02.
+        //  - partials [at R, share of the original size] (none);
+        //  - ladder [at R, stop at R] (0 = breakeven + fees): breakeven at +1R;
         //  - from +trail_from_r R the stop also trails the best price by trail_atr ATR (0 = off).
-        // 12-month test (bt_sar_exits.php, 8 coins, 15m, 4 slots): "in profit >= 0.5R, then closed at a loss" fell from
-        // 21.5% to 16.5% of trades, wins 39% -> 43%, max drawdown $55 -> $49; PF 0.84 -> 0.82 (months 1-10) and
-        // 0.82 -> 0.77 (last 2). No variant made the strategy profitable.
-        'partials' => [[0.75, 0.33], [1.5, 0.33]],
-        'ladder' => [[0.75, -0.25], [1.5, 0.5]],
-        'trail_from_r' => (float) env('SWING_SAR_TRAIL_FROM_R', 1.5),
-        'trail_atr' => (float) env('SWING_SAR_TRAIL_ATR', 1.5),
-        // Profit lock on peak ROE (price move % x leverage), user's request 2026-10-20: [peak ROE %, share of the peak
-        // gain the stop keeps]. From 10% ROE the stop sits in profit (at least breakeven + fees) and only moves up.
-        'profit_lock' => [[10, 0.50], [20, 0.65], [30, 0.75]],
-        // From this peak ROE the stop also trails just past the last 2 closed candles' low (long) / high (short).
+        // Old exits: partials [[0.75, 0.33], [1.5, 0.33]], ladder [[0.75, -0.25], [1.5, 0.5]], trail 1.5 / 1.5, profit_lock below.
+        'partials' => [],
+        'ladder' => [[1.0, 0.0]],
+        'trail_from_r' => (float) env('SWING_SAR_TRAIL_FROM_R', 2.0),
+        'trail_atr' => (float) env('SWING_SAR_TRAIL_ATR', 2.0),
+        // Profit lock on peak ROE (price move % x leverage): [peak ROE %, share of the peak gain the stop keeps]. Off in the
+        // runner exit (it cut winners short); the old setting was [[10, 0.50], [20, 0.65], [30, 0.75]].
+        'profit_lock' => [],
+        // With a profit lock: from this peak ROE the stop also trails just past the last 2 closed candles' low / high.
         'swing_trail_from_roe' => (float) env('SWING_SAR_SWING_TRAIL_FROM_ROE', 10),
         // Book half at TP1 (exits.tp1_r) too. Off: in the 15m test it did not help (PF 0.84 / 0.77 vs 0.85 / 0.83).
         'take_profit' => (bool) env('SWING_SAR_TAKE_PROFIT', false),
@@ -435,6 +441,27 @@ return [
     | sized to lose about risk_pct of equity at its (wide, 8-12%) stop. No new entries after `until` (UTC); open
     | trades keep their stops. Swing SAR leaves these coins alone while the lab owns them. Off: LAB_ENABLED=false.
     */
+    /*
+    | Day dip BUY (user's decision 2026-10-25, DayRangeTrader): on Watchlist coins in a daily uptrend (close above a
+    | rising EMA20), buy k x ADR(14) below the UTC day open, target tp x ADR above, stop sl x ADR below, close 23:55 UTC.
+    | Levels go to Telegram after the open; the engine buys at market when the price touches the level ("virtual limit").
+    | 12-month test (dayrange.py, 30 coins, 1h): best of 216 variants, PF 1.10 / 1.36 / 1.07, ~+0.02R a trade. Unproven.
+    */
+    'day_range' => [
+        'enabled' => (bool) env('DAY_RANGE_ENABLED', true),
+        'symbols' => array_values(array_filter(array_map(fn (string $s): string => strtoupper(trim($s)), explode(',', (string) env('DAY_RANGE_SYMBOLS', 'WATCHLIST'))))),
+        'k' => (float) env('DAY_RANGE_K', 0.8),
+        'tp' => (float) env('DAY_RANGE_TP', 0.6),
+        'sl' => (float) env('DAY_RANGE_SL', 0.8),
+        'adr_days' => 14,
+        'ema' => 20,
+        'risk_pct' => (float) env('DAY_RANGE_RISK_PCT', 1.0),
+        'max_sl_pct' => 10.0,          // the stop is 0.8 x the daily range (often 4-6%); size comes from risk_pct
+        'max_open' => (int) env('DAY_RANGE_MAX_OPEN', 2),
+        'plan_after_minutes' => 5,     // levels are worked out and sent at 00:05 UTC
+        'last_entry_hour' => 23,       // no new entry from 23:00 UTC (the trade closes at 23:55)
+    ],
+
     'lab' => [
         'enabled' => (bool) env('LAB_ENABLED', true),
         'until' => env('LAB_UNTIL', '2026-10-28 12:00:00'),

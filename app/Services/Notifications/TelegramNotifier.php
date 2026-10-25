@@ -187,6 +187,7 @@ Exit order: <code>'.e((string) $trade->meta['exit_client_order_id']).'</code>' :
             'MAX_HOLD_TIME' => 'max hold time',
             'OPPOSITE_SIGNAL' => 'opposite signal',
             'MANUAL_CLOSE' => 'closed manually',
+            'DAY_END' => 'end of the day',
             'EXCHANGE_OR_MANUAL_CLOSE', 'EXCHANGE_CLOSED' => 'closed on Binance, not by the bot',
             'BOT_REDUCE_ONLY' => 'bot reduce-only close',
             'KILL_SWITCH' => 'kill switch',

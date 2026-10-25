@@ -118,6 +118,20 @@ class SwingSarTrader
     }
 
     /**
+     * Order sizing keys: risk-based (swing_sar.risk_pct of equity lost at the stop) when set, else the fixed margin share.
+     *
+     * @return array<string, float|int>
+     */
+    public static function sizing(TradingAccount $account): array
+    {
+        $risk = (float) config('trading.swing_sar.risk_pct', 0);
+
+        return $risk > 0
+            ? ['risk_pct' => $risk]
+            : ['fixed_margin' => self::marginPerTrade($account), 'fixed_leverage' => (int) config('trading.swing_sar.leverage', 5)];
+    }
+
+    /**
      * Margin for one SAR trade: its share of the balance split over the SAR slots (fixed margin_usd when fund_share is 0).
      */
     public static function marginPerTrade(TradingAccount $account): float
@@ -236,9 +250,7 @@ class SwingSarTrader
             'interval' => $interval,
             'grade' => 'B',
             'indicators' => ['atr' => (float) $flip['atr'], 'rsi' => $flip['rsi'], 'volume_ratio' => $flip['volume_ratio']] + (isset($flip['breakdown']) ? ['v3' => $flip['breakdown']] : []),
-            'fixed_margin' => self::marginPerTrade(TradingAccount::getForMode($mode)),
-            'fixed_leverage' => (int) config('trading.swing_sar.leverage', 5),
-        ], $mode);
+        ] + self::sizing(TradingAccount::getForMode($mode)), $mode);
 
         if ($result['status'] !== 'opened') {
             $this->telegram->send($closedNote !== null

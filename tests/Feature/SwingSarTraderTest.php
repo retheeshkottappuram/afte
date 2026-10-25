@@ -97,7 +97,7 @@ class SwingSarTraderTest extends TestCase
         return app(SwingSarTrader::class)->run('paper', $entriesAllowed);
     }
 
-    public function test_a_confirmed_flip_opens_a_trade_sized_from_half_the_fund(): void
+    public function test_a_confirmed_flip_opens_a_trade_sized_to_lose_three_percent_at_the_stop(): void
     {
         $this->flips = [$this->flip('LONG')];
 
@@ -107,8 +107,10 @@ class SwingSarTraderTest extends TestCase
         $trade = Trade::where('setup_tag', SwingSarTrader::SETUP)->sole();
         $this->assertSame('LONG', $trade->side);
         $this->assertSame(5, (int) $trade->leverage);
-        // $24 x 50% / 4 slots = $3 margin.
-        $this->assertEqualsWithDelta(3.0, (float) $trade->margin_used, 0.2);
+        // 3% of $24 = $0.72 lost at the 2% stop: $36 notional, $7.20 margin at 5x.
+        $risk = abs((float) $trade->entry_price - (float) $trade->initial_sl) * (float) $trade->quantity;
+        $this->assertEqualsWithDelta(0.72, $risk, 0.05);
+        $this->assertEqualsWithDelta(7.2, (float) $trade->margin_used, 0.4);
         $this->assertEqualsWithDelta(5.0, (float) $trade->meta['signal_price'], 1e-9, 'The chart signal it came from');
         $text = implode("\n", array_map(fn (array $pair): string => (string) ($pair[0]->data()['text'] ?? ''), Http::recorded()->all()));
         $this->assertStringContainsString('opposite swing flip', $text);
@@ -244,8 +246,37 @@ class SwingSarTraderTest extends TestCase
         $this->assertSame('OPPOSITE_SIGNAL', $trade->fresh()->exit_reason);
     }
 
+    /** The pre-2026-10-25 exits (the partial / ladder mechanism is still configurable). */
+    protected function oldPartialExits(): void
+    {
+        config([
+            'trading.swing_sar.partials' => [[0.75, 0.33], [1.5, 0.33]],
+            'trading.swing_sar.ladder' => [[0.75, -0.25], [1.5, 0.5]],
+            'trading.swing_sar.trail_from_r' => 1.5,
+            'trading.swing_sar.trail_atr' => 1.5,
+        ]);
+    }
+
+    public function test_the_default_runner_books_nothing_early_then_goes_to_breakeven_at_one_r(): void
+    {
+        $trade = $this->sarTrade('LONG'); // entry 5.00, stop 4.85 (1R = 0.15), qty 10, ATR 0.06
+        $manager = app(DynamicTradeManager::class);
+
+        $manager->manageTrade($trade, 5.12); // +0.8R: the old exit booked a third here
+        $trade->refresh();
+        $this->assertEqualsWithDelta(10.0, (float) $trade->remaining_quantity, 1e-9, 'No partial: the winner runs');
+        $this->assertEqualsWithDelta(4.85, (float) $trade->current_sl, 1e-9);
+
+        $manager->manageTrade($trade, 5.16); // +1.07R
+        $trade->refresh();
+        $this->assertGreaterThanOrEqual(5.0, (float) $trade->current_sl, 'Breakeven (plus fees) from +1R');
+        $this->assertLessThan(5.02, (float) $trade->current_sl);
+        $this->assertEqualsWithDelta(10.0, (float) $trade->remaining_quantity, 1e-9);
+    }
+
     public function test_partials_are_booked_and_the_stop_steps_up_then_trails(): void
     {
+        $this->oldPartialExits();
         $trade = $this->sarTrade('LONG'); // entry 5.00, stop 4.85 (1R = 0.15), qty 10, ATR 0.06
         $manager = app(DynamicTradeManager::class);
 
@@ -282,6 +313,7 @@ class SwingSarTraderTest extends TestCase
 
     public function test_a_short_books_a_third_and_steps_its_stop_down(): void
     {
+        $this->oldPartialExits();
         $trade = $this->sarTrade('SHORT'); // entry 5.00, stop 5.15
 
         app(DynamicTradeManager::class)->manageTrade($trade, 4.80); // +1.33R
@@ -291,8 +323,30 @@ class SwingSarTraderTest extends TestCase
         $this->assertEqualsWithDelta(5.0 + 0.25 * 0.15, (float) $trade->current_sl, 1e-6);
     }
 
+    public function test_with_risk_pct_off_the_old_fixed_margin_share_is_used(): void
+    {
+        config(['trading.swing_sar.risk_pct' => 0]);
+        $this->flips = [$this->flip('LONG')];
+
+        $this->assertSame('opened', $this->runSar()[0]['action']);
+        // $24 x 50% / 4 slots = $3 margin.
+        $this->assertEqualsWithDelta(3.0, (float) Trade::sole()->margin_used, 0.2);
+    }
+
+    public function test_risk_sizing_stays_inside_the_swing_half_of_the_fund(): void
+    {
+        $this->sarTrade('SHORT', ['symbol' => 'SUIUSDT', 'margin_used' => 12.0]); // the whole $12 swing half
+        $this->flips = [$this->flip('LONG')];
+
+        $row = $this->runSar()[0];
+
+        $this->assertSame('skipped', $row['action']);
+        $this->assertStringContainsString('swing half of the fund', $row['message']);
+    }
+
     public function test_the_open_message_lists_the_bookings_and_stop_steps(): void
     {
+        $this->oldPartialExits();
         $this->flips = [$this->flip('LONG')];
 
         $this->runSar();

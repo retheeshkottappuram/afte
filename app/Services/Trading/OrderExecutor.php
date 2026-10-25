@@ -53,6 +53,7 @@ class OrderExecutor
         $maxSlPct = match (true) {
             $isSar => (float) config('trading.swing_sar.max_order_sl_pct', 6.0),
             $setup === LabTrader::SETUP => (float) config('trading.lab.max_sl_pct', 15.0), // 4h ATR stops, sized by risk
+            $setup === DayRangeTrader::SETUP => (float) config('trading.day_range.max_sl_pct', 10.0), // 0.8 x daily range, sized by risk
             default => StrategyEngine::configuredMaxSlPct($setup),
         };
         if ($slPct > $maxSlPct + 0.0001) {
@@ -76,7 +77,7 @@ class OrderExecutor
 
             $sizing = isset($signal['fixed_margin'])
                 ? $this->riskManager->fixedMarginSize($account, $symbol, $referencePrice, $structuralSl, (float) $signal['fixed_margin'], (int) ($signal['fixed_leverage'] ?? 5))
-                : $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl, isset($signal['risk_pct']) ? (float) $signal['risk_pct'] : null, $isManual);
+                : $this->riskManager->calculatePositionSize($account, $symbol, $referencePrice, $structuralSl, isset($signal['risk_pct']) ? (float) $signal['risk_pct'] : null, $isManual, $setup);
             if (! $sizing['allowed']) {
                 return $this->rejected($sizing['reason']);
             }
@@ -166,7 +167,7 @@ class OrderExecutor
 
         $tpRef = null;
         // Swing SAR books TP1 only when swing_sar.take_profit is on; otherwise it exits on the flip or the trailing stop.
-        if (($signal['setup'] ?? null) !== LabTrader::SETUP && (($signal['setup'] ?? null) !== SwingSarTrader::SETUP || config('trading.swing_sar.take_profit', true))) {
+        if (! in_array($signal['setup'] ?? null, [LabTrader::SETUP, DayRangeTrader::SETUP], true) && (($signal['setup'] ?? null) !== SwingSarTrader::SETUP || config('trading.swing_sar.take_profit', true))) {
             try {
                 $tpQty = $client->formatQuantity($symbol, (float) $sizing['quantity'] * $exitPlan->tp1CloseRatio());
                 if ($tpQty > 0) {

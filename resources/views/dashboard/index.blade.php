@@ -139,7 +139,7 @@
                         @php($canSwitchBots = (bool) (Auth::user()?->isAdmin() || Auth::user()?->hasPermission('manage_trading')))
                         <div class="flex items-center gap-1 flex-shrink-0" title="Turn each auto-trading bot on or off. Open trades keep their stops and exits.">
                             {{-- With EBD v1 (alerts only) the 'breakout' switch only gates Trend Pullback entries. --}}
-                            @foreach (['swing' => 'Swing', 'breakout' => \App\Services\Strategy\StrategyEngine::legacyBreakoutsConfigured() ? 'Breakout' : 'Pullback', 'lab' => 'Lab SOL/NEAR'] as $bot => $botLabel)
+                            @foreach (['swing' => 'Swing', 'breakout' => \App\Services\Strategy\StrategyEngine::legacyBreakoutsConfigured() ? 'Breakout' : 'Pullback', 'lab' => 'Lab SOL/NEAR', 'dayrange' => 'Day dip'] as $bot => $botLabel)
                                 <button type="button" id="bot-switch-{{ $bot }}" data-bot="{{ $bot }}" data-label="{{ $botLabel }}" data-on="{{ $botSwitches[$bot] ? '1' : '0' }}"
                                     @if ($canSwitchBots) onclick="toggleBot('{{ $bot }}')" @else disabled @endif
                                     class="bot-switch px-2 py-1.5 text-[11px] font-mono font-bold rounded-lg border transition flex items-center gap-1 {{ $botSwitches[$bot] ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700' }}">

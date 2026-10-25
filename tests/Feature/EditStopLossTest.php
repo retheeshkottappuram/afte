@@ -51,13 +51,13 @@ class EditStopLossTest extends TestCase
         $this->assertEqualsWithDelta(4.90, (float) $trade->meta['manual_sl']['price'], 1e-9);
         $this->assertEqualsWithDelta(4.85, (float) $trade->initial_sl, 1e-9, 'R is unchanged');
 
-        // A pullback never loosens the user's stop; +0.8R still books a third and steps the stop to -0.25R.
+        // A pullback never loosens the user's stop; at +1R the runner exit still moves it to breakeven.
         $manager = app(DynamicTradeManager::class);
         $manager->manageTrade($trade->fresh(), 4.95);
         $this->assertEqualsWithDelta(4.90, (float) $trade->fresh()->current_sl, 1e-9);
-        $manager->manageTrade($trade->fresh(), 5.12);
-        $this->assertEqualsWithDelta(5.0 - 0.25 * 0.15, (float) $trade->fresh()->current_sl, 1e-6);
-        $this->assertEqualsWithDelta(6.7, (float) $trade->fresh()->remaining_quantity, 0.05);
+        $manager->manageTrade($trade->fresh(), 5.16);
+        $this->assertGreaterThanOrEqual(5.0, (float) $trade->fresh()->current_sl);
+        $this->assertEqualsWithDelta(10.0, (float) $trade->fresh()->remaining_quantity, 1e-9, 'No partials: the winner runs');
     }
 
     public function test_the_stop_may_be_loosened_within_the_limit(): void
