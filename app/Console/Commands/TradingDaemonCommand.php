@@ -43,6 +43,14 @@ class TradingDaemonCommand extends Command
      */
     protected $description = 'Cron-driven trading engine: manage open trades and run the NEAR 1h breakout strategy';
 
+    /**
+     * Step errors already written to the engine log in this run (step|message => true), so a failure repeating every
+     * 5s pass is logged once.
+     *
+     * @var array<string, bool>
+     */
+    protected array $loggedErrors = [];
+
     public function handle(
         TradingModeManager $modeManager,
         DynamicTradeManager $tradeManager,
@@ -70,39 +78,42 @@ class TradingDaemonCommand extends Command
                 $account = TradingAccount::getForMode($mode);
                 $pausedReason = $this->pausedReason($modeManager, $account, $mode);
 
+                // Each step runs on its own: a cache or file error in one (e.g. the shared host's file cache losing a
+                // folder) is logged with its step and the rest of the pass, above all trade management, still runs.
+
                 // 1. Live wallet balance (every ~30s)
-                if (Cache::add('engine:live-sync', true, 30) && ($mode === 'live' || Trade::where('mode', 'live')->where('status', 'OPEN')->exists())) {
-                    $exchangeSync->syncLiveAccountAndPositions(TradingAccount::getForMode('live'));
-                }
+                $this->step('live-sync', $stats, function () use ($mode, $exchangeSync): void {
+                    if (Cache::add('engine:live-sync', true, 30) && ($mode === 'live' || Trade::where('mode', 'live')->where('status', 'OPEN')->exists())) {
+                        $exchangeSync->syncLiveAccountAndPositions(TradingAccount::getForMode('live'));
+                    }
+                });
 
                 // 2. Manage every open trade in both modes (a mode switch never orphans a position)
                 foreach (Trade::where('status', 'OPEN')->get() as $trade) {
-                    $result = $tradeManager->manageTrade($trade);
-                    $stats['managed']++;
-                    if ($result['status'] === 'closed') {
-                        $stats['closed']++;
-                        $this->log("CLOSED {$result['message']}");
-                    } elseif ($result['status'] === 'error') {
-                        $this->recordError($stats, $result['message']);
-                    }
+                    $this->step("manage #{$trade->id}", $stats, function () use ($trade, $tradeManager, &$stats): void {
+                        $result = $tradeManager->manageTrade($trade);
+                        $stats['managed']++;
+                        if ($result['status'] === 'closed') {
+                            $stats['closed']++;
+                            $this->log("CLOSED {$result['message']}");
+                        } elseif ($result['status'] === 'error') {
+                            $this->recordError($stats, $result['message']);
+                        }
+                    });
                 }
 
                 // 2b. NEAR strategy alerts: the trail of the script's position on the live price (BUY / EXIT alerts
                 //     to Telegram even when the bot is not in the trade).
-                if (Cache::has(NearBreakoutTrader::SIGNAL_KEY)) {
-                    try {
-                        if (($alert = $near->checkSignalTrail()) !== null) {
-                            $this->log("NEAR alert: trail {$alert}");
-                        }
-                    } catch (Throwable $e) {
-                        Log::warning("[TradeEngine] NEAR trail alert: {$e->getMessage()}");
+                $this->step('near-alert', $stats, function () use ($near): void {
+                    if (Cache::has(NearBreakoutTrader::SIGNAL_KEY) && ($alert = $near->checkSignalTrail()) !== null) {
+                        $this->log("NEAR alert: trail {$alert}");
                     }
-                }
+                });
 
                 // 3. NEAR breakout: from 30s after each 1h close, once a minute until that candle is handled (so an
                 //    API error is retried). The EMA exit always runs; new entries follow pause / stop / breaker state.
-                if ((NearBreakoutTrader::enabled() || NearBreakoutTrader::hasOpenTrades()) && time() % 3600 >= 30 && Cache::add('engine:near:'.intdiv(time(), 60), true, 120)) {
-                    try {
+                $this->step('near breakout', $stats, function () use ($near, $mode, $account, $pausedReason, &$stats): void {
+                    if ((NearBreakoutTrader::enabled() || NearBreakoutTrader::hasOpenTrades()) && time() % 3600 >= 30 && Cache::add('engine:near:'.intdiv(time(), 60), true, 120)) {
                         $entriesAllowed = NearBreakoutTrader::enabled() && $pausedReason === null && $account->fresh()->canTrade();
                         $row = $near->run($mode, $entriesAllowed);
                         if ($row['action'] !== 'none') {
@@ -113,30 +124,29 @@ class TradingDaemonCommand extends Command
                         if ($row['action'] === 'opened') {
                             $stats['opened']++;
                         }
-                    } catch (Throwable $e) {
-                        $this->recordError($stats, 'NEAR breakout: '.$e->getMessage());
-                        Log::warning("[TradeEngine] NEAR breakout: {$e->getMessage()}");
                     }
-                }
+                });
 
                 // 4. Equity snapshot every 5 minutes
-                if (Cache::add('engine:snapshot:'.intdiv(time(), 300), true, 600)) {
-                    $account->refresh();
-                    EquitySnapshot::create([
-                        'mode' => $mode,
-                        'balance' => $account->balance,
-                        'equity' => $account->equity ?: $account->balance,
-                        'open_positions' => Trade::where('mode', $mode)->where('status', 'OPEN')->count(),
-                    ]);
-                }
+                $this->step('snapshot', $stats, function () use ($account, $mode): void {
+                    if (Cache::add('engine:snapshot:'.intdiv(time(), 300), true, 600)) {
+                        $account->refresh();
+                        EquitySnapshot::create([
+                            'mode' => $mode,
+                            'balance' => $account->balance,
+                            'equity' => $account->equity ?: $account->balance,
+                            'open_positions' => Trade::where('mode', $mode)->where('status', 'OPEN')->count(),
+                        ]);
+                    }
+                });
 
-                $modeManager->recordHeartbeat([
+                $this->step('heartbeat', $stats, fn () => $modeManager->recordHeartbeat([
                     'mode' => $mode,
                     'paused_reason' => $pausedReason ?? (! $account->is_running ? 'Auto-trading is stopped (open trades are still managed).' : null),
                     'open_trades' => Trade::where('status', 'OPEN')->count(),
                     'cycle_ms' => (int) round((microtime(true) - $passStarted) * 1000),
                     'next_scan_at' => now()->setTimestamp((intdiv(time(), 3600) + 1) * 3600 + 30)->toIso8601String(),
-                ] + $stats);
+                ] + $stats));
 
                 if ($this->option('once')) {
                     break;
@@ -150,7 +160,7 @@ class TradingDaemonCommand extends Command
         } catch (Throwable $e) {
             $this->recordError($stats, $e->getMessage());
             Log::error("[TradeEngine] {$e->getMessage()}", ['exception' => $e]);
-            $this->log('ERROR '.$e->getMessage());
+            $this->log('ERROR '.$e->getMessage().' ('.basename($e->getFile()).':'.$e->getLine().')');
             $modeManager->recordHeartbeat(['mode' => $modeManager->activeMode()] + $stats);
         } finally {
             $lock->release();
@@ -178,6 +188,32 @@ class TradingDaemonCommand extends Command
             'last_error' => $previous['last_error'] ?? null,
             'last_error_at' => $previous['last_error_at'] ?? null,
         ];
+    }
+
+    /**
+     * Run one step of an engine pass. A failure is recorded and logged once per run per step (the step is retried on
+     * the next 5s pass) instead of ending the whole pass.
+     *
+     * @param  array<string, mixed>  $stats
+     */
+    protected function step(string $name, array &$stats, callable $work): void
+    {
+        try {
+            $work();
+        } catch (Throwable $e) {
+            if (str_contains($e->getMessage(), 'fopen(')) {
+                // The file cache's folder vanished (cache:clear while the engine runs): forget PHP's cached file
+                // checks so the next attempt creates it again.
+                clearstatcache(true);
+            }
+            $this->recordError($stats, "[{$name}] ".$e->getMessage());
+            Log::warning("[TradeEngine] {$name}: {$e->getMessage()}", ['exception' => $e]);
+            $key = preg_replace('/ #\d+$/', '', $name).'|'.$e->getMessage();
+            if (! isset($this->loggedErrors[$key])) {
+                $this->loggedErrors[$key] = true;
+                $this->log("ERROR [{$name}] {$e->getMessage()} (".basename($e->getFile()).':'.$e->getLine().')');
+            }
+        }
     }
 
     /**

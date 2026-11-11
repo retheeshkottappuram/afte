@@ -2,10 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\NearBreakoutTrader;
 use App\Services\Trading\TradingDaemonManager;
 use App\Services\Trading\TradingModeManager;
+use ErrorException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Mockery\MockInterface;
@@ -50,7 +53,38 @@ class EngineHeartbeatTest extends TestCase
 
         $details = app(TradingModeManager::class)->heartbeat()['details'];
         $this->assertSame('running', app(TradingModeManager::class)->heartbeat()['state'], 'The run finished and wrote its heartbeat');
-        $this->assertStringContainsString('NEAR breakout: HTTP 503', $details['last_error']);
+        $this->assertStringContainsString('[near breakout] HTTP 503', $details['last_error']);
         $this->assertNotNull($details['last_error_at']);
+    }
+
+    public function test_a_cache_file_error_in_one_trade_does_not_stop_the_rest_of_the_pass(): void
+    {
+        $make = fn (string $symbol): Trade => Trade::create([
+            'symbol' => $symbol, 'side' => 'LONG', 'mode' => 'paper', 'status' => 'OPEN', 'stage' => 'ENTRY',
+            'entry_price' => 100.0, 'quantity' => 0.5, 'remaining_quantity' => 0.5, 'margin_used' => 10.0, 'leverage' => 1,
+            'initial_sl' => 99.0, 'current_sl' => 99.0, 'tp1_price' => 0, 'tp2_price' => 0, 'opened_at' => now(),
+        ]);
+        $broken = $make('SOLUSDT');
+        $make('NEARUSDT');
+        $this->mock(DynamicTradeManager::class, function (MockInterface $mock) use ($broken): void {
+            $mock->shouldReceive('manageTrade')->twice()->andReturnUsing(function (Trade $t) use ($broken): array {
+                if ($t->id === $broken->id) {
+                    throw new ErrorException('fopen(/storage/framework/cache/data/0a/d3/0ad3): Failed to open stream: No such file or directory');
+                }
+
+                return ['status' => 'managed', 'message' => 'ok'];
+            });
+        });
+        $this->mock(NearBreakoutTrader::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('run')->once()->andReturn(['action' => 'none', 'message' => 'No entry.']);
+        });
+
+        $this->artisan('trade:engine --once')->assertSuccessful();
+
+        $beat = app(TradingModeManager::class)->heartbeat();
+        $this->assertSame('running', $beat['state'], 'The heartbeat is still written');
+        $this->assertSame(1, $beat['details']['managed'], 'The other trade was managed');
+        $this->assertStringContainsString("[manage #{$broken->id}] fopen(", $beat['details']['last_error']);
+        $this->assertStringContainsString("ERROR [manage #{$broken->id}] fopen(", implode("\n", app(TradingDaemonManager::class)->getRecentLogs(20)));
     }
 }
