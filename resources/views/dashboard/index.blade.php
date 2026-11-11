@@ -477,7 +477,10 @@
                         <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
                         <h2 class="font-bold text-sm tracking-wide text-white font-mono uppercase">NEAR 1h Breakout</h2>
                     </div>
-                    <span class="text-xs text-slate-400 font-mono" id="near-candle">Waiting for the next 1h close</span>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs text-slate-400 font-mono" id="near-candle">Waiting for the next 1h close</span>
+                        <a href="{{ route('chart.index') }}" class="px-2 py-1 text-[11px] font-mono font-bold rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25">📊 Chart</a>
+                    </div>
                 </div>
                 <div class="p-5 grid grid-cols-2 md:grid-cols-5 gap-3 text-xs font-mono">
                     <div><div class="text-slate-400">Close</div><div id="near-close" class="text-white font-bold">-</div></div>

@@ -204,6 +204,7 @@ class NearBreakoutTraderTest extends TestCase
         $this->assertStringContainsString('Entry ≈ <code>5.05</code>', $buy);
         $this->assertStringContainsString('size 100% of the balance', $buy);
         $this->assertStringContainsString('PF 0.92', $buy);
+        $this->assertStringContainsString(route('chart.index'), $buy, 'Links to the SignalAlgo PRO chart');
         $this->assertSame(1, $this->sent('not traded by the bot'), 'Then the bot says why it did not trade');
     }
 

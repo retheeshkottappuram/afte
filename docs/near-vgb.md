@@ -19,6 +19,27 @@ Everything runs on closed 1h NEARUSDT candles. The bot checks each candle 30 sec
 | Exit 2 | `trail_points` = `trail_offset` = 0.10 x ATR | the trail arms at entry + d, then exits at the high − d; d updates to the latest ATR every candle; checked on the mark price about every 5s while the cron engine runs |
 | Safety stop | none | a reduce-only Binance stop at entry − 3 x ATR (at most 8%), so a crash between engine runs is capped |
 
+## SignalAlgo PRO chart (`/chart`)
+
+The chart shows NEARUSDT 1h candles:
+
+- **Lines:** EMA50, the breakout level (a dashed step line for the highest close of the previous 12 candles), and the trail line once it arms.
+- **Markers:** ▲ BUY 100% / 50% and ▼ EXIT (EMA or trail, with the % result), plus ● markers for the bot's own trades.
+
+How it works:
+
+- **Same code as the bot:** markers come from `NearBreakoutTrader::series()`, the code the bot and the Telegram alerts use.
+- **Trail exits:** replayed on 5m candles.
+- **Panels:** what the next close needs (level, EMA, rank and size), the signal or bot position, the engine's last decision, and the stats for the window.
+- **Data source:**
+  - `app/Services/Trading/NearChart.php` builds the data, cached per closed hour (Binance is read once an hour);
+  - the forming candle streams live from Binance in the browser.
+- **Telegram links:** each Telegram alert links to the chart.
+
+On the cached data the chart's replay matches an independent Python replay event for event. Over the last 500 hours:
+
+- 28 trades, 79% winners, PF 0.99, −0.15% after fees.
+
 ## Telegram
 
 All of these messages are sent with priority, so the hourly message limit never holds them back.

@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\RolePermissionController;
 use App\Http\Controllers\Admin\UserManagementController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Auth\RegisteredUserController;
+use App\Http\Controllers\ChartController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExchangeStreamController;
 use App\Http\Controllers\TradeHistoryController;
@@ -65,7 +66,11 @@ Route::middleware('auth')->group(function (): void {
         Route::get('/trading-daemon/logs', [DashboardController::class, 'daemonLogs'])->name('api.trading_daemon.logs');
     });
 
-    // 4. Administration (Admin Role Required)
+    // 4. SignalAlgo PRO chart (NEAR 1H Volatility-Gated Breakout, read-only)
+    Route::get('/chart', [ChartController::class, 'index'])->middleware('permission:view_signals')->name('chart.index');
+    Route::get('/api/chart/near', [ChartController::class, 'data'])->middleware('permission:view_signals')->name('api.chart.near');
+
+    // 5. Administration (Admin Role Required)
     Route::middleware('admin')->group(function (): void {
         // Protected User Registration (Admin Only)
         Route::get('/register', [RegisteredUserController::class, 'create'])->name('register');

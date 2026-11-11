@@ -67,61 +67,95 @@ class NearBreakoutTrader
      */
     public static function evaluate(array $c): array
     {
+        $k = count($c['closes'] ?? []) - 1;
+        $row = self::series($c, max(0, $k))[$k] ?? null;
+        if ($row === null || ! $row['ok']) {
+            $p = (array) config('trading.near_vgb');
+
+            return ['ok' => false, 'entry' => false, 'size' => 0.0, 'close' => $k >= 0 ? (float) $c['closes'][$k] : 0.0, 'open' => $k >= 0 ? (float) $c['opens'][$k] : 0.0,
+                'ema' => null, 'atr' => null, 'atr_pct' => null, 'rank' => null, 'highest' => null,
+                'why' => sprintf('not enough 1h history (%d closed candles, %d needed)', $k + 1, (int) ($p['gate_len'] ?? 1440) + (int) ($p['atr_len'] ?? 14) + 2)];
+        }
+        $failed = array_keys(array_filter($row['checks'], fn (bool $ok): bool => ! $ok));
+        unset($row['checks']);
+
+        return $row + ['why' => $failed === [] ? 'all entry conditions met' : 'no entry: not '.implode(', not ', $failed)];
+    }
+
+    /**
+     * The script on every closed candle from index $from: EMA, ATR, ATR%, the lagged volatility rank, the size, the
+     * breakout level (highest close of the previous break_len candles) and the entry checks. The bot, the chart and
+     * the Telegram alerts all read this, so they always agree.
+     *
+     * @param  array<string, array<int, float|int>>  $c
+     * @return array<int, array{ok: bool, entry: bool, size: float, close: float, open: float, ema: ?float, atr: ?float, atr_pct: ?float, rank: ?float, highest: ?float, checks: array<string, bool>}>
+     */
+    public static function series(array $c, int $from = 0): array
+    {
         $p = (array) config('trading.near_vgb');
         $breakLen = (int) ($p['break_len'] ?? 12);
         $gateLen = (int) ($p['gate_len'] ?? 1440);
+        $emaLen = (int) ($p['ema_len'] ?? 50);
+        $minAtrPct = (float) ($p['min_atr_pct'] ?? 0.3);
+        $highGate = (float) ($p['high_gate'] ?? 80);
+        $lowGate = (float) ($p['low_gate'] ?? 20);
         $closes = array_map('floatval', $c['closes'] ?? []);
-        $k = count($closes) - 1;
-        $none = ['ok' => false, 'entry' => false, 'size' => 0.0, 'close' => $k >= 0 ? $closes[$k] : 0.0, 'open' => $k >= 0 ? (float) $c['opens'][$k] : 0.0, 'ema' => null, 'atr' => null, 'atr_pct' => null, 'rank' => null, 'highest' => null];
+        $n = count($closes);
 
-        $ema = Indicators::ema($closes, (int) ($p['ema_len'] ?? 50));
+        $ema = Indicators::ema($closes, $emaLen);
         $atr = Indicators::atr($c['highs'], $c['lows'], $closes, (int) ($p['atr_len'] ?? 14));
-        $atrPct = fn (int $i): ?float => $atr[$i] === null || $closes[$i] <= 0 ? null : 100.0 * $atr[$i] / $closes[$i];
-
-        // Percent rank on the previous candle: share of its previous gate_len ATR% values that are <= its own.
-        $j = $k - 1;
-        if ($k < $breakLen + 1 || $ema[$k] === null || $atr[$k] === null || $j - $gateLen < 0 || $atrPct($j - $gateLen) === null) {
-            return $none + ['why' => sprintf('not enough 1h history (%d closed candles, %d needed)', $k + 1, $gateLen + (int) ($p['atr_len'] ?? 14) + 2)];
-        }
-        $current = $atrPct($j);
-        $below = 0;
-        for ($i = $j - $gateLen; $i < $j; $i++) {
-            if ($atrPct($i) <= $current) {
-                $below++;
-            }
-        }
-        $rank = 100.0 * $below / $gateLen;
-        $size = match (true) {
-            $rank >= (float) ($p['high_gate'] ?? 80) => 0.0,
-            $rank <= (float) ($p['low_gate'] ?? 20) => 1.0,
-            default => 0.5,
-        };
-
+        $atrPct = array_map(fn (?float $a, float $close): ?float => $a === null || $close <= 0 ? null : 100.0 * $a / $close, $atr, $closes);
         $highest = fn (int $i): float => max(array_slice($closes, $i - $breakLen + 1, $breakLen));
-        $cross = $closes[$k] > $highest($k - 1) && $closes[$k - 1] <= $highest($k - 2);
-        $nowPct = (float) $atrPct($k);
-        $checks = [
-            'close crossed above the 12-candle high' => $cross,
-            'close above EMA'.((int) ($p['ema_len'] ?? 50)) => $closes[$k] > $ema[$k],
-            'green candle' => $closes[$k] > (float) $c['opens'][$k],
-            sprintf('ATR %.2f%% >= %.2f%%', $nowPct, (float) ($p['min_atr_pct'] ?? 0.3)) => $nowPct >= (float) ($p['min_atr_pct'] ?? 0.3),
-            sprintf('volatility rank %.0f below %.0f', $rank, (float) ($p['high_gate'] ?? 80)) => $size > 0,
-        ];
-        $failed = array_keys(array_filter($checks, fn (bool $ok): bool => ! $ok));
 
-        return [
-            'ok' => true,
-            'entry' => $failed === [],
-            'size' => $size,
-            'close' => $closes[$k],
-            'open' => (float) $c['opens'][$k],
-            'ema' => (float) $ema[$k],
-            'atr' => (float) $atr[$k],
-            'atr_pct' => round($nowPct, 4),
-            'rank' => round($rank, 2),
-            'highest' => $highest($k - 1),
-            'why' => $failed === [] ? 'all entry conditions met' : 'no entry: not '.implode(', not ', $failed),
-        ];
+        $rows = [];
+        for ($k = max(0, $from); $k < $n; $k++) {
+            // Percent rank on the previous candle: share of its previous gate_len ATR% values that are <= its own.
+            $j = $k - 1;
+            if ($k < $breakLen + 1 || $ema[$k] === null || $atr[$k] === null || $j - $gateLen < 0 || $atrPct[$j - $gateLen] === null) {
+                $rows[$k] = ['ok' => false, 'entry' => false, 'size' => 0.0, 'close' => $closes[$k], 'open' => (float) $c['opens'][$k], 'ema' => $ema[$k], 'atr' => $atr[$k], 'atr_pct' => $atrPct[$k], 'rank' => null, 'highest' => null, 'checks' => []];
+
+                continue;
+            }
+            $current = $atrPct[$j];
+            $below = 0;
+            for ($i = $j - $gateLen; $i < $j; $i++) {
+                if ($atrPct[$i] <= $current) {
+                    $below++;
+                }
+            }
+            $rank = 100.0 * $below / $gateLen;
+            $size = match (true) {
+                $rank >= $highGate => 0.0,
+                $rank <= $lowGate => 1.0,
+                default => 0.5,
+            };
+
+            $level = $highest($k - 1);
+            $nowPct = (float) $atrPct[$k];
+            $checks = [
+                'close crossed above the 12-candle high' => $closes[$k] > $level && $closes[$k - 1] <= $highest($k - 2),
+                'close above EMA'.$emaLen => $closes[$k] > $ema[$k],
+                'green candle' => $closes[$k] > (float) $c['opens'][$k],
+                sprintf('ATR %.2f%% >= %.2f%%', $nowPct, $minAtrPct) => $nowPct >= $minAtrPct,
+                sprintf('volatility rank %.0f below %.0f', $rank, $highGate) => $size > 0,
+            ];
+
+            $rows[$k] = [
+                'ok' => true,
+                'entry' => ! in_array(false, $checks, true),
+                'size' => $size,
+                'close' => $closes[$k],
+                'open' => (float) $c['opens'][$k],
+                'ema' => (float) $ema[$k],
+                'atr' => (float) $atr[$k],
+                'atr_pct' => round($nowPct, 4),
+                'rank' => round($rank, 2),
+                'highest' => $level,
+                'checks' => $checks,
+            ];
+        }
+
+        return $rows;
     }
 
     /**
@@ -244,7 +278,7 @@ class NearBreakoutTrader
                 Cache::forget(self::SIGNAL_KEY);
                 if (! $botInTrade) {
                     $this->telegram->send(sprintf("📉 <b>NEAR SELL / exit signal</b> %s (1h)\nThe 1h candle closed at <code>%s</code>, below EMA50 <code>%s</code>: the strategy exits here.\nFrom the BUY at <code>%s</code>: %+.2f%%",
-                        e($symbol), $this->fmt($e['close']), $this->fmt((float) $e['ema']), $this->fmt((float) $sig['entry']), ($e['close'] / (float) $sig['entry'] - 1) * 100), priority: true);
+                        e($symbol), $this->fmt($e['close']), $this->fmt((float) $e['ema']), $this->fmt((float) $sig['entry']), ($e['close'] / (float) $sig['entry'] - 1) * 100).$this->chartLink(), priority: true);
                 }
 
                 return;
@@ -272,7 +306,7 @@ class NearBreakoutTrader
             e($symbol), now()->setTimestamp(intdiv($candleClose + 1, 1000))->format('H:i'), $this->fmt($price), $this->fmt((float) $e['ema']),
             (float) $e['atr_pct'], (float) $e['rank'], round($e['size'] * 100), $this->fmt($price + (float) $trailD), $this->fmt((float) $trailD),
             $this->fmt(self::safetyStop($price, (float) $e['atr']))
-        ), priority: true);
+        ).$this->chartLink(), priority: true);
     }
 
     /**
@@ -299,7 +333,7 @@ class NearBreakoutTrader
         if (! $sig['armed'] && $sig['high'] >= (float) $sig['entry'] + $d) {
             $sig['armed'] = true;
             if (! $botInTrade) {
-                $this->telegram->send(sprintf('↗️ <b>NEAR trail armed</b>: exit if price falls to <code>%s</code> (moves up with the high).', $this->fmt($sig['high'] - $d)), priority: true);
+                $this->telegram->send(sprintf('↗️ <b>NEAR trail armed</b>: exit if price falls to <code>%s</code> (moves up with the high).', $this->fmt($sig['high'] - $d)).$this->chartLink(), priority: true);
                 $sent = 'armed';
             }
         }
@@ -307,7 +341,7 @@ class NearBreakoutTrader
             Cache::forget(self::SIGNAL_KEY);
             if (! $botInTrade) {
                 $this->telegram->send(sprintf("📉 <b>NEAR SELL / exit signal</b> %s: trail hit\nPrice <code>%s</code> fell %s below the high <code>%s</code>.\nFrom the BUY at <code>%s</code>: %+.2f%%",
-                    e(self::symbol()), $this->fmt($price), $this->fmt($d), $this->fmt((float) $sig['high']), $this->fmt((float) $sig['entry']), ($price / (float) $sig['entry'] - 1) * 100), priority: true);
+                    e(self::symbol()), $this->fmt($price), $this->fmt($d), $this->fmt((float) $sig['high']), $this->fmt((float) $sig['entry']), ($price / (float) $sig['entry'] - 1) * 100).$this->chartLink(), priority: true);
 
                 return 'exit';
             }
@@ -317,6 +351,14 @@ class NearBreakoutTrader
         Cache::forever(self::SIGNAL_KEY, $sig);
 
         return $sent;
+    }
+
+    /**
+     * Link to the SignalAlgo PRO chart, which draws the same signals.
+     */
+    protected function chartLink(): string
+    {
+        return PHP_EOL.'📊 <a href="'.e(route('chart.index')).'">SignalAlgo PRO chart</a>';
     }
 
     protected function fmt(float $price): string

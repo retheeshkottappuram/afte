@@ -73,6 +73,20 @@
                     <span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Live</span>
                 </a>
 
+                <!-- SignalAlgo PRO chart (NEAR 1H breakout) -->
+                @if (Auth::user()?->isAdmin() || Auth::user()?->hasPermission('view_signals'))
+                <a href="{{ route('chart.index') }}"
+                   class="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition {{ request()->routeIs('chart.*') ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]' : 'text-slate-300 hover:text-white hover:bg-cyber-700/50 border border-transparent' }}">
+                    <div class="flex items-center space-x-3">
+                        <svg class="w-4 h-4 {{ request()->routeIs('chart.*') ? 'text-emerald-400' : 'text-slate-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path>
+                        </svg>
+                        <span>SignalAlgo PRO Chart</span>
+                    </div>
+                    <span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">NEAR</span>
+                </a>
+                @endif
+
                 <!-- Trade Ledger -->
                 <a href="{{ route('history.index') }}"
                    class="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition {{ request()->routeIs('history.*') ? 'bg-gradient-to-r from-cyan-500/20 to-blue-500/10 text-cyan-400 border border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.15)]' : 'text-slate-300 hover:text-white hover:bg-cyber-700/50 border border-transparent' }}">
