@@ -264,6 +264,10 @@ class DynamicTradeManager
         $trade->exit_price = $exitPrice;
         $trade->exit_reason = $reason;
         $trade->closed_at = now();
+        if ($trade->setup_tag === NearBreakoutTrader::SETUP) {
+            // The close message reported this exit; the strategy alerts start again from flat.
+            Cache::forget(NearBreakoutTrader::SIGNAL_KEY);
+        }
 
         try {
             $this->tradeReconciler->reconcileClosedTrade($trade, $exitOrderId, $reason);
@@ -318,10 +322,12 @@ class DynamicTradeManager
         if ($liveQty < (float) $trade->remaining_quantity * 0.98) {
             // Part of the position was closed on the exchange (an old take-profit order or by hand).
             $closedQty = (float) $trade->remaining_quantity - $liveQty;
-            $this->recordPartial($trade, (float) $this->client->getMarkPrice($trade->symbol), $closedQty);
+            $mark = (float) $this->client->getMarkPrice($trade->symbol);
+            $this->recordPartial($trade, $mark, $closedQty);
             $trade->remaining_quantity = $liveQty;
             $trade->margin_used = round($liveQty * $trade->entry_price / max(1, $trade->leverage), 4);
             $trade->save();
+            $this->notifier->notifyPartlyClosedOnExchange($trade, round($closedQty, 8), $mark);
         }
 
         return null;

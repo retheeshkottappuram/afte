@@ -7,8 +7,8 @@ use App\Models\TradingAccount;
 use App\Services\Trading\NearBreakoutTrader;
 
 /**
- * Trade lifecycle messages, tagged [PAPER] / [LIVE]. Follow-ups (breakeven, TP1, close)
- * are threaded as replies to the "opened" message.
+ * Trade lifecycle messages, tagged [PAPER] / [LIVE]. Follow-ups (trail, stop changes, close) are threaded as replies
+ * to the "opened" message. They are sent with priority, so the hourly message limit never holds a trade event back.
  */
 class TelegramNotifier
 {
@@ -62,7 +62,7 @@ class TelegramNotifier
         ."Size: \${$notional} at {$trade->leverage}x, margin \${$trade->margin_used}"
         .($risk !== null ? "\nRisk: \${$risk} (".($trade->meta['risk_pct'] ?? '?').'% of equity)' : '');
 
-        $messageId = $this->gateway->send($html);
+        $messageId = $this->gateway->send($html, null, priority: true);
         if ($messageId !== null) {
             $meta = $trade->meta ?? [];
             $meta['telegram_message_id'] = $messageId;
@@ -81,6 +81,11 @@ class TelegramNotifier
     public function notifyTrailArmed(Trade $trade, float $trailStop): void
     {
         $this->reply($trade, "↗️ {$this->tag($trade)} {$trade->symbol}: trail armed, exit if price falls to <code>{$this->fmt($trailStop)}</code> (moves up with the high).");
+    }
+
+    public function notifyPartlyClosedOnExchange(Trade $trade, float $closedQty, float $price): void
+    {
+        $this->reply($trade, "✂️ {$this->tag($trade)} {$trade->symbol}: {$closedQty} closed on Binance, not by the bot (near <code>{$this->fmt($price)}</code>). Left: {$trade->remaining_quantity}.");
     }
 
     public function notifyStopEdited(Trade $trade, float $stopPrice, float $atStopUsd): void
@@ -143,7 +148,7 @@ Exit order: <code>'.e((string) $trade->meta['exit_client_order_id']).'</code>' :
         }
 
         $replyTo = isset($trade->meta['telegram_message_id']) ? (int) $trade->meta['telegram_message_id'] : null;
-        $this->gateway->send($html, $replyTo);
+        $this->gateway->send($html, $replyTo, priority: true);
     }
 
     protected function tag(Trade $trade): string

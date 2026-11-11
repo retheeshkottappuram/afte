@@ -4,11 +4,13 @@ namespace Tests\Unit;
 
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangeOrders;
 use App\Services\Trading\NearBreakoutTrader;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Mockery\MockInterface;
 use Tests\TestCase;
@@ -140,5 +142,22 @@ class DynamicTradeManagerTest extends TestCase
         $this->assertSame('CLOSED', $trade->status);
         $this->assertSame(100.8, $trade->exit_price);
         $this->assertTrue($trade->meta['reconcile_pending']);
+    }
+
+    public function test_a_live_position_partly_closed_on_binance_is_reported_to_telegram(): void
+    {
+        config(['trading.telegram.enabled' => true, 'trading.telegram.bot_token' => '123:SECRET', 'trading.telegram.chat_id' => '999']);
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 5]])]);
+        $this->mock(BinanceFuturesClient::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('forMode')->andReturnSelf();
+            $mock->shouldReceive('getPositionAmount')->andReturn(0.3);
+            $mock->shouldReceive('getMarkPrice')->andReturn(101.0);
+        });
+
+        $trade = $this->trade('live', ['opened_at' => Carbon::now()->subMinutes(5)]);
+        app(DynamicTradeManager::class)->manageTrade($trade);
+
+        $this->assertEqualsWithDelta(0.3, (float) $trade->refresh()->remaining_quantity, 1e-9);
+        Http::assertSent(fn (Request $r): bool => str_contains((string) ($r->data()['text'] ?? ''), 'closed on Binance, not by the bot'));
     }
 }

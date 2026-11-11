@@ -6,6 +6,7 @@ use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Crypto\BinanceClient;
 use App\Services\Trading\BotSwitches;
+use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\NearBreakoutTrader;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -184,5 +185,96 @@ class NearBreakoutTraderTest extends TestCase
         $this->assertSame('Candle already handled.', $this->trader()->run('paper', true, self::NOW)['message']);
         $this->assertSame(1, Trade::count());
         $this->assertSame('opened', Cache::get(NearBreakoutTrader::LAST_KEY)['action'], 'The dashboard sees the last decision');
+    }
+
+    protected function sent(string $needle): int
+    {
+        return collect($this->telegramTexts())->filter(fn (string $t): bool => str_contains($t, $needle))->count();
+    }
+
+    public function test_the_buy_signal_goes_to_telegram_even_when_the_bot_does_not_trade(): void
+    {
+        $this->series(0.10, 0.04);
+        BotSwitches::set('near', false);
+
+        $this->trader()->run('paper', false, self::NOW);
+
+        $this->assertSame(1, $this->sent('NEAR BUY signal'));
+        $buy = collect($this->telegramTexts())->first(fn (string $t): bool => str_contains($t, 'NEAR BUY signal'));
+        $this->assertStringContainsString('Entry ≈ <code>5.05</code>', $buy);
+        $this->assertStringContainsString('size 100% of the balance', $buy);
+        $this->assertStringContainsString('PF 0.92', $buy);
+        $this->assertSame(1, $this->sent('not traded by the bot'), 'Then the bot says why it did not trade');
+    }
+
+    public function test_no_buy_alert_without_a_signal(): void
+    {
+        $this->series(0.10, 0.04, lastOpen: 5.10, close: 5.05);
+
+        $this->trader()->run('paper', true, self::NOW);
+
+        $this->assertSame(0, $this->sent('NEAR BUY signal'));
+        $this->assertNull(Cache::get(NearBreakoutTrader::SIGNAL_KEY));
+    }
+
+    public function test_the_ema_exit_alert_is_sent_once_when_the_bot_is_not_in_the_trade(): void
+    {
+        $this->series(0.10, 0.04);
+        $this->trader()->run('paper', false, self::NOW);
+
+        foreach ([1, 2] as $h) {
+            $at = self::NOW + $h * 3_600_000;
+            Carbon::setTestNow(Carbon::createFromTimestampMsUTC($at));
+            $this->series(0.10, 0.04, lastOpen: 5.0, close: 4.90);
+            $this->candles['closeTimes'] = array_map(fn (int $t): int => $t + $h * 3_600_000, $this->candles['closeTimes']);
+            $this->trader()->run('paper', false, $at);
+        }
+
+        $this->assertSame(1, $this->sent('NEAR SELL / exit signal'));
+        $this->assertSame(1, $this->sent('below EMA50 <code>'));
+    }
+
+    public function test_trail_alerts_arm_then_exit_on_the_live_price(): void
+    {
+        $this->series(0.10, 0.04);
+        $this->trader()->run('paper', false, self::NOW);
+        $sig = Cache::get(NearBreakoutTrader::SIGNAL_KEY);
+        [$entry, $d] = [(float) $sig['entry'], (float) $sig['d']];
+        $this->assertGreaterThan(0, $d);
+
+        $this->assertNull($this->trader()->checkSignalTrail($entry + 0.5 * $d));
+        $this->assertSame('armed', $this->trader()->checkSignalTrail($entry + 2 * $d));
+        $this->assertNull($this->trader()->checkSignalTrail($entry + 1.5 * $d), 'Inside the trail');
+        $this->assertSame('exit', $this->trader()->checkSignalTrail($entry + 0.9 * $d));
+
+        $this->assertSame(1, $this->sent('NEAR trail armed'));
+        $this->assertSame(1, $this->sent('trail hit'));
+        $this->assertNull(Cache::get(NearBreakoutTrader::SIGNAL_KEY), 'Flat again: the next BUY can be sent');
+    }
+
+    public function test_while_the_bot_holds_the_trade_only_the_trade_messages_are_sent(): void
+    {
+        $this->series(0.10, 0.04);
+        $this->trader()->run('paper', true, self::NOW);
+        $sig = Cache::get(NearBreakoutTrader::SIGNAL_KEY);
+        [$entry, $d] = [(float) $sig['entry'], (float) $sig['d']];
+
+        $this->assertNull($this->trader()->checkSignalTrail($entry + 2 * $d));
+        $this->assertNull($this->trader()->checkSignalTrail($entry + 0.9 * $d));
+        $this->assertSame(0, $this->sent('NEAR trail armed') + $this->sent('NEAR SELL / exit signal'));
+
+        app(DynamicTradeManager::class)->closeTrade(Trade::sole(), $entry, 'MANUAL_CLOSE');
+        $this->assertNull(Cache::get(NearBreakoutTrader::SIGNAL_KEY), 'The close message reported the exit');
+    }
+
+    public function test_trade_messages_are_never_held_back_by_the_hourly_limit(): void
+    {
+        config(['trading.telegram.max_messages_per_hour' => 0]);
+        $this->series(0.10, 0.04);
+
+        $this->trader()->run('paper', true, self::NOW);
+
+        $this->assertSame(1, $this->sent('NEAR BUY signal'));
+        $this->assertSame(1, $this->sent('LONG NEARUSDT</b> opened'));
     }
 }

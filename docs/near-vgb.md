@@ -19,6 +19,26 @@ Everything runs on closed 1h NEARUSDT candles. The bot checks each candle 30 sec
 | Exit 2 | `trail_points` = `trail_offset` = 0.10 x ATR | the trail arms at entry + d, then exits at the high − d; d updates to the latest ATR every candle; checked on the mark price about every 5s while the cron engine runs |
 | Safety stop | none | a reduce-only Binance stop at entry − 3 x ATR (at most 8%), so a crash between engine runs is capped |
 
+## Telegram
+
+All of these messages are sent with priority, so the hourly message limit never holds them back.
+
+**Strategy alerts.** They follow the script whether or not the bot trades:
+
+- **📈 BUY signal** on the entry candle. It shows the price, EMA50, ATR%, rank and size, the trail arm level, and the safety stop.
+- **↗️ trail armed** and **📉 SELL / exit signal** (trail hit), on the live price.
+- **📉 SELL / exit signal** on a 1h close below EMA50.
+- While the bot holds the trade, its own trade messages report the exit instead, so exits are not sent twice.
+
+**Trade messages, live and paper.** Paper ones are muted by `TELEGRAM_LIVE_ONLY=true`:
+
+- opened;
+- trail armed;
+- stop edited, and breakeven;
+- "partly closed on Binance, not by the bot";
+- closed, with the reason, net PnL and balance;
+- "⏭ not traded by the bot: why".
+
 ## Backtest
 
 - **Data:** cached 12 months of NEAR, tested 2025-11-30 to 2026-10-22, after a 1440-bar warm-up.

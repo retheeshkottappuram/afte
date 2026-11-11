@@ -4,6 +4,7 @@ namespace App\Services\Trading;
 
 use App\Models\Trade;
 use App\Models\TradingAccount;
+use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Crypto\BinanceClient;
 use App\Services\Crypto\CandleSanitizer;
 use App\Services\Crypto\Indicators;
@@ -19,6 +20,9 @@ use Illuminate\Support\Facades\Cache;
  *  - exits: a closed candle below the EMA (here), or the trail_mult x ATR trail that starts once price is that
  *    far above entry (DynamicTradeManager::manageNear, on the mark price every engine pass).
  * Not in the script: an exchange stop safety_atr x ATR below entry (capped at max_sl_pct) for crashes between runs.
+ * Telegram alerts follow the script whether or not the bot trades: BUY on the entry signal, then EXIT on a close below
+ * the EMA or when the trail is hit (checkSignalTrail on the engine's 5s loop). While a bot trade is open its own close
+ * message reports the exit instead.
  * Test (docs/near-vgb.md): PF 3.68 when the trail is replayed on 1h candles, PF 0.92 on the real 5m price path.
  */
 class NearBreakoutTrader
@@ -29,11 +33,15 @@ class NearBreakoutTrader
 
     public const LAST_KEY = 'near-vgb:last';
 
+    /** The script's position as the alerts see it: {entry, d, high, armed, at}. */
+    public const SIGNAL_KEY = 'near-vgb:signal';
+
     public function __construct(
         protected BinanceClient $market,
         protected OrderExecutor $executor,
         protected DynamicTradeManager $tradeManager,
         protected TelegramGateway $telegram,
+        protected BinanceFuturesClient $client,
     ) {}
 
     public static function enabled(): bool
@@ -154,6 +162,7 @@ class NearBreakoutTrader
         $k = count($c['closes']) - 1;
         $trailD = $e['atr'] !== null ? (float) config('trading.near_vgb.trail_mult', 0.10) * $e['atr'] : null;
         $open = Trade::where('mode', $mode)->where('symbol', $symbol)->where('status', 'OPEN')->where('setup_tag', self::SETUP)->first();
+        $this->trackSignal($symbol, $e, $trailD, $open !== null, (int) $c['closeTimes'][$k]);
 
         if ($open !== null) {
             if ($e['ema'] !== null && $e['close'] < $e['ema']) {
@@ -176,15 +185,14 @@ class NearBreakoutTrader
 
         if (! $entriesAllowed) {
             $why = self::enabled() ? 'auto-trading is stopped or paused (or a loss breaker is active)' : 'the NEAR bot switch is off';
-            $this->telegram->send(sprintf('⏭ <b>NEAR breakout %s LONG</b> (1h) not traded: %s.', e($symbol), e($why)));
+            $this->telegram->send(sprintf('⏭ <b>NEAR breakout %s LONG</b> (1h) not traded by the bot: %s.', e($symbol), e($why)), priority: true);
 
             return $this->remember($c, $k, $e, $mode, 'skipped', "Entry signal, but new entries are off: {$why}.");
         }
 
         $account = TradingAccount::getForMode($mode);
         $price = (float) $e['close'];
-        $maxSl = (float) config('trading.near_vgb.max_sl_pct', 8.0);
-        $sl = max($price - (float) config('trading.near_vgb.safety_atr', 3.0) * (float) $e['atr'], $price * (1 - $maxSl / 100));
+        $sl = self::safetyStop($price, (float) $e['atr']);
         $margin = max(0.0, (float) $account->balance) * $e['size'] * (float) config('trading.near_vgb.equity_buffer', 0.98);
 
         $result = $this->executor->executeSignal([
@@ -202,7 +210,7 @@ class NearBreakoutTrader
         ], $mode);
 
         if ($result['status'] !== 'opened') {
-            $this->telegram->send(sprintf('⏭ <b>NEAR breakout %s LONG</b> (1h) not traded: %s', e($symbol), e($result['message'])));
+            $this->telegram->send(sprintf('⏭ <b>NEAR breakout %s LONG</b> (1h) not traded by the bot: %s', e($symbol), e($result['message'])), priority: true);
 
             return $this->remember($c, $k, $e, $mode, 'skipped', $result['message']);
         }
@@ -213,6 +221,107 @@ class NearBreakoutTrader
         }
 
         return $this->remember($c, $k, $e, $mode, 'opened', $result['message']);
+    }
+
+    public static function safetyStop(float $price, float $atr): float
+    {
+        $maxSl = (float) config('trading.near_vgb.max_sl_pct', 8.0);
+
+        return max($price - (float) config('trading.near_vgb.safety_atr', 3.0) * $atr, $price * (1 - $maxSl / 100));
+    }
+
+    /**
+     * The script's own position for the alerts, on each closed candle: BUY when it enters from flat, EXIT on a close
+     * below the EMA (reported by the trade's close message when the bot holds it), else the latest trail distance.
+     *
+     * @param  array<string, mixed>  $e
+     */
+    protected function trackSignal(string $symbol, array $e, ?float $trailD, bool $botInTrade, int $candleClose): void
+    {
+        $sig = Cache::get(self::SIGNAL_KEY);
+        if (is_array($sig)) {
+            if ($e['ema'] !== null && $e['close'] < $e['ema']) {
+                Cache::forget(self::SIGNAL_KEY);
+                if (! $botInTrade) {
+                    $this->telegram->send(sprintf("📉 <b>NEAR SELL / exit signal</b> %s (1h)\nThe 1h candle closed at <code>%s</code>, below EMA50 <code>%s</code>: the strategy exits here.\nFrom the BUY at <code>%s</code>: %+.2f%%",
+                        e($symbol), $this->fmt($e['close']), $this->fmt((float) $e['ema']), $this->fmt((float) $sig['entry']), ($e['close'] / (float) $sig['entry'] - 1) * 100), priority: true);
+                }
+
+                return;
+            }
+            if ($trailD !== null) {
+                Cache::forever(self::SIGNAL_KEY, ['d' => $trailD] + $sig);
+            }
+
+            return;
+        }
+
+        if (! $e['entry'] || $botInTrade) {
+            return;
+        }
+
+        $price = (float) $e['close'];
+        Cache::forever(self::SIGNAL_KEY, ['entry' => $price, 'd' => (float) $trailD, 'high' => $price, 'armed' => false, 'at' => $candleClose]);
+        $this->telegram->send(sprintf(
+            "📈 <b>NEAR BUY signal</b> %s (1h close %s UTC)\n"
+            ."Entry ≈ <code>%s</code> (market now)\n"
+            ."EMA50 <code>%s</code> · ATR %.2f%% · volatility rank %.0f → size %d%% of the balance at 1x\n"
+            ."Trail: arms at <code>%s</code>, then exits %s below the highest price\n"
+            ."Also exits on a 1h close below EMA50 · safety stop <code>%s</code>\n"
+            .'<i>Backtest on the real 5m price path: PF 0.92. Not proven.</i>',
+            e($symbol), now()->setTimestamp(intdiv($candleClose + 1, 1000))->format('H:i'), $this->fmt($price), $this->fmt((float) $e['ema']),
+            (float) $e['atr_pct'], (float) $e['rank'], round($e['size'] * 100), $this->fmt($price + (float) $trailD), $this->fmt((float) $trailD),
+            $this->fmt(self::safetyStop($price, (float) $e['atr']))
+        ), priority: true);
+    }
+
+    /**
+     * Every engine pass while the script is long: arm the trail and send the trail EXIT alert. The bot's own trade
+     * is managed by DynamicTradeManager::manageNear, so nothing is sent here while it is open.
+     *
+     * @return string|null the alert sent: 'armed' or 'exit'
+     */
+    public function checkSignalTrail(?float $price = null): ?string
+    {
+        $sig = Cache::get(self::SIGNAL_KEY);
+        if (! is_array($sig) || (float) ($sig['d'] ?? 0) <= 0) {
+            return null;
+        }
+        $price ??= (float) $this->client->getMarkPrice(self::symbol());
+        if ($price <= 0) {
+            return null;
+        }
+
+        $d = (float) $sig['d'];
+        $sig['high'] = max((float) $sig['high'], $price);
+        $botInTrade = self::hasOpenTrades();
+        $sent = null;
+        if (! $sig['armed'] && $sig['high'] >= (float) $sig['entry'] + $d) {
+            $sig['armed'] = true;
+            if (! $botInTrade) {
+                $this->telegram->send(sprintf('↗️ <b>NEAR trail armed</b>: exit if price falls to <code>%s</code> (moves up with the high).', $this->fmt($sig['high'] - $d)), priority: true);
+                $sent = 'armed';
+            }
+        }
+        if ($sig['armed'] && $price <= (float) $sig['high'] - $d) {
+            Cache::forget(self::SIGNAL_KEY);
+            if (! $botInTrade) {
+                $this->telegram->send(sprintf("📉 <b>NEAR SELL / exit signal</b> %s: trail hit\nPrice <code>%s</code> fell %s below the high <code>%s</code>.\nFrom the BUY at <code>%s</code>: %+.2f%%",
+                    e(self::symbol()), $this->fmt($price), $this->fmt($d), $this->fmt((float) $sig['high']), $this->fmt((float) $sig['entry']), ($price / (float) $sig['entry'] - 1) * 100), priority: true);
+
+                return 'exit';
+            }
+
+            return null;
+        }
+        Cache::forever(self::SIGNAL_KEY, $sig);
+
+        return $sent;
+    }
+
+    protected function fmt(float $price): string
+    {
+        return rtrim(rtrim(number_format($price, $price >= 1 ? 4 : 8, '.', ''), '0'), '.');
     }
 
     /**

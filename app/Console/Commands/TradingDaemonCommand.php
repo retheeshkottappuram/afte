@@ -87,6 +87,18 @@ class TradingDaemonCommand extends Command
                     }
                 }
 
+                // 2b. NEAR strategy alerts: the trail of the script's position on the live price (BUY / EXIT alerts
+                //     to Telegram even when the bot is not in the trade).
+                if (Cache::has(NearBreakoutTrader::SIGNAL_KEY)) {
+                    try {
+                        if (($alert = $near->checkSignalTrail()) !== null) {
+                            $this->log("NEAR alert: trail {$alert}");
+                        }
+                    } catch (Throwable $e) {
+                        Log::warning("[TradeEngine] NEAR trail alert: {$e->getMessage()}");
+                    }
+                }
+
                 // 3. NEAR breakout: from 30s after each 1h close, once a minute until that candle is handled (so an
                 //    API error is retried). The EMA exit always runs; new entries follow pause / stop / breaker state.
                 if ((NearBreakoutTrader::enabled() || NearBreakoutTrader::hasOpenTrades()) && time() % 3600 >= 30 && Cache::add('engine:near:'.intdiv(time(), 60), true, 120)) {
