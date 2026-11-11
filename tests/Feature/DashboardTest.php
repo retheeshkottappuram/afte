@@ -5,11 +5,9 @@ namespace Tests\Feature;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
-use App\Services\Trading\SignalAlgoTrader;
 use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Mockery\MockInterface;
 use Tests\TestCase;
 
 class DashboardTest extends TestCase
@@ -258,7 +256,6 @@ class DashboardTest extends TestCase
                 'amount_per_trade',
             ],
             'positions',
-            'signals',
             'history',
             'daemon',
         ]);
@@ -305,30 +302,6 @@ class DashboardTest extends TestCase
         $stopResponse = $this->actingAs($admin)->postJson('/api/toggle-auto-trading', ['mode' => 'paper']);
         $stopResponse->assertStatus(200);
         $stopResponse->assertJsonFragment(['success' => true, 'is_running' => false]);
-    }
-
-    public function test_manual_trade_goes_through_the_auto_trader_in_the_active_mode(): void
-    {
-        $admin = User::factory()->create(['role' => 'admin']);
-
-        $this->mock(SignalAlgoTrader::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('executeManual')->once()->with('SOLUSDT', 'LONG', 'paper')->andReturn(['success' => true, 'message' => 'LONG SOLUSDT opened [PAPER]', 'trade' => null]);
-        });
-
-        $response = $this->actingAs($admin)->postJson('/api/execute-radar-trade', ['symbol' => 'SOLUSDT', 'direction' => 'LONG']);
-
-        $response->assertStatus(200);
-        $response->assertJsonFragment(['success' => true, 'mode' => 'paper']);
-    }
-
-    public function test_manual_trade_requires_the_manage_trading_permission(): void
-    {
-        $viewer = User::factory()->create(['role' => 'viewer']);
-
-        $response = $this->actingAs($viewer)->postJson('/api/execute-radar-trade', ['symbol' => 'SOLUSDT', 'direction' => 'LONG']);
-
-        $response->assertStatus(403);
-        $this->assertSame(0, Trade::count());
     }
 
     public function test_stats_includes_cooldown_and_paused_reason_when_circuit_breaker_active(): void

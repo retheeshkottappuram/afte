@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Models\CryptoSignal;
+use App\Models\Trade;
 use App\Services\Crypto\TelegramNotifier;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Console\Command;
@@ -32,12 +32,12 @@ class HealthCheckCommand extends Command
         $dbStart = microtime(true);
         try {
             DB::connection()->getPdo();
-            $recentCount = CryptoSignal::count();
+            $recentCount = Trade::count();
             $dbLatencyMs = (int) round((microtime(true) - $dbStart) * 1000);
             $results['database'] = [
                 'status' => 'PASS',
                 'latency_ms' => $dbLatencyMs,
-                'details' => "Connected (Total Signals Recorded: {$recentCount})",
+                'details' => "Connected (Total Trades Recorded: {$recentCount})",
             ];
         } catch (Throwable $e) {
             $overallHealthy = false;

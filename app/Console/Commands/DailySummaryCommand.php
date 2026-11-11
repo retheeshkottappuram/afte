@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Notifications\SignalAlerts;
+use App\Services\Notifications\TelegramNotifier;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Console\Command;
 
@@ -18,7 +18,7 @@ class DailySummaryCommand extends Command
      */
     protected $description = 'Send the daily trading summary to Telegram';
 
-    public function handle(SignalAlerts $alerts, TradingModeManager $modeManager): int
+    public function handle(TelegramNotifier $alerts, TradingModeManager $modeManager): int
     {
         $alerts->dailySummary($modeManager->activeMode());
         $this->info('Daily summary sent.');

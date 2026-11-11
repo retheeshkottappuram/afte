@@ -5,24 +5,20 @@ namespace App\Http\Controllers;
 use App\Models\EquitySnapshot;
 use App\Models\Trade;
 use App\Models\TradingAccount;
-use App\Models\TradingSignal;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
-use App\Services\Strategy\MarketScanService;
-use App\Services\Strategy\SetupStats;
 use App\Services\Trading\BotSwitches;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
-use App\Services\Trading\LabTrader;
+use App\Services\Trading\NearBreakoutTrader;
 use App\Services\Trading\RiskManager;
-use App\Services\Trading\SignalAlgoTrader;
-use App\Services\Trading\SwingSarTrader;
 use App\Services\Trading\TradingDaemonManager;
 use App\Services\Trading\TradingModeManager;
 use App\Services\Trading\TradingTargetManager;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\View\View;
 
 class DashboardController extends Controller
@@ -33,10 +29,7 @@ class DashboardController extends Controller
         protected RiskManager $riskManager,
         protected TradingDaemonManager $daemonManager,
         protected ExchangePositionSync $exchangeSync,
-        protected TradingModeManager $modeManager,
-        protected MarketScanService $scanner,
-        protected SignalAlgoTrader $trader,
-        protected SetupStats $setupStats
+        protected TradingModeManager $modeManager
     ) {}
 
     /**
@@ -72,7 +65,7 @@ class DashboardController extends Controller
             'activeBase' => TradingTargetManager::getBaseCoin(),
             'availableCoins' => TradingTargetManager::getAvailableCoins(),
             'monitoredCoins' => TradingTargetManager::getMonitoredCoins(),
-            'timeframes' => [(string) config('trading.strategy.base_interval', '1h')],
+            'timeframes' => ['1h'],
         ]);
     }
 
@@ -168,6 +161,7 @@ class DashboardController extends Controller
             'cooldown_until_time' => $pausedUntilFormatted,
             'paused_reason' => $pausedReason,
             'bot_switches' => BotSwitches::all(),
+            'near' => (array) Cache::get(NearBreakoutTrader::LAST_KEY, []) + ['symbol' => NearBreakoutTrader::symbol()],
             'open_positions_count' => $openPositions->count(),
             'used_margin' => $usedMargin,
             'available_margin' => $availMargin,
@@ -244,7 +238,7 @@ class DashboardController extends Controller
                 'id' => $pos->id,
                 'symbol' => $pos->symbol,
                 'side' => $pos->side,
-                'source' => $pos->setup_tag === SwingSarTrader::SETUP ? 'sar' : ($pos->setup_tag === LabTrader::SETUP ? 'lab' : (($pos->meta['source'] ?? 'auto') === 'manual' ? 'manual' : 'auto')),
+                'source' => $pos->setup_tag === NearBreakoutTrader::SETUP ? 'near' : (($pos->meta['source'] ?? 'auto') === 'manual' ? 'manual' : 'auto'),
                 'stage' => $pos->stage,
                 'entry_price' => $pos->entry_price,
                 'mark_price' => $markPrice,
@@ -281,18 +275,6 @@ class DashboardController extends Controller
     }
 
     /**
-     * Recent trading signals with AI verdicts.
-     */
-    public function signals(Request $request): JsonResponse
-    {
-        $signals = TradingSignal::orderByDesc('created_at')
-            ->limit(20)
-            ->get();
-
-        return response()->json($signals);
-    }
-
-    /**
      * Trade history list.
      */
     public function history(Request $request): JsonResponse
@@ -321,149 +303,6 @@ class DashboardController extends Controller
             ->get(['balance', 'equity', 'created_at']);
 
         return response()->json($snapshots);
-    }
-
-    /**
-     * Whole-market scanner results, read from the last background scan (page loads never scan).
-     * `fresh=1` forces a scan now, for users allowed to trigger scans.
-     */
-    public function scanMarket(Request $request): JsonResponse
-    {
-        if ($request->boolean('fresh') && ($request->user()?->isAdmin() || $request->user()?->hasPermission('trigger_scans'))) {
-            $this->scanner->requestManualScan();
-        }
-
-        // Show whichever is newer: the engine's hourly scan or the last on-demand scan.
-        $engine = $this->scanner->latestResults();
-        $manual = $this->scanner->latestManualResults();
-        $results = ($manual['scanned_at'] ?? '') > ($engine['scanned_at'] ?? '') ? $manual : $engine;
-        $rows = (array) ($results['rows'] ?? []);
-
-        // Signals from the faster scanned timeframes (e.g. 15m) are listed too, newest scan only.
-        if ($results === $engine) {
-            foreach (MarketScanService::scanIntervals() as $extraInterval) {
-                if ($extraInterval !== ($engine['interval'] ?? null)) {
-                    $extra = $this->scanner->latestResults($extraInterval);
-                    $rows = array_merge($rows, array_values(array_filter((array) ($extra['rows'] ?? []), fn (array $r): bool => ! empty($r['signal']))));
-                }
-            }
-        }
-
-        $opportunities = [];
-        $watchlist = [];
-
-        foreach ($rows as $row) {
-            if (! empty($row['signal'])) {
-                $opportunities[] = $this->opportunityPayload($row);
-            } elseif (! empty($row['near'])) {
-                $watchlist[] = [
-                    'symbol' => $row['symbol'],
-                    'bias' => $row['bias'],
-                    'price' => $row['price'],
-                    'near' => $row['near'],
-                    'reason' => $row['reason'],
-                ];
-            }
-        }
-
-        return response()->json([
-            'total_scanned' => (int) ($results['universe_size'] ?? count($rows)),
-            'interval' => $results['interval'] ?? config('trading.strategy.base_interval', '1h'),
-            'scanned_at' => $results['scanned_at'] ?? null,
-            'cached_at' => $results['scanned_at'] ?? null,
-            'duration_s' => $results['duration_s'] ?? null,
-            'opportunities' => $opportunities,
-            'watchlist' => array_slice($watchlist, 0, 25),
-            'setup_stats' => $this->setupStats->all(),
-            'trends' => [
-                'long' => count(array_filter($rows, fn (array $r): bool => ($r['bias'] ?? '') === 'LONG')),
-                'short' => count(array_filter($rows, fn (array $r): bool => ($r['bias'] ?? '') === 'SHORT')),
-                'none' => count(array_filter($rows, fn (array $r): bool => ($r['bias'] ?? '') === 'NONE')),
-            ],
-        ]);
-    }
-
-    /**
-     * Shape a scanner row for the dashboard table.
-     *
-     * @param  array<string, mixed>  $row
-     * @return array<string, mixed>
-     */
-    protected function opportunityPayload(array $row): array
-    {
-        $signal = $row['signal'];
-        $entry = (float) $signal['entry'];
-        $pct = fn (float $price): float => $entry > 0 ? round(abs($price - $entry) / $entry * 100, 2) : 0.0;
-
-        return [
-            'id' => $signal['id'] ?? null,
-            'symbol' => $row['symbol'],
-            'direction' => $signal['side'],
-            'price' => $entry,
-            'interval' => $signal['interval'],
-            'time' => $signal['time'],
-            'setup_type' => $signal['setup'],
-            'setup_label' => $signal['setup_label'],
-            'grade' => $signal['grade'],
-            'stars' => $signal['stars'],
-            'ai_probability' => $signal['ai_probability'],
-            'ai_reasons' => $signal['ai_reasons'],
-            'ai_lift' => $signal['ai_lift'] ?? null,
-            'score' => $signal['score'] ?? null,
-            'score_label' => $signal['opportunity']['label'] ?? null,
-            'entry_status' => $signal['opportunity']['entry_status'] ?? null,
-            'edge_r' => $signal['opportunity']['edge_r'] ?? null,
-            'rank' => $signal['rank'] ?? null,
-            'top_pick' => $signal['top_pick'] ?? false,
-            'price_decimals' => $signal['price_decimals'] ?? null,
-            'sl' => $signal['sl'],
-            'sl_pct' => $signal['sl_pct'],
-            'tp1' => $signal['tp1'],
-            'tp1_pct' => $pct((float) $signal['tp1']),
-            'tp2' => $signal['tp2'],
-            'tp2_pct' => $pct((float) $signal['tp2']),
-            'tp3' => $signal['tp3'],
-            'risk_reward' => '1 : '.$signal['risk_reward'],
-            'tradable' => $signal['tradable'],
-            'is_shadow' => $signal['is_shadow'],
-            'filters' => $signal['filters'],
-            'failed_filters' => $signal['failed_filters'],
-            'confluences' => $signal['confluences'],
-            'indicators' => $signal['indicators'],
-            'stats' => $signal['stats'] ?? null,
-            'stats_30d' => $signal['stats_30d'] ?? null,
-            'auto_trade' => $this->scanner->autoTradeVerdict($signal),
-            'quote_volume' => $row['quote_volume'],
-            'funding_rate' => $row['funding_rate'],
-            'chart_url' => route('signals.dashboard', ['symbol' => $row['symbol'], 'interval' => $signal['interval'], 'signal_time' => $signal['time']]),
-        ];
-    }
-
-    /**
-     * Manual trade from the scanner or chart. Requires a current strategy signal in that direction;
-     * goes through the same risk manager and order executor as the auto-trader, in the active mode.
-     */
-    public function executeRadarTrade(Request $request): JsonResponse
-    {
-        $symbol = strtoupper(trim((string) $request->input('symbol')));
-        $direction = strtoupper(trim((string) $request->input('direction')));
-
-        if (! in_array($direction, ['LONG', 'SHORT'], true) || $symbol === '') {
-            return response()->json(['success' => false, 'message' => 'A symbol and a LONG/SHORT direction are required.'], 422);
-        }
-
-        try {
-            $result = $this->trader->executeManual($symbol, $direction, $this->modeManager->activeMode());
-        } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Execution error: '.$e->getMessage()], 500);
-        }
-
-        return response()->json([
-            'success' => $result['success'],
-            'message' => $result['message'],
-            'trade' => $result['trade'],
-            'mode' => $this->modeManager->activeMode(),
-        ], $result['success'] ? 200 : 422);
     }
 
     /**
@@ -784,9 +623,7 @@ class DashboardController extends Controller
 
         $statsData = $this->stats($request)->getData(true);
         $positionsData = $this->positions($request)->getData(true);
-        $signalsData = $this->signals($request)->getData(true);
         $historyData = $this->history($request)->getData(true);
-        $scannerData = $this->scanMarket($request)->getData(true);
 
         return response()->json([
             'success' => true,
@@ -794,9 +631,7 @@ class DashboardController extends Controller
             'timestamp' => now()->toIso8601String(),
             'stats' => $statsData,
             'positions' => $positionsData,
-            'signals' => array_slice($signalsData, 0, 10),
             'history' => array_slice($historyData, 0, 15),
-            'opportunities' => $scannerData['opportunities'] ?? [],
             'daemon' => $statsData['daemon'] ?? null,
             'exchange' => $this->exchangeSync->exchangePositions(),
         ]);

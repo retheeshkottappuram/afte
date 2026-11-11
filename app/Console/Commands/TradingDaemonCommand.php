@@ -2,25 +2,13 @@
 
 namespace App\Console\Commands;
 
-use App\Models\BreakoutSetup;
-use App\Models\CryptoSignal;
 use App\Models\EquitySnapshot;
 use App\Models\Trade;
 use App\Models\TradingAccount;
-use App\Services\Breakout\BreakoutStrategyService;
-use App\Services\Breakout\SignalLifecycleService;
-use App\Services\Notifications\SignalAlerts;
-use App\Services\Strategy\BreakoutWatcher;
-use App\Services\Strategy\MarketScanService;
-use App\Services\Strategy\SetupStats;
-use App\Services\Strategy\Signal;
-use App\Services\Trading\BotSwitches;
-use App\Services\Trading\DayRangeTrader;
+use App\Services\Notifications\TelegramNotifier;
 use App\Services\Trading\DynamicTradeManager;
 use App\Services\Trading\ExchangePositionSync;
-use App\Services\Trading\LabTrader;
-use App\Services\Trading\SignalAlgoTrader;
-use App\Services\Trading\SwingSarTrader;
+use App\Services\Trading\NearBreakoutTrader;
 use App\Services\Trading\TradingDaemonManager;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Console\Command;
@@ -32,9 +20,9 @@ use Throwable;
  * Cron-driven trading engine for shared hosting (no nohup / supervisor).
  *
  * The scheduler starts it every minute. It holds a lock (overlapping runs exit at once),
- * then for ~50 seconds: manages every open trade every 5s, scans the market right after
- * each candle close, and once a minute checks squeeze coins for an intrabar breakout.
- * Then it writes a heartbeat and exits. Positions are protected by exchange-side stops between runs.
+ * then for ~50 seconds: manages every open trade every 5s (the NEAR trail runs on the mark price) and,
+ * 30s after each 1h close, runs the NEAR breakout strategy on that candle. Then it writes a heartbeat
+ * and exits. Positions are protected by exchange-side stops between runs.
  */
 class TradingDaemonCommand extends Command
 {
@@ -53,19 +41,13 @@ class TradingDaemonCommand extends Command
     /**
      * @var string
      */
-    protected $description = 'Cron-driven trading engine: manage open trades, scan the market each candle close, act on signals';
+    protected $description = 'Cron-driven trading engine: manage open trades and run the NEAR 1h breakout strategy';
 
     public function handle(
         TradingModeManager $modeManager,
         DynamicTradeManager $tradeManager,
         ExchangePositionSync $exchangeSync,
-        MarketScanService $scanner,
-        SignalAlgoTrader $trader,
-        SignalAlerts $alerts,
-        BreakoutWatcher $watcher,
-        SwingSarTrader $sar,
-        LabTrader $lab,
-        DayRangeTrader $dayRange
+        NearBreakoutTrader $near
     ): int {
         @set_time_limit(120);
 
@@ -79,8 +61,7 @@ class TradingDaemonCommand extends Command
         $started = microtime(true);
         $window = (int) ($this->option('seconds') ?? config('trading.engine.cycle_seconds', 50));
         $manageEvery = max(2, (int) config('trading.engine.manage_every_seconds', 5));
-        $interval = (string) config('trading.strategy.base_interval', '1h');
-        $stats = $this->initialStats($modeManager, $scanner);
+        $stats = $this->initialStats($modeManager);
 
         try {
             do {
@@ -106,124 +87,23 @@ class TradingDaemonCommand extends Command
                     }
                 }
 
-                // 3. Market scan right after each candle close of every scanned timeframe (one scan per pass,
-                //    so open trades keep being managed in between). A crash never stops trade management.
-                foreach (MarketScanService::scanIntervals() as $scanInterval) {
-                    if (! $scanner->isScanDue($scanInterval)) {
-                        continue;
-                    }
-
+                // 3. NEAR breakout: from 30s after each 1h close, once a minute until that candle is handled (so an
+                //    API error is retried). The EMA exit always runs; new entries follow pause / stop / breaker state.
+                if ((NearBreakoutTrader::enabled() || NearBreakoutTrader::hasOpenTrades()) && time() % 3600 >= 30 && Cache::add('engine:near:'.intdiv(time(), 60), true, 120)) {
                     try {
-                        $scan = $scanner->runScan($scanInterval);
-                        if ($scan['scanned']) {
-                            $stats['scans']++;
-                            $stats['scans_by_interval'][$scanInterval] = ['at' => now()->toIso8601String(), 'summary' => $scan['message']];
-                            if ($scanInterval === $interval) {
-                                $stats['last_scan_at'] = now()->toIso8601String();
-                                $stats['last_scan_summary'] = $scan['message'];
-                            }
-                            $stats['last_error'] = null;
-                            $stats['last_error_at'] = null;
-                            $this->log("[{$mode}] ".($scanInterval === $interval ? '' : "{$scanInterval}: ").$scan['message']);
-                            $this->actOnSignals($scan['fresh'], $mode, $account, $pausedReason, $trader, $scanner, $alerts, $stats, $scanInterval);
-                            if ($scanInterval === $interval && BreakoutWatcher::alertsEnabled()) {
-                                $alerts->breakoutWatchAlert((array) ($scan['watches'] ?? []));
-                            }
-                            if ($scanInterval === $interval) {
-                                $alerts->reversalAlert((array) ($scan['reversals'] ?? []));
-                            }
+                        $entriesAllowed = NearBreakoutTrader::enabled() && $pausedReason === null && $account->fresh()->canTrade();
+                        $row = $near->run($mode, $entriesAllowed);
+                        if ($row['action'] !== 'none') {
+                            $stats['last_scan_at'] = now()->toIso8601String();
+                            $stats['last_scan_summary'] = "NEAR 1h: {$row['message']}";
+                            $this->log("[{$mode}] NEAR {$row['action']}: {$row['message']}");
+                        }
+                        if ($row['action'] === 'opened') {
+                            $stats['opened']++;
                         }
                     } catch (Throwable $e) {
-                        $retry = $scanner->releaseScan($scanInterval);
-                        $this->recordError($stats, "Scan {$scanInterval} failed: ".$e->getMessage());
-                        Log::error("[TradeEngine] Scan {$scanInterval} failed: {$e->getMessage()}", ['exception' => $e]);
-                        $this->log("ERROR {$scanInterval} scan failed".($retry ? ' (retrying next minute)' : ' (gave up for this candle)').': '.$e->getMessage());
-                    }
-
-                    break;
-                }
-
-                // 3a. Swing SAR: once per closed candle (30s after the close, like the scan). Closes always run;
-                //     new entries follow the same pause / stop / breaker state as the main bot.
-                $sarSeconds = SwingSarTrader::intervalSeconds();
-                if ((SwingSarTrader::enabled() || SwingSarTrader::hasOpenTrades()) && time() % $sarSeconds >= 30 && Cache::add('engine:swing-sar:'.$sarSeconds.':'.intdiv(time(), $sarSeconds), true, 2 * $sarSeconds)) {
-                    try {
-                        $entriesAllowed = SwingSarTrader::enabled() && $pausedReason === null && $account->fresh()->canTrade();
-                        foreach ($sar->run($mode, $entriesAllowed) as $row) {
-                            if ($row['action'] !== 'none') {
-                                $this->log("[{$mode}] SWING SAR {$row['symbol']} {$row['action']}: {$row['message']}");
-                            }
-                            if (in_array($row['action'], ['opened', 'reversed'], true)) {
-                                $stats['opened']++;
-                            }
-                        }
-                    } catch (Throwable $e) {
-                        $this->recordError($stats, 'Swing SAR: '.$e->getMessage());
-                        Log::warning("[TradeEngine] Swing SAR: {$e->getMessage()}");
-                    }
-                }
-
-                // 3a'. Lab trial (SOL momentum / NEAR squeeze): once per closed 4h candle, 30s after the close.
-                if ((LabTrader::enabled() || LabTrader::hasOpenTrades()) && time() % 14400 >= 30 && Cache::add('engine:lab:'.intdiv(time(), 14400), true, 28800)) {
-                    try {
-                        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
-                        foreach ($lab->run($mode, $entriesAllowed) as $row) {
-                            if ($row['action'] !== 'none') {
-                                $this->log("[{$mode}] LAB {$row['symbol']} {$row['action']}: {$row['message']}");
-                            }
-                            if ($row['action'] === 'opened') {
-                                $stats['opened']++;
-                            }
-                        }
-                    } catch (Throwable $e) {
-                        $this->recordError($stats, 'Lab: '.$e->getMessage());
-                        Log::warning("[TradeEngine] Lab: {$e->getMessage()}");
-                    }
-                }
-
-                // 3a''. Day dip BUY: levels after 00:05 UTC, then a price check every ~15s (virtual limit).
-                if (DayRangeTrader::enabled() && Cache::add('engine:day-range:'.intdiv(time(), 15), true, 30)) {
-                    try {
-                        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
-                        foreach ($dayRange->check($mode, $entriesAllowed, now()->getTimestampMs()) as $row) {
-                            $this->log("[{$mode}] DAY DIP {$row['symbol']} {$row['action']}: {$row['message']}");
-                            if ($row['action'] === 'opened') {
-                                $stats['opened']++;
-                            }
-                        }
-                    } catch (Throwable $e) {
-                        $this->recordError($stats, 'Day range: '.$e->getMessage());
-                        Log::warning("[TradeEngine] Day range: {$e->getMessage()}");
-                    }
-                }
-
-                // 3b. Intrabar breakout watcher, once a minute
-                if (BreakoutWatcher::enabled() && Cache::add('engine:breakout-watch:'.intdiv(time(), 60), true, 120)) {
-                    try {
-                        foreach ($watcher->check() as $breakout) {
-                            $signal = $breakout['signal'];
-                            $status = null;
-
-                            if (BreakoutWatcher::tradingEnabled()) {
-                                $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade();
-                                $decision = $trader->processFreshSignals([$breakout], $mode, $entriesAllowed)[0] ?? null;
-                                $status = $entriesAllowed ? ($decision['message'] ?? null) : 'skipped: '.($pausedReason ?? $this->accountBlockReason($account->fresh()));
-                                if (($decision['status'] ?? '') === 'taken') {
-                                    $stats['opened']++;
-                                    $this->log("OPENED {$signal->symbol} {$signal->side} Early Breakout");
-                                }
-                            } else {
-                                $status = BotSwitches::on('breakout') ? 'Alert only: not auto-traded (early entries lost in the realistic replay test)' : 'Alert only: breakout bot switched off';
-                            }
-
-                            $this->log(sprintf('[%s] BREAKOUT %s %s at %s (level %s, volume %.1fx pace)%s', strtoupper($mode), $signal->symbol, $signal->side, $signal->entry, $breakout['level'], $breakout['volume_pace'], $status ? ' · '.preg_replace('/^\[\w+\] /', '', $status) : ''));
-                            if (BreakoutWatcher::alertsEnabled()) {
-                                $alerts->breakoutNowAlert($signal, $breakout['level'], $breakout['volume_pace'], $status, $breakout['watch'] ?? null);
-                            }
-                        }
-                    } catch (Throwable $e) {
-                        $this->recordError($stats, 'Breakout watcher: '.$e->getMessage());
-                        Log::warning("[TradeEngine] Breakout watcher: {$e->getMessage()}");
+                        $this->recordError($stats, 'NEAR breakout: '.$e->getMessage());
+                        Log::warning("[TradeEngine] NEAR breakout: {$e->getMessage()}");
                     }
                 }
 
@@ -243,8 +123,7 @@ class TradingDaemonCommand extends Command
                     'paused_reason' => $pausedReason ?? (! $account->is_running ? 'Auto-trading is stopped (open trades are still managed).' : null),
                     'open_trades' => Trade::where('status', 'OPEN')->count(),
                     'cycle_ms' => (int) round((microtime(true) - $passStarted) * 1000),
-                    'watching' => BreakoutWatcher::enabled() ? $watcher->watchingCoins() : (BreakoutStrategyService::enabled() ? BreakoutSetup::query()->where('state', SignalLifecycleService::COMPRESSION)->count() : 0),
-                    'next_scan_at' => $this->nextScanAt(MarketScanService::scanIntervals()),
+                    'next_scan_at' => now()->setTimestamp((intdiv(time(), 3600) + 1) * 3600 + 30)->toIso8601String(),
                 ] + $stats);
 
                 if ($this->option('once')) {
@@ -269,61 +148,23 @@ class TradingDaemonCommand extends Command
     }
 
     /**
-     * Let the auto-trader act on fresh signals, then log, mark and announce each decision.
-     *
-     * @param  array<int, array{signal: Signal, record: CryptoSignal}>  $fresh
-     * @param  array<string, mixed>  $stats
-     */
-    protected function actOnSignals(array $fresh, string $mode, TradingAccount $account, ?string $pausedReason, SignalAlgoTrader $trader, MarketScanService $scanner, SignalAlerts $alerts, array &$stats, ?string $interval = null): void
-    {
-        if ($fresh === []) {
-            return;
-        }
-
-        $entriesAllowed = $pausedReason === null && $account->fresh()->canTrade() && BotSwitches::on('breakout');
-        if (! $entriesAllowed) {
-            $this->log("[{$mode}] New entries blocked: ".(! BotSwitches::on('breakout') ? 'Breakout bot switched off' : ($pausedReason ?? $this->accountBlockReason($account->fresh()))));
-        }
-
-        $decisions = $trader->processFreshSignals($fresh, $mode, $entriesAllowed);
-
-        foreach ($fresh as ['signal' => $signal, 'record' => $record]) {
-            $decision = collect($decisions)->first(fn (array $d): bool => $d['symbol'] === $signal->symbol && $d['side'] === $signal->side);
-            if (($decision['status'] ?? '') === 'duplicate') {
-                continue;
-            }
-
-            $scanner->markAutoTrade($signal->symbol, $decision['message'] ?? '', $interval);
-            $alerts->announceSignal($signal, $record->fresh(), $decision['message'] ?? null);
-            $this->log(sprintf('%s %s %s %s %s · %s', strtoupper("[{$mode}]"), $signal->symbol, $signal->side, $signal->setupLabel.($signal->interval === SetupStats::baseInterval() ? '' : " {$signal->interval}"), $signal->grade ?? '-', preg_replace('/^\[\w+\] /', '', (string) ($decision['message'] ?? 'no decision'))));
-
-            if (($decision['status'] ?? '') === 'taken') {
-                $stats['opened']++;
-                $this->log("OPENED {$signal->symbol} {$signal->side} {$signal->setupLabel}");
-            }
-        }
-    }
-
-    /**
      * Per-run counters, keeping the last scan and last error from earlier runs (the scan runs once per candle).
      *
      * @return array<string, mixed>
      */
-    protected function initialStats(TradingModeManager $modeManager, MarketScanService $scanner): array
+    protected function initialStats(TradingModeManager $modeManager): array
     {
         $previous = $modeManager->heartbeat()['details'];
-        $results = $scanner->latestResults();
 
         return [
             'managed' => 0,
             'closed' => 0,
             'opened' => 0,
             'scans' => 0,
-            'last_scan_at' => $results['scanned_at'] ?? ($previous['last_scan_at'] ?? null),
-            'last_scan_summary' => $previous['last_scan_summary'] ?? (isset($results['symbols_scanned']) ? "Scanned {$results['symbols_scanned']} symbols, {$results['fresh_signals']} fresh signals." : null),
+            'last_scan_at' => $previous['last_scan_at'] ?? null,
+            'last_scan_summary' => $previous['last_scan_summary'] ?? null,
             'last_error' => $previous['last_error'] ?? null,
             'last_error_at' => $previous['last_error_at'] ?? null,
-            'scans_by_interval' => (array) ($previous['scans_by_interval'] ?? []),
         ];
     }
 
@@ -337,32 +178,6 @@ class TradingDaemonCommand extends Command
     }
 
     /**
-     * The next candle close among the scanned timeframes.
-     *
-     * @param  array<int, string>  $intervals
-     */
-    protected function nextScanAt(array $intervals): string
-    {
-        $next = min(array_map(function (string $interval): int {
-            $bar = MarketScanService::barSeconds($interval);
-
-            return (intdiv(now()->timestamp, $bar) + 1) * $bar;
-        }, $intervals));
-
-        return now()->setTimestamp($next)->toIso8601String();
-    }
-
-    protected function accountBlockReason(TradingAccount $account): string
-    {
-        return match (true) {
-            (bool) $account->kill_switch => 'kill switch is active.',
-            ! $account->is_running => 'auto-trading is stopped.',
-            $account->paused_until !== null && $account->paused_until->isFuture() => 'paused until '.$account->paused_until->toDateTimeString().' UTC ('.($account->pause_reason ?? 'risk rule').').',
-            default => 'risk rules.',
-        };
-    }
-
-    /**
      * Why new entries are blocked at the engine level (null when they are allowed).
      */
     protected function pausedReason(TradingModeManager $modeManager, TradingAccount $account, string $mode): ?string
@@ -371,7 +186,7 @@ class TradingDaemonCommand extends Command
             $readiness = $modeManager->liveReadiness();
             if (! $readiness['ready']) {
                 if (Cache::add('engine:live-not-ready-alert', true, 3600)) {
-                    app(SignalAlerts::class)->riskAlert('live', 'Live mode selected but not usable', $readiness['reason'].' No new trades will open until this is fixed.');
+                    app(TelegramNotifier::class)->notifyRiskEvent('live', 'Live mode selected but not usable', $readiness['reason'].' No new trades will open until this is fixed.');
                 }
 
                 return 'Live mode unavailable: '.$readiness['reason'];

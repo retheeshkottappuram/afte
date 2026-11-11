@@ -2,14 +2,10 @@
 
 use App\Http\Controllers\Admin\RolePermissionController;
 use App\Http\Controllers\Admin\UserManagementController;
-use App\Http\Controllers\AlertHistoryController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Auth\RegisteredUserController;
-use App\Http\Controllers\CryptoSignalController;
-use App\Http\Controllers\DaemonController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExchangeStreamController;
-use App\Http\Controllers\MarketScanController;
 use App\Http\Controllers\TradeHistoryController;
 use Illuminate\Support\Facades\Route;
 
@@ -34,16 +30,13 @@ Route::middleware('auth')->group(function (): void {
     Route::prefix('api')->group(function (): void {
         Route::get('/stats', [DashboardController::class, 'stats'])->name('api.stats');
         Route::get('/positions', [DashboardController::class, 'positions'])->name('api.positions');
-        Route::get('/signals', [DashboardController::class, 'signals'])->name('api.signals');
         Route::get('/history', [DashboardController::class, 'history'])->name('api.history');
         Route::get('/equity-curve', [DashboardController::class, 'equityCurve'])->name('api.equity_curve');
-        Route::get('/scan', [DashboardController::class, 'scanMarket'])->name('api.scan');
         Route::get('/live-sync', [DashboardController::class, 'liveSync'])->name('api.live_sync');
         Route::post('/auto-tick', [DashboardController::class, 'autoTick'])->name('api.auto_tick');
 
         // Trading actions: require the manage_trading permission (admins always pass)
         Route::middleware('permission:manage_trading')->group(function (): void {
-            Route::post('/execute-radar-trade', [DashboardController::class, 'executeRadarTrade'])->name('api.execute_radar_trade');
             Route::post('/lock-breakeven', [DashboardController::class, 'lockBreakeven'])->name('api.lock_breakeven');
             Route::post('/update-stop-loss', [DashboardController::class, 'updateStopLoss'])->name('api.update_stop_loss');
             Route::post('/close-position', [DashboardController::class, 'closePosition'])->name('api.close_position');
@@ -72,86 +65,7 @@ Route::middleware('auth')->group(function (): void {
         Route::get('/trading-daemon/logs', [DashboardController::class, 'daemonLogs'])->name('api.trading_daemon.logs');
     });
 
-    // 4. CryptoLens Signals & Live Sentinel
-    Route::get('/signals', [CryptoSignalController::class, 'index'])
-        ->middleware('permission:view_signals')
-        ->name('signals.dashboard');
-    Route::get('/signals/recent', [CryptoSignalController::class, 'recentSignals'])
-        ->middleware('permission:view_signals')
-        ->name('signals.recent');
-    Route::get('/signals/analyze', [CryptoSignalController::class, 'analyze'])
-        ->middleware('permission:view_signals')
-        ->name('signals.analyze');
-    Route::get('/signals/swing-scorecard', [CryptoSignalController::class, 'swingScorecard'])
-        ->middleware('permission:view_signals')
-        ->name('signals.swing_scorecard');
-    Route::get('/signals/chart-trades', [CryptoSignalController::class, 'chartTrades'])
-        ->middleware('permission:view_signals')
-        ->name('signals.chart_trades');
-    Route::get('/dashboard/analyze', [CryptoSignalController::class, 'analyze'])
-        ->middleware('permission:view_signals')
-        ->name('dashboard.analyze');
-    Route::post('/signals/send-alert', [CryptoSignalController::class, 'sendAlert'])
-        ->middleware('permission:send_alerts')
-        ->name('signals.send_alert');
-    Route::post('/dashboard/send-alert', [CryptoSignalController::class, 'sendAlert'])
-        ->middleware('permission:send_alerts')
-        ->name('dashboard.send-alert');
-
-    // 5. Telegram Alert History
-    Route::get('/alerts', [AlertHistoryController::class, 'index'])
-        ->middleware('permission:view_alerts')
-        ->name('alerts.index');
-
-    // 6. 24/7 Sentinel Watcher Daemon API
-    Route::prefix('daemon')->group(function (): void {
-        Route::get('/status', [DaemonController::class, 'status'])->name('daemon.status');
-        Route::post('/start', [DaemonController::class, 'start'])
-            ->middleware('permission:manage_sentinel')
-            ->name('daemon.start');
-        Route::post('/stop', [DaemonController::class, 'stop'])
-            ->middleware('permission:manage_sentinel')
-            ->name('daemon.stop');
-        Route::post('/test-alert', [DaemonController::class, 'testAlert'])
-            ->middleware('permission:manage_sentinel')
-            ->name('daemon.test-alert');
-        Route::get('/monitored-coins', [DaemonController::class, 'getMonitoredCoins'])->name('daemon.monitored-coins');
-        Route::post('/monitored-coins/add', [DaemonController::class, 'addMonitoredCoin'])
-            ->middleware('permission:manage_sentinel')
-            ->name('daemon.monitored-coins.add');
-        Route::post('/monitored-coins/remove', [DaemonController::class, 'removeMonitoredCoin'])
-            ->middleware('permission:manage_sentinel')
-            ->name('daemon.monitored-coins.remove');
-        Route::post('/monitored-coins/reset', [DaemonController::class, 'resetMonitoredCoins'])
-            ->middleware('permission:manage_sentinel')
-            ->name('daemon.monitored-coins.reset');
-        Route::post('/monitored-coins/mode', [DaemonController::class, 'setScanMode'])
-            ->middleware('permission:manage_sentinel')
-            ->name('daemon.monitored-coins.mode');
-    });
-
-    // 7. Whole-Market Scanner page + API
-    Route::get('/scanner', [MarketScanController::class, 'page'])
-        ->middleware('permission:view_signals')
-        ->name('scanner.index');
-    Route::prefix('market-scan')->group(function (): void {
-        Route::get('/status', [MarketScanController::class, 'status'])->name('market-scan.status');
-        Route::get('/watch', [MarketScanController::class, 'watch'])->name('market-scan.watch');
-        Route::post('/early-breakout/resume', [MarketScanController::class, 'resumeEarly'])
-            ->middleware('permission:manage_trading')
-            ->name('market-scan.early-resume');
-        Route::post('/start', [MarketScanController::class, 'start'])
-            ->middleware('permission:trigger_scans')
-            ->name('market-scan.start');
-        Route::post('/stop', [MarketScanController::class, 'stop'])
-            ->middleware('permission:trigger_scans')
-            ->name('market-scan.stop');
-        Route::post('/clear', [MarketScanController::class, 'clear'])
-            ->middleware('permission:trigger_scans')
-            ->name('market-scan.clear');
-    });
-
-    // 8. Administration (Admin Role Required)
+    // 4. Administration (Admin Role Required)
     Route::middleware('admin')->group(function (): void {
         // Protected User Registration (Admin Only)
         Route::get('/register', [RegisteredUserController::class, 'create'])->name('register');

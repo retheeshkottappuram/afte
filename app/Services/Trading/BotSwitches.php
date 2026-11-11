@@ -6,7 +6,7 @@ use App\Models\Setting;
 use InvalidArgumentException;
 
 /**
- * Dashboard on/off switches for each auto-trading bot (new entries only; open trades keep being managed).
+ * Dashboard on/off switch for the auto-trading bot (new entries only; open trades keep being managed).
  * Stored in the settings table so the cron engine and the web dashboard agree. Until a switch is used,
  * each bot follows its config default.
  */
@@ -14,7 +14,7 @@ class BotSwitches
 {
     public const KEY = 'bot_switches';
 
-    public const BOTS = ['swing', 'breakout', 'lab', 'dayrange'];
+    public const BOTS = ['near'];
 
     public static function on(string $bot): bool
     {
@@ -46,10 +46,7 @@ class BotSwitches
     protected static function default(string $bot): bool
     {
         return match ($bot) {
-            'swing' => (bool) config('trading.swing_sar.enabled', false),
-            'lab' => (bool) config('trading.lab.enabled', false),
-            'dayrange' => (bool) config('trading.day_range.enabled', false),
-            'breakout' => true,
+            'near' => (bool) config('trading.near_vgb.enabled', true),
             default => false,
         };
     }

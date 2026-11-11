@@ -5,7 +5,6 @@ namespace App\Models;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * @property int $id
@@ -246,13 +245,5 @@ class Trade extends Model
     public function getRemainingPositionSizeUsdAttribute(): float
     {
         return round($this->remaining_quantity * $this->entry_price, 2);
-    }
-
-    /**
-     * Associated trading signal.
-     */
-    public function signal(): HasOne
-    {
-        return $this->hasOne(TradingSignal::class, 'trade_id');
     }
 }

@@ -618,48 +618,4 @@ class BinanceClient
 
         return array_column($symbols, 'symbol');
     }
-
-    /**
-     * Get BTC Macro Market Trend direction using explicit BtcMacroAlignment.
-     * Evaluates closed 1h and 4h candles. Neutral/choppy BTC sets allow_long=false, allow_short=false.
-     *
-     * @return array{
-     *     trend: string,
-     *     allow_long: bool,
-     *     allow_short: bool,
-     *     btc_price: float,
-     *     ema_fast_1h?: ?float,
-     *     ema_slow_1h?: ?float,
-     *     slope_pct?: float,
-     *     confluence_4h?: ?string,
-     *     reason?: string
-     * }
-     */
-    public function getBtcMarketTrend(): array
-    {
-        return Cache::remember('binance:btc:macro_trend', 45, function (): array {
-            try {
-                $btc1h = $this->klines('BTCUSDT', '1h', 210);
-                $btc4h = null;
-                try {
-                    $btc4h = $this->klines('BTCUSDT', '4h', 60);
-                } catch (\Throwable) {
-                }
-
-                $alignment = new BtcMacroAlignment;
-
-                return $alignment->evaluate($btc1h, $btc4h);
-            } catch (\Throwable $e) {
-                Log::warning("BinanceClient: Error evaluating BTC macro trend ({$e->getMessage()}) - defaulting to NEUTRAL (signals blocked)");
-
-                return [
-                    'trend' => 'NEUTRAL',
-                    'allow_long' => false,
-                    'allow_short' => false,
-                    'btc_price' => 0.0,
-                    'reason' => 'Error evaluating BTC macro trend: '.$e->getMessage().' - all signals blocked',
-                ];
-            }
-        });
-    }
 }

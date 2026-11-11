@@ -52,8 +52,7 @@ class TelegramNotifierTest extends TestCase
 
         $notifier->notifyTradeOpened($trade, 95, 'High volume breakout');
         $notifier->notifyBreakevenLocked($trade, 151.0);
-        $notifier->notifyTp1Hit($trade, 0.02, 0.06);
-        $notifier->notifyTp2Hit($trade, 0.01, 0.06);
+        $notifier->notifyTrailArmed($trade, 101.0);
         $notifier->notifyTradeClosed($trade, 5.20);
 
         Http::assertNothingSent();

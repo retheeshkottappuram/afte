@@ -7,7 +7,6 @@ use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
-use App\Services\Strategy\StrategyEngine;
 use Carbon\Carbon;
 
 /**
@@ -94,7 +93,6 @@ class RiskManager
      */
     public function canOpenTrade(TradingAccount $account, string $symbol, ?string $side = null, bool $isManual = false, ?string $setup = null): array
     {
-        $isSar = SwingSarTrader::isSwingFamily($setup);
         if ($account->mode === 'live' && ! config('trading.allow_live_trading', false)) {
             return ['allowed' => false, 'reason' => 'Live trading is disabled on this server (ALLOW_LIVE_TRADING=false).'];
         }
@@ -129,37 +127,28 @@ class RiskManager
             return ['allowed' => false, 'reason' => "A trade on {$symbol} is already open."];
         }
 
-        // Swing SAR trades have their own slots and never block (or count toward) the main bot's positions.
-        $openTrades = $openTrades->filter(fn (Trade $t): bool => SwingSarTrader::isSwingFamily($t->setup_tag) === $isSar);
-        $maxPositions = $isSar ? (int) config('trading.swing_sar.max_open', 2) : $this->maxPositions((float) $account->balance);
-        if ($isSar && $openTrades->count() >= $maxPositions) {
-            return ['allowed' => false, 'reason' => "Swing SAR positions ({$maxPositions}) reached."];
+        // The account-size limit counts only trades that can still lose (stop below breakeven); risk-free ones free
+        // their slot, up to max_positions_protected open in total.
+        $maxPositions = $this->maxPositions((float) $account->balance);
+        $atRisk = $openTrades->filter(fn (Trade $t): bool => self::stillAtRisk($t));
+        $maxTotal = max($maxPositions, (int) config('trading.sizing.max_positions_protected', 4));
+        if ($openTrades->count() >= $maxTotal) {
+            return ['allowed' => false, 'reason' => "Max open positions ({$maxTotal}) reached."];
         }
-
-        // Main bot: the account-size limit counts only trades that can still lose (stop below breakeven); risk-free
-        // ones free their slot, up to max_positions_protected open in total.
-        $atRisk = $isSar ? $openTrades : $openTrades->filter(fn (Trade $t): bool => self::stillAtRisk($t));
-        if (! $isSar) {
-            $maxTotal = max($maxPositions, (int) config('trading.sizing.max_positions_protected', 4));
-            if ($openTrades->count() >= $maxTotal) {
-                return ['allowed' => false, 'reason' => "Max open positions ({$maxTotal}) reached."];
-            }
-            if ($atRisk->count() >= $maxPositions) {
-                return ['allowed' => false, 'reason' => "Max open positions ({$maxPositions}) at risk reached for this account size; another opens once the open trade's stop is at breakeven."];
-            }
+        if ($atRisk->count() >= $maxPositions) {
+            return ['allowed' => false, 'reason' => "Max open positions ({$maxPositions}) at risk reached for this account size; another opens once the open trade's stop is at breakeven."];
         }
 
         if ($side !== null) {
             $sameSide = $atRisk->where('side', strtoupper($side))->count();
-            // Swing SAR may fill all its slots in one direction (each flip carries its own capped stop).
-            $maxSameSide = $isSar ? $maxPositions : (int) config('trading.sizing.max_same_side', 2);
+            $maxSameSide = (int) config('trading.sizing.max_same_side', 2);
             if ($sameSide >= $maxSameSide) {
                 return ['allowed' => false, 'reason' => "Already {$sameSide} {$side} positions open (correlation limit)."];
             }
         }
 
         $availMargin = $this->getAvailableBalance($account);
-        $minRequired = (float) config('trading.fund_management.min_available_margin', 0.50);
+        $minRequired = (float) config('trading.sizing.min_free_margin', 0.50);
         if ($availMargin < $minRequired) {
             return ['allowed' => false, 'reason' => "Insufficient free margin (\${$availMargin})."];
         }
@@ -173,37 +162,6 @@ class RiskManager
     public static function stillAtRisk(Trade $trade): bool
     {
         return ((float) $trade->current_sl - (float) $trade->entry_price) * ($trade->isLong() ? 1 : -1) < 0;
-    }
-
-    /**
-     * Fallback stop when a signal carries none, or when it is on the wrong side of entry.
-     * Clamps an existing stop into the configured distance band.
-     */
-    public function calculateAssetProtectionStopLoss(string $direction, float $entryPrice, ?float $proposedSl = null, ?string $setup = null): float
-    {
-        if ($entryPrice <= 0) {
-            return 0.0;
-        }
-
-        $isLong = in_array(strtoupper($direction), ['LONG', 'BUY'], true);
-        $sign = $isLong ? -1 : 1;
-        $minPct = (float) config('trading.strategy.min_sl_pct', 0.6);
-        $maxPct = StrategyEngine::configuredMaxSlPct($setup);
-        $defaultPct = (float) config('trading.risk.default_sl_distance_pct', 1.25);
-
-        $atPct = fn (float $pct): float => $entryPrice * (1.0 + $sign * $pct / 100.0);
-
-        if ($proposedSl === null || $proposedSl <= 0 || ($isLong ? $proposedSl >= $entryPrice : $proposedSl <= $entryPrice)) {
-            return $atPct($defaultPct);
-        }
-
-        $distancePct = abs($entryPrice - $proposedSl) / $entryPrice * 100.0;
-
-        return match (true) {
-            $distancePct < $minPct => $atPct($minPct),
-            $distancePct > $maxPct => $atPct($maxPct),
-            default => $proposedSl,
-        };
     }
 
     /**
@@ -260,18 +218,6 @@ class RiskManager
         $availMargin = $this->getAvailableBalance($account);
         $usableMargin = $availMargin * $maxMarginPct;
 
-        $swing = SwingSarTrader::isSwingFamily($setup);
-        $budget = $isManual ? null : ($swing ? $this->swingMarginBudget($account) : $this->breakoutMarginBudget($account));
-        if ($budget !== null) {
-            if ($budget <= 0) {
-                $share = (float) config('trading.swing_sar.fund_share', 0.5);
-
-                return $reject(sprintf('The %s half of the fund ($%.2f) is already in use.', $swing ? 'swing' : 'breakout', $equity * ($swing ? $share : 1 - $share)));
-            }
-            $usableMargin = min($usableMargin, $budget);
-            $availMargin = round($usableMargin, 2);
-        }
-
         if ($usableMargin <= 0) {
             return $reject('No free margin available.');
         }
@@ -299,43 +245,7 @@ class RiskManager
     }
 
     /**
-     * Margin the auto (breakout) bot may still use while Swing SAR holds its fund share, or null without a split:
-     * balance x (1 - swing_sar.fund_share) minus the margin of open non-SAR trades.
-     */
-    public function breakoutMarginBudget(TradingAccount $account): ?float
-    {
-        $share = (float) config('trading.swing_sar.fund_share', 0.5);
-        if (! SwingSarTrader::enabled() || $share <= 0 || $share >= 1) {
-            return null;
-        }
-
-        $used = (float) Trade::where('mode', $account->mode)->where('status', 'OPEN')
-            ->where(fn ($q) => $q->whereNull('setup_tag')->orWhereNotIn('setup_tag', [SwingSarTrader::SETUP, LabTrader::SETUP]))
-            ->sum('margin_used');
-
-        return round(max(0.0, (float) $account->balance) * (1 - $share) - $used, 4);
-    }
-
-    /**
-     * Margin the swing-family bots (Swing SAR, Lab) may still use: balance x swing_sar.fund_share minus their open
-     * margin, or null without a split.
-     */
-    public function swingMarginBudget(TradingAccount $account): ?float
-    {
-        $share = (float) config('trading.swing_sar.fund_share', 0.5);
-        if ($share <= 0 || $share >= 1) {
-            return null;
-        }
-
-        $used = (float) Trade::where('mode', $account->mode)->where('status', 'OPEN')
-            ->whereIn('setup_tag', [SwingSarTrader::SETUP, LabTrader::SETUP])
-            ->sum('margin_used');
-
-        return round(max(0.0, (float) $account->balance) * $share - $used, 4);
-    }
-
-    /**
-     * Fixed-margin size (Swing SAR): margin x leverage of notional, whatever the stop distance. The risk this
+     * Fixed-margin size (NEAR breakout: equity x size at 1x): margin x leverage of notional, whatever the stop distance. The risk this
      * puts on (quantity x stop distance) is reported, not capped; the stop width is capped by the caller.
      *
      * @return array{allowed: bool, quantity: float, margin: float, amount_added: float, leverage: int, risk_usd: float, risk_pct: float, notional: float, reason: string}

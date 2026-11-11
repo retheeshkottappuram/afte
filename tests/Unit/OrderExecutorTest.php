@@ -51,7 +51,7 @@ class OrderExecutorTest extends TestCase
         ]);
     }
 
-    public function test_paper_entry_is_risk_sized_with_exit_plan_targets(): void
+    public function test_paper_entry_is_risk_sized_without_a_take_profit(): void
     {
         Http::fake();
         $this->account('paper');
@@ -62,7 +62,7 @@ class OrderExecutorTest extends TestCase
         $this->assertSame('opened', $result['status']);
         $this->assertEqualsWithDelta(150.0 * 1.0003, $trade->entry_price, 1e-9, 'Paper fills include slippage');
         $this->assertEqualsWithDelta(1.5, $trade->entry_price - $trade->initial_sl, 1e-9, 'Stop distance is preserved from the signal');
-        $this->assertEqualsWithDelta($trade->entry_price + 2.25, $trade->tp1_price, 1e-9);
+        $this->assertEqualsWithDelta(0.0, (float) $trade->tp1_price, 1e-9, 'No take-profit: exits come from the strategy');
         $this->assertEqualsWithDelta(1.33, $trade->quantity, 1e-9, '2% of $100 at a $1.50 stop');
         $this->assertSame('TREND_PULLBACK', $trade->meta['setup']);
         $this->assertSame('auto', $trade->meta['source']);
@@ -74,7 +74,7 @@ class OrderExecutorTest extends TestCase
         Http::fake();
         $this->account('paper');
 
-        $result = app(OrderExecutor::class)->executeSignal($this->signal(['initial_sl' => 145.0]), 'paper');
+        $result = app(OrderExecutor::class)->executeSignal($this->signal(['initial_sl' => 137.0]), 'paper');
 
         $this->assertSame('rejected', $result['status']);
         $this->assertStringContainsString('wider than', $result['message']);
@@ -103,7 +103,7 @@ class OrderExecutorTest extends TestCase
         $this->assertSame(0, Trade::count(), 'An unprotected position is never recorded as an open trade');
     }
 
-    public function test_live_entry_records_exchange_stop_and_take_profit_ids(): void
+    public function test_live_entry_records_the_exchange_stop_and_places_no_take_profit(): void
     {
         $this->enableLive();
         $this->account('live');
@@ -115,7 +115,7 @@ class OrderExecutorTest extends TestCase
 
         $this->mock(ExchangeOrders::class, function (MockInterface $mock): void {
             $mock->shouldReceive('placeStop')->once()->withArgs(fn (string $s, string $side, float $stop, float $qty): bool => abs($stop - 148.6) < 1e-9 && abs($qty - 1.33) < 1e-9)->andReturn(['id' => 'sl-1', 'kind' => 'algo']);
-            $mock->shouldReceive('placeTakeProfit')->once()->andReturn(['id' => 'tp-1', 'kind' => 'algo']);
+            $mock->shouldNotReceive('placeTakeProfit');
         });
 
         $result = app(OrderExecutor::class)->executeSignal($this->signal(), 'live');
@@ -124,7 +124,7 @@ class OrderExecutorTest extends TestCase
         $this->assertSame('opened', $result['status']);
         $this->assertSame(150.10, $trade->entry_price, 'The real fill price is used');
         $this->assertSame('sl-1', $trade->meta['sl_order']['id']);
-        $this->assertSame('tp-1', $trade->meta['tp_order']['id']);
+        $this->assertArrayNotHasKey('tp_order', $trade->meta);
         $this->assertSame('77', $trade->binance_order_id);
     }
 

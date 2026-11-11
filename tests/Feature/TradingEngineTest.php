@@ -6,7 +6,7 @@ use App\Models\Setting;
 use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
-use App\Services\Strategy\MarketScanService;
+use App\Services\Trading\NearBreakoutTrader;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -65,9 +65,8 @@ class TradingEngineTest extends TestCase
 
     public function test_engine_cycle_manages_trades_and_records_a_heartbeat_in_the_active_mode(): void
     {
-        $this->mock(MarketScanService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('isScanDue')->andReturn(false);
-            $mock->shouldReceive('latestResults')->andReturn([]);
+        $this->mock(NearBreakoutTrader::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('run')->andReturn(['action' => 'none', 'message' => 'Candle already handled.']);
         });
         TradingAccount::getForMode('paper')->update(['balance' => 100.0, 'peak_equity' => 100.0, 'is_running' => true]);
         $trade = Trade::create([
@@ -75,14 +74,14 @@ class TradingEngineTest extends TestCase
             'entry_price' => 100.0, 'quantity' => 0.5, 'remaining_quantity' => 0.5, 'margin_used' => 10.0, 'leverage' => 5,
             'initial_sl' => 99.0, 'current_sl' => 99.0, 'tp1_price' => 101.5, 'tp2_price' => 103.0, 'opened_at' => now()->subHours(13),
         ]);
-        Cache::put('binance:mark:SOLUSDT', 100.10, 60);
+        Cache::put('binance:mark:SOLUSDT', 98.90, 60);
 
         $this->artisan('trade:engine --once')->assertSuccessful();
 
         $heartbeat = app(TradingModeManager::class)->heartbeat();
         $this->assertSame('running', $heartbeat['state']);
         $this->assertSame('paper', $heartbeat['details']['mode']);
-        $this->assertSame('TIME_STOP', $trade->refresh()->exit_reason, 'Open trades are managed by the cron engine');
+        $this->assertSame('STOP_LOSS', $trade->refresh()->exit_reason, 'Open trades are managed by the cron engine');
     }
 
     public function test_overlapping_engine_runs_exit_immediately(): void
@@ -98,9 +97,8 @@ class TradingEngineTest extends TestCase
 
     public function test_engine_reports_live_mode_unavailable_instead_of_silently_trading_paper(): void
     {
-        $this->mock(MarketScanService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('isScanDue')->andReturn(false);
-            $mock->shouldReceive('latestResults')->andReturn([]);
+        $this->mock(NearBreakoutTrader::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('run')->andReturn(['action' => 'none', 'message' => 'Candle already handled.']);
         });
         config(['trading.allow_live_trading' => false]);
         Setting::putValue(TradingModeManager::MODE_KEY, 'live');

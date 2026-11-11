@@ -3,8 +3,8 @@
 namespace App\Services\Notifications;
 
 use App\Models\Trade;
-use App\Services\Trading\LabTrader;
-use App\Services\Trading\SwingSarTrader;
+use App\Models\TradingAccount;
+use App\Services\Trading\NearBreakoutTrader;
 
 /**
  * Trade lifecycle messages, tagged [PAPER] / [LIVE]. Follow-ups (breakeven, TP1, close)
@@ -53,13 +53,12 @@ class TelegramNotifier
             .'Setup: '.e($setupLabel)."\n"
             ."Entry: <code>{$this->fmt($trade->entry_price)}</code>\n"
             ."Stop: <code>{$this->fmt($trade->initial_sl)}</code>\n"
-            .match ($trade->setup_tag) {
-                SwingSarTrader::SETUP => $this->sarPlan($trade),
-                LabTrader::SETUP => 'Exit: trailing stop moved on each 4h close'
-                    .(str_contains((string) ($trade->meta['setup_label'] ?? ''), 'momentum') ? ', or when the 7-day momentum turns' : '')
-                    ." (1-week live trial)\n",
-                default => "TP1: <code>{$this->fmt($trade->tp1_price)}</code> · TP2: <code>{$this->fmt($trade->tp2_price)}</code>\n",
-            }
+            .($trade->setup_tag === NearBreakoutTrader::SETUP
+                ? "(safety stop for crashes; the script has none)\n"
+                    ."Exit: a 1h close below EMA50 (<code>{$this->fmt((float) ($trade->meta['ema'] ?? 0))}</code>), or the trail: "
+                    ."once price is 0.10 ATR above entry it closes 0.10 ATR below the highest price\n"
+                    ."<i>Backtest on the real 5m price path: PF 0.92. Not proven.</i>\n"
+                : '')
         ."Size: \${$notional} at {$trade->leverage}x, margin \${$trade->margin_used}"
         .($risk !== null ? "\nRisk: \${$risk} (".($trade->meta['risk_pct'] ?? '?').'% of equity)' : '');
 
@@ -79,37 +78,16 @@ class TelegramNotifier
         $this->reply($trade, "🛡 {$this->tag($trade)} {$trade->symbol}: stop moved to breakeven <code>{$this->fmt($stopPrice)}</code>. This trade can no longer lose money (fees covered).");
     }
 
-    public function notifyStopTrailed(Trade $trade, float $stopPrice, float $price, string $why = 'SuperTrend line'): void
+    public function notifyTrailArmed(Trade $trade, float $trailStop): void
     {
-        $locked = ($stopPrice - (float) $trade->entry_price) * ($trade->isLong() ? 1 : -1) >= 0;
-        $risk = abs((float) $trade->entry_price - $stopPrice) * (float) $trade->remaining_quantity;
-        $this->reply($trade, "↗️ {$this->tag($trade)} {$trade->symbol}: stop moved to <code>{$this->fmt($stopPrice)}</code> ({$why}, price {$this->fmt($price)})."
-            .($locked ? ' Profit is now locked in.' : sprintf(' Worst case now −$%.2f.', $risk)));
+        $this->reply($trade, "↗️ {$this->tag($trade)} {$trade->symbol}: trail armed, exit if price falls to <code>{$this->fmt($trailStop)}</code> (moves up with the high).");
     }
 
     public function notifyStopEdited(Trade $trade, float $stopPrice, float $atStopUsd): void
     {
         $this->reply($trade, "✏️ {$this->tag($trade)} {$trade->symbol}: stop changed by you to <code>{$this->fmt($stopPrice)}</code>."
             .($atStopUsd >= 0 ? sprintf(' Profit locked: +$%.2f at the stop.', $atStopUsd) : sprintf(' Worst case now −$%.2f.', abs($atStopUsd)))
-            .' The bot keeps moving it forward from here.');
-    }
-
-    public function notifyPartialBooked(Trade $trade, float $closedQty, float $pnl, float $atR): void
-    {
-        $sign = $pnl >= 0 ? '+' : '';
-        $this->reply($trade, "🎯 {$this->tag($trade)} {$trade->symbol}: booked {$closedQty} at +{$atR}R for {$sign}\${$pnl}. Left: {$trade->remaining_quantity}.");
-    }
-
-    public function notifyTp1Hit(Trade $trade, float $closedQty, float $pnl): void
-    {
-        $sign = $pnl >= 0 ? '+' : '';
-        $this->reply($trade, "🎯 {$this->tag($trade)} {$trade->symbol}: TP1 hit, booked {$closedQty} for {$sign}\${$pnl}. Stop locked in profit at <code>{$this->fmt($trade->current_sl)}</code>; the rest trails.");
-    }
-
-    public function notifyTp2Hit(Trade $trade, float $closedQty, float $pnl): void
-    {
-        $sign = $pnl >= 0 ? '+' : '';
-        $this->reply($trade, "🎯 {$this->tag($trade)} {$trade->symbol}: TP2 reached ({$sign}\${$pnl}).");
+            .'');
     }
 
     public function notifyTradeClosed(Trade $trade, float $accountBalance): void
@@ -138,6 +116,26 @@ Exit order: <code>'.e((string) $trade->meta['exit_client_order_id']).'</code>' :
         $this->gateway->send('🚨 <b>'.e($title).'</b> ['.strtoupper($mode)."]\n\n".e($details), null, priority: true);
     }
 
+    /**
+     * End-of-day summary for the active mode.
+     */
+    public function dailySummary(string $mode): void
+    {
+        $account = TradingAccount::getForMode($mode);
+        $closed = Trade::where('mode', $mode)->where('status', 'CLOSED')->where('closed_at', '>=', now()->subDay())->get();
+        $wins = $closed->filter(fn (Trade $t): bool => (float) $t->net_pnl > 0)->count();
+        $dayPnl = round((float) $closed->sum('net_pnl'), 4);
+        $open = Trade::where('mode', $mode)->where('status', 'OPEN')->get();
+
+        $sign = $dayPnl >= 0 ? '+' : '';
+        $html = '📊 <b>Daily summary ['.strtoupper($mode)."]</b>\n"
+            ."Balance: \${$account->balance}\n"
+            ."Last 24h: {$closed->count()} trades, {$wins} wins, {$sign}\${$dayPnl}\n"
+            .'Open positions: '.($open->isEmpty() ? 'none' : $open->map(fn (Trade $t): string => "{$t->symbol} {$t->side}")->implode(', '));
+
+        $this->gateway->send($html, null, priority: true);
+    }
+
     protected function reply(Trade $trade, string $html): void
     {
         if (! $this->shouldNotify($trade)) {
@@ -146,30 +144,6 @@ Exit order: <code>'.e((string) $trade->meta['exit_client_order_id']).'</code>' :
 
         $replyTo = isset($trade->meta['telegram_message_id']) ? (int) $trade->meta['telegram_message_id'] : null;
         $this->gateway->send($html, $replyTo);
-    }
-
-    /**
-     * Swing SAR exit plan in dollars, so the stop and the profit lock can be compared.
-     */
-    protected function sarPlan(Trade $trade): string
-    {
-        $entry = (float) $trade->entry_price;
-        $qty = (float) $trade->quantity;
-        $risk = abs($entry - (float) $trade->initial_sl);
-        $dir = $trade->isLong() ? 1 : -1;
-        $lines = sprintf("Stop loss: −\$%.2f (%.2f%%) if hit%s\n", $qty * $risk, $entry > 0 ? $risk / $entry * 100 : 0,
-            str_contains((string) ($trade->meta['setup_label'] ?? ''), '"?" flip') ? ' (unconfirmed "?" flip: tight stop)' : '');
-        foreach ((array) config('trading.swing_sar.partials', []) as [$atR, $share]) {
-            $lines .= sprintf("Book %d%% at <code>%s</code> (+%sR, +\$%.2f)\n", round($share * 100), $this->fmt($entry + $dir * $atR * $risk), $atR, $qty * $share * $atR * $risk);
-        }
-        foreach ((array) config('trading.swing_sar.ladder', []) as [$atR, $stopR]) {
-            $lines .= sprintf("At +%sR the stop moves to %s\n", $atR, $stopR == 0 ? 'breakeven' : '<code>'.$this->fmt($entry + $dir * $stopR * $risk).'</code> ('.($stopR > 0 ? '+' : '').$stopR.'R)');
-        }
-        if ((float) config('trading.swing_sar.trail_from_r', 1.5) > 0) {
-            $lines .= sprintf("From +%sR the stop trails %s ATR behind the best price\n", (float) config('trading.swing_sar.trail_from_r', 1.5), (float) config('trading.swing_sar.trail_atr', 1.5));
-        }
-
-        return $lines.'Exit: the trailing stop or the opposite swing flip ('.SwingSarTrader::interval().")\n";
     }
 
     protected function tag(Trade $trade): string
@@ -183,11 +157,8 @@ Exit order: <code>'.e((string) $trade->meta['exit_client_order_id']).'</code>' :
             'STOP_LOSS' => 'stop-loss',
             'BREAKEVEN_STOP' => 'breakeven stop',
             'TRAILING_STOP' => 'trailing stop',
-            'TIME_STOP' => 'time stop: no progress in 12h',
-            'MAX_HOLD_TIME' => 'max hold time',
-            'OPPOSITE_SIGNAL' => 'opposite signal',
+            'EMA_EXIT' => '1h close fell below EMA50',
             'MANUAL_CLOSE' => 'closed manually',
-            'DAY_END' => 'end of the day',
             'EXCHANGE_OR_MANUAL_CLOSE', 'EXCHANGE_CLOSED' => 'closed on Binance, not by the bot',
             'BOT_REDUCE_ONLY' => 'bot reduce-only close',
             'KILL_SWITCH' => 'kill switch',

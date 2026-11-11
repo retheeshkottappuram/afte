@@ -117,11 +117,6 @@
                         <a id="link-trade-history" href="{{ route('history.index', ['mode' => $mode]) }}" class="hidden md:inline-flex px-2.5 sm:px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-lg text-cyan-300 transition items-center space-x-1.5 flex-shrink-0">
                             <span>📜 Trade History</span>
                         </a>
-                        <button onclick="triggerScan(true)" id="btn-scan" class="px-2.5 sm:px-3 py-1.5 text-xs font-mono bg-cyber-700 hover:bg-cyber-600 border border-cyber-border rounded-lg text-slate-200 transition flex items-center space-x-1.5 flex-shrink-0">
-                            <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                            <span>Scan Market</span>
-                        </button>
-
                         @if (Auth::user()?->isAdmin())
                             <button onclick="toggleAutoTrading()" id="btn-auto-trading" class="px-2.5 sm:px-3 py-1.5 text-xs font-mono font-bold rounded-lg transition flex items-center space-x-1.5 shadow-sm border flex-shrink-0 {{ $account->is_running ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-amber-500/10' : 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/40 shadow-emerald-500/10' }}">
                                 <span id="auto-trading-dot" class="w-2 h-2 rounded-full {{ $account->is_running ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400' }}"></span>
@@ -134,12 +129,11 @@
                             </div>
                         @endif
 
-                        {{-- Per-bot switches: new entries only; open trades keep their stops and exits. --}}
+                        {{-- NEAR bot switch: new entries only; open trades keep their stop and exits. --}}
                         @php($botSwitches = \App\Services\Trading\BotSwitches::all())
                         @php($canSwitchBots = (bool) (Auth::user()?->isAdmin() || Auth::user()?->hasPermission('manage_trading')))
-                        <div class="flex items-center gap-1 flex-shrink-0" title="Turn each auto-trading bot on or off. Open trades keep their stops and exits.">
-                            {{-- With EBD v1 (alerts only) the 'breakout' switch only gates Trend Pullback entries. --}}
-                            @foreach (['swing' => 'Swing', 'breakout' => \App\Services\Strategy\StrategyEngine::legacyBreakoutsConfigured() ? 'Breakout' : 'Pullback', 'lab' => 'Lab SOL/NEAR', 'dayrange' => 'Day dip'] as $bot => $botLabel)
+                        <div class="flex items-center gap-1 flex-shrink-0" title="Turn the NEAR breakout bot on or off. Open trades keep their stop and exits.">
+                            @foreach (['near' => 'NEAR bot'] as $bot => $botLabel)
                                 <button type="button" id="bot-switch-{{ $bot }}" data-bot="{{ $bot }}" data-label="{{ $botLabel }}" data-on="{{ $botSwitches[$bot] ? '1' : '0' }}"
                                     @if ($canSwitchBots) onclick="toggleBot('{{ $bot }}')" @else disabled @endif
                                     class="bot-switch px-2 py-1.5 text-[11px] font-mono font-bold rounded-lg border transition flex items-center gap-1 {{ $botSwitches[$bot] ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700' }}">
@@ -225,7 +219,7 @@
                                 <span>•</span>
                                 <span>Heartbeat: <span id="daemon-heartbeat-text" class="text-cyan-300 font-bold">Live</span></span>
                                 <span>•</span>
-                                <span>Scanner: <span id="daemon-cycles-text" class="text-slate-200">--</span></span>
+                                <span>NEAR 1h: <span id="daemon-cycles-text" class="text-slate-200">--</span></span>
                                 <span>•</span>
                                 <span class="text-emerald-400/90 font-medium">Runs from the server cron, no browser needed</span>
                             </p>
@@ -468,7 +462,7 @@
                         <tbody id="positions-tbody" class="divide-y divide-cyber-border/50 font-mono">
                             <tr>
                                 <td colspan="8" class="px-5 py-8 text-center text-slate-400">
-                                    No active positions currently open. The engine is patiently scanning for institutional breakout confluence.
+                                    No open position. The engine checks NEAR after every 1h candle close.
                                 </td>
                             </tr>
                         </tbody>
@@ -476,42 +470,24 @@
                 </div>
             </div>
 
-            <!-- Split Section: Market Breakout Scanner & Strategy Studio -->
-            <div class="grid grid-cols-1 gap-6">
-                <!-- Market Breakout Scanner (full width) -->
-                <div class="glass-panel rounded-xl overflow-hidden flex flex-col">
-                    <div class="px-5 py-4 border-b border-cyber-border flex items-center justify-between">
-                        <div class="flex items-center space-x-2">
-                            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                            <h2 class="font-bold text-sm tracking-wide text-white font-mono uppercase">Whole-Market Scanner</h2>
-                        </div>
-                        <span class="text-xs text-slate-400 font-mono" id="scanner-last-update">Auto-scanned</span>
+            <!-- NEAR 1H Volatility-Gated Breakout: the last closed candle -->
+            <div class="glass-panel rounded-xl overflow-hidden">
+                <div class="px-5 py-4 border-b border-cyber-border flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        <h2 class="font-bold text-sm tracking-wide text-white font-mono uppercase">NEAR 1h Breakout</h2>
                     </div>
-
-                    <div class="overflow-x-auto flex-1">
-                        <table class="w-full text-left text-xs">
-                            <thead class="bg-cyber-800/80 text-slate-400 font-mono uppercase border-b border-cyber-border">
-                                <tr>
-                                    <th class="px-4 py-3">Pair / Setup</th>
-                                    <th class="px-3 py-3">Rank / Score</th>
-                                    <th class="px-3 py-3">Entry</th>
-                                    <th class="px-3 py-3">Track Record (90d)</th>
-                                    <th class="px-3 py-3">SL / TP1 / TP2</th>
-                                    <th class="px-3 py-3">Filters / Auto-trader</th>
-                                    <th class="px-3 py-3 text-right">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody id="scanner-tbody" class="divide-y divide-cyber-border/40 font-mono">
-                                <tr>
-                                    <td colspan="7" class="px-4 py-8 text-center text-slate-400">
-                                        Loading market opportunities... Click "Scan Market" to refresh.
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
+                    <span class="text-xs text-slate-400 font-mono" id="near-candle">Waiting for the next 1h close</span>
                 </div>
-
+                <div class="p-5 grid grid-cols-2 md:grid-cols-5 gap-3 text-xs font-mono">
+                    <div><div class="text-slate-400">Close</div><div id="near-close" class="text-white font-bold">-</div></div>
+                    <div><div class="text-slate-400">EMA50</div><div id="near-ema" class="text-white font-bold">-</div></div>
+                    <div><div class="text-slate-400">ATR %</div><div id="near-atr" class="text-white font-bold">-</div></div>
+                    <div><div class="text-slate-400">Volatility rank</div><div id="near-rank" class="text-white font-bold">-</div></div>
+                    <div><div class="text-slate-400">Size if entry</div><div id="near-size" class="text-white font-bold">-</div></div>
+                </div>
+                <div class="px-5 pb-4 text-xs font-mono text-slate-300" id="near-decision">No candle handled yet.</div>
+                <div class="px-5 pb-4 text-[11px] font-mono text-amber-300/90">Backtest 2025-11-30 to 2026-10-22: PF 3.68 on 1h candles as TradingView replays it, PF 0.92 (−3%) on the real 5-minute price path. Not proven.</div>
             </div>
 
             <!-- Closed Trades Audit Journal -->
@@ -559,41 +535,28 @@
                     </div>
                     <div class="p-4 sm:p-6 space-y-4 overflow-y-auto text-xs text-slate-300 font-mono leading-relaxed">
                         <div class="p-3.5 rounded-lg bg-cyber-800/80 border border-cyan-500/30">
-                            <h4 class="text-cyan-300 font-bold text-sm mb-1.5">One strategy everywhere</h4>
-                            <p class="text-slate-300 leading-normal">The auto-trader, the market scanner, the chart and Telegram all use the same engine on <strong class="text-white">1h candles</strong>, checked against the <strong class="text-white">4h trend</strong>. Signals print only after a candle closes and never repaint.</p>
+                            <h4 class="text-cyan-300 font-bold text-sm mb-1.5">One strategy: NEAR 1H Volatility-Gated Breakout</h4>
+                            <p class="text-slate-300 leading-normal">Only <strong class="text-white">NEARUSDT</strong>, long only, one trade at a time, on closed <strong class="text-white">1h candles</strong>.</p>
                         </div>
 
                         <div class="space-y-2">
-                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">When a trade is taken</h4>
+                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">Entry (all on the closed candle)</h4>
                             <ul class="space-y-1.5 list-disc pl-4 text-slate-300">
-                                @if (\App\Services\Strategy\StrategyEngine::legacyBreakoutsConfigured())
-                                <li><strong class="text-emerald-400">Setup:</strong> a Squeeze Breakout (or Trend Pullback while its measured edge stays above +0.05R per trade).</li>
-                                @else
-                                <li><strong class="text-emerald-400">Setup:</strong> Trend Pullback while its measured edge stays above +0.05R per trade. Breakouts come from EBD v1 (5m), which sends alerts only and never trades.</li>
-                                @endif
-                                <li><strong class="text-emerald-400">Filters:</strong> 4h trend agrees (ADX ≥ 18), BTC not strongly against, 24h volume ≥ ${{ number_format((float) config('trading.strategy.min_quote_volume_24h', 2e7) / 1e6) }}M, ATR 0.35–4%, funding not crowded, stop 0.6–1.8% from entry.</li>
-                                <li><strong class="text-emerald-400">Quality:</strong> grade A or B from the setup's measured track record. In LIVE mode the setup must also be proven (30+ resolved signals with a real edge).</li>
-                                <li><strong class="text-emerald-400">Freshness:</strong> price still within 0.3R of the signal candle, otherwise the entry is skipped.</li>
+                                <li>Close crosses above the highest close of the previous 12 candles.</li>
+                                <li>Close above EMA50, and the candle is green.</li>
+                                <li>ATR(14) is at least 0.30% of the price.</li>
+                                <li>Volatility rank (ATR% versus the previous 1440 candles) is below 80.</li>
                             </ul>
                         </div>
 
                         <div class="space-y-2 pt-2 border-t border-cyber-border">
-                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">Position size &amp; limits</h4>
+                            <h4 class="text-white font-bold uppercase tracking-wider text-xs">Size &amp; exits</h4>
                             <ul class="space-y-1.5 list-disc pl-4 text-slate-300">
-                                <li><strong class="text-cyan-300">2% of the balance</strong> is lost if the stop is hit (up to 3% only when Binance's minimum order forces it on a small account). Leverage just fits the margin; it does not change the risk.</li>
-                                <li>Max open positions at risk: <strong class="text-white">1</strong> below $25, <strong class="text-white">2</strong> below $100, <strong class="text-white">3</strong> above. Once a trade's stop is at breakeven it no longer counts, up to <strong class="text-white">{{ (int) config('trading.sizing.max_positions_protected', 4) }}</strong> open. At most 2 at risk in the same direction.</li>
-                                <li>Stop-loss and TP1 orders are placed <strong class="text-white">on Binance</strong> with the entry. If the stop cannot be placed, the position is closed at once.</li>
+                                <li><strong class="text-cyan-300">100% of the balance</strong> at 1x when the volatility rank is 20 or lower, <strong class="text-cyan-300">50%</strong> between 20 and 80.</li>
+                                <li>Exit when a 1h candle closes below EMA50.</li>
+                                <li>Trail: once price is 0.10 ATR above entry, exit if it falls 0.10 ATR below the highest price (checked every ~5 seconds).</li>
+                                <li>Safety stop on Binance 3 ATR below entry (max 8%), for crashes between engine runs. It is not in the original script.</li>
                             </ul>
-                        </div>
-
-                        <div class="p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-500/40 text-[11px] space-y-2">
-                            <div class="text-cyan-300 font-bold">Exit plan (R = the distance to the stop)</div>
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[10px]">
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">+1R</strong>Stop moves to breakeven plus fees.</div>
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">TP1 at +1.5R</strong>Half the position is booked; stop moves to +0.5R.</div>
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">TP2 at +3R</strong>Stop is locked at no worse than TP1.</div>
-                                <div class="p-2 rounded bg-cyber-800/90 border border-cyber-border"><strong class="text-emerald-400 block">Runner</strong>Trails 1.5×ATR on each candle close. Time stop: closed if not +0.5R after 12h; 48h max.</div>
-                            </div>
                         </div>
 
                         <div class="p-3 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-200 text-[11px]">
@@ -602,7 +565,7 @@
 
                         <div class="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-[11px]">
                             <span class="text-emerald-300 font-bold">Runs without a browser:</span>
-                            the server cron starts the engine every minute. It manages open trades every 5 seconds and scans the market after each 1h candle closes. Opening this page never places orders.
+                            the server cron starts the engine every minute. It manages the open trade every 5 seconds and checks NEAR after each 1h candle closes. Opening this page never places orders.
                         </div>
                     </div>
                     <div class="px-5 py-3 border-t border-cyber-border bg-cyber-800/60 text-right">
@@ -772,7 +735,6 @@
         let syncStartedAt = 0;
         let botSwitchChangedAt = 0;
         let botSwitchBusy = false;
-        let isManualScanning = false;
         let activePositionsData = [];
 
         async function liveSync(force = false) {
@@ -807,10 +769,8 @@
                 updatePositionsUI(data.positions);
                 applyExchangeSnapshot(data.exchange);
 
-                // 5. Update Breakout Scanner Radar (if not running a manual fresh scan)
-                if (!isManualScanning && data.opportunities) {
-                    renderScannerTable(data.opportunities);
-                }
+                // 5. NEAR breakout panel (the last closed 1h candle)
+                renderNearPanel(data.stats && data.stats.near);
 
                 // 6. Update Closed Trades Audit Log
                 if (data.history) {
@@ -1014,7 +974,7 @@
                 case 'PAUSED':
                     label = 'AUTO-TRADING STOPPED';
                     style = 'idle';
-                    detail = 'Open trades are still managed and protected. Start auto-trading to take new signals.';
+                    detail = 'Open trades are still managed and protected. Start auto-trading to take new NEAR entries.';
                     break;
                 case 'KILL_SWITCH':
                     label = 'KILL SWITCH';
@@ -1062,24 +1022,10 @@
                 const parts = [];
                 if (daemon.last_scan_at) {
                     parts.push(`last ${hhmm(daemon.last_scan_at)}`);
-                    const m = String(daemon.last_scan_summary || '').match(/Scanned (\d+) symbols, (\d+) fresh signals/);
-                    if (m) parts.push(`${m[1]} coins · ${m[2]} signals`);
                 } else {
-                    parts.push('waiting for first scan');
+                    parts.push('waiting for the first NEAR candle');
                 }
-                Object.entries(daemon.scans_by_interval || {}).forEach(([tf, scan]) => {
-                    if (tf === '1h' || !scan || !scan.at) return;
-                    const fm = String(scan.summary || '').match(/(\d+) fresh signals/);
-                    parts.push(`${tf} last ${hhmm(scan.at)}${fm ? ` · ${fm[1]} signals` : ''}`);
-                });
                 if (daemon.next_scan_at) parts.push(`next ${hhmm(daemon.next_scan_at)}`);
-                if (daemon.watching) parts.push(`watching ${daemon.watching} for breakout`);
-                const d24 = daemon.decisions_24h;
-                if (d24) {
-                    let line = `24h: ${d24.signals} signals, ${d24.taken} taken`;
-                    if (d24.top_reason) line += ` (top skip: ${d24.top_reason} ×${d24.top_reason_count})`;
-                    parts.push(line);
-                }
                 cycles.textContent = parts.join(' · ');
                 cycles.title = daemon.last_error ? `Last error ${daemon.last_error_at ? hhmm(daemon.last_error_at) : ''}: ${daemon.last_error}` : '';
                 cycles.className = daemon.last_error ? 'text-amber-300' : 'text-slate-200';
@@ -1185,9 +1131,9 @@
                                 <span class="font-bold text-white">${pos.symbol}</span>
                                 <span class="px-1.5 py-0.5 rounded text-[10px] border ${sideColor}">${pos.side}</span>
                                 ${pos.source === 'manual'
-                                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700 text-slate-200 border border-slate-600" title="Opened by you from the chart; the bot manages its stop and targets.">MANUAL</span>'
-                                    : pos.source === 'sar'
-                                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Swing SAR: opened on a swing flip, exits on the opposite flip; the stop follows the SuperTrend line.">SAR</span>'
+                                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700 text-slate-200 border border-slate-600" title="Opened by hand; the bot keeps its stop.">MANUAL</span>'
+                                    : pos.source === 'near'
+                                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30" title="NEAR 1h breakout: exits on a close below EMA50 or the 0.10 ATR trail.">NEAR</span>'
                                     : '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30" title="Opened by the bot">AUTO</span>'}
                             </div>
                             <span class="text-[10px] text-slate-400">${pos.opened_at || 'just now'}</span>
@@ -1751,82 +1697,17 @@
             }
         }
 
-        /**
-         * Scanner rows come from the last background scan (StrategyEngine signals on the last closed candle).
-         */
-        function renderScannerTable(opportunities, totalScanned = null, cachedAt = null) {
-            const tbody = document.getElementById('scanner-tbody');
-            if (!tbody) return;
-
-            const updateEl = document.getElementById('scanner-last-update');
-            if (updateEl && totalScanned !== null) {
-                updateEl.textContent = cachedAt
-                    ? `${totalScanned} liquid pairs · scanned ${new Date(cachedAt).toLocaleTimeString()}`
-                    : 'No scan yet: the engine scans after each 1h candle close';
-            }
-
-            const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-            const fmtP = (p, d) => {
-                const n = Number(p);
-                if (isNaN(n)) return '—';
-                const dec = Number.isInteger(d) ? d : (Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : Math.abs(n) >= 0.01 ? 5 : 7);
-                return n.toLocaleString('en-US', { minimumFractionDigits: Math.min(dec, 2), maximumFractionDigits: dec });
-            };
-
-            if (!opportunities || opportunities.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400 font-mono text-xs">No signal on the last closed candle. Most of the time the right trade is no trade; the scanner checks again after the next candle.</td></tr>`;
-                return;
-            }
-
-            tbody.innerHTML = opportunities.map(op => {
-                const isLong = op.direction === 'LONG';
-                const dirBadge = isLong ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-rose-400 bg-rose-500/10 border-rose-500/30';
-                const score = Number(op.score) || 0;
-                const scoreCls = score >= 75 ? 'text-emerald-300' : score >= 60 ? 'text-cyan-300' : score >= 45 ? 'text-amber-300' : 'text-slate-400';
-                const st = op.stats || {};
-                const record = st.n
-                    ? `<div class="font-bold text-white">${st.win_rate}% win</div><div class="${st.expectancy >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${st.expectancy >= 0 ? '+' : ''}${Number(st.expectancy).toFixed(2)}R avg</div><div class="text-[10px] text-slate-500">n=${st.n} · ${esc(st.source)}</div>`
-                    : '<div class="text-slate-500">No track record yet</div>';
-                const failed = Object.entries(op.failed_filters || {}).map(([k, v]) => `✗ ${esc(k.replace('_', ' '))}: ${esc(v)}`).join('<br>');
-                const filterHtml = op.tradable
-                    ? `<span class="text-emerald-400">✓ Market filters passed</span>`
-                    : `<span class="text-rose-300">${failed || (op.is_shadow ? 'Shadow setup (tracked only)' : 'Not tradable')}</span>`;
-                const auto = op.auto_trade ? `<div class="text-[10px] text-cyan-300 mt-1">🤖 ${esc(op.auto_trade)}</div>` : '';
-                const canTrade = op.tradable && !op.is_shadow && (op.entry_status || 'Enter now') === 'Enter now';
-                const d = op.price_decimals;
-
-                return `
-                    <tr class="hover:bg-cyber-800/40 transition ${op.tradable ? '' : 'opacity-70'}">
-                        <td class="px-4 py-3">
-                            <div class="flex items-center space-x-2">
-                                <span class="font-bold text-white text-sm">${esc(op.symbol)}</span>
-                                <span class="px-1.5 py-0.5 rounded text-[10px] border ${dirBadge}">${op.direction}</span>
-                            </div>
-                            <span class="text-[10px] text-cyan-400 font-mono font-medium block mt-0.5">${esc(op.setup_label)}${op.is_shadow ? ' (shadow)' : ''} <span class="text-slate-400">· ${esc(op.interval || '')}</span></span>
-                            ${op.confluences && op.confluences.length ? `<span class="text-[10px] text-slate-500 block">${esc(op.confluences.join(' · '))}</span>` : ''}
-                        </td>
-                        <td class="px-3 py-3">
-                            <div class="text-[10px] text-slate-500">#${op.rank ?? '-'}${op.top_pick ? ' ⭐ top' : ''}</div>
-                            <div class="font-black text-sm ${scoreCls}">${score}<span class="text-slate-500 text-[10px]">/100</span></div>
-                            <div class="text-[10px] text-slate-400">${esc(op.score_label || '')} · Grade ${esc(op.grade)}</div>
-                        </td>
-                        <td class="px-3 py-3 text-slate-200 tabular-nums">${fmtP(op.price, d)}<div class="text-[10px] ${op.entry_status === 'Enter now' ? 'text-emerald-400' : 'text-slate-500'}">${esc(op.entry_status || op.interval + ' close')}</div></td>
-                        <td class="px-3 py-3 text-[11px]">${record}</td>
-                        <td class="px-3 py-3">
-                            <div class="space-y-0.5 text-[11px]">
-                                <div class="text-rose-400">SL: <span class="text-white font-bold tabular-nums">${fmtP(op.sl, d)}</span> <span class="text-rose-400/70">(-${op.sl_pct}%)</span></div>
-                                <div class="text-emerald-400">TP1: <span class="text-white font-bold tabular-nums">${fmtP(op.tp1, d)}</span> <span class="text-emerald-400/70">(+${op.tp1_pct}%)</span></div>
-                                <div class="text-emerald-300">TP2: <span class="text-white font-bold tabular-nums">${fmtP(op.tp2, d)}</span> <span class="text-emerald-300/70">(+${op.tp2_pct}%)</span></div>
-                            </div>
-                        </td>
-                        <td class="px-3 py-3 text-[10px] max-w-[220px]">${filterHtml}${auto}</td>
-                        <td class="px-3 py-3 text-right whitespace-nowrap space-y-1">
-                            <a href="${op.chart_url}" class="block px-2.5 py-1 text-xs font-mono rounded bg-cyber-700 hover:bg-cyber-600 text-cyan-300 border border-cyber-border">📈 Chart</a>
-                            ${canTrade ? `<button onclick="executeRadarTrade('${op.symbol}', '${op.direction}', this)" class="w-full px-2.5 py-1 text-xs font-mono font-bold rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40">⚡ Trade</button>` : ''}
-                        </td>
-                    </tr>
-                `;
-            }).join('');
+        function renderNearPanel(near) {
+            if (!near || !near.candle_close) return;
+            const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+            const closedAt = new Date(Number(near.candle_close) + 1);
+            set('near-candle', `${near.symbol || 'NEARUSDT'} candle closed ${closedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+            set('near-close', near.close ?? '-');
+            set('near-ema', near.ema ?? '-');
+            set('near-atr', near.atr_pct != null ? `${Number(near.atr_pct).toFixed(2)}%` : '-');
+            set('near-rank', near.rank ?? '-');
+            set('near-size', near.size != null ? (Number(near.size) > 0 ? `${Math.round(Number(near.size) * 100)}% of balance` : 'none (rank ≥ 80)') : '-');
+            set('near-decision', `${String(near.action || '').toUpperCase()}: ${near.message || ''}`);
         }
 
         function renderHistoryTable(data) {
@@ -1866,79 +1747,6 @@
                     </tr>
                 `;
             }).join('');
-        }
-
-        async function triggerScan(fresh = false) {
-            const btn = document.getElementById('btn-scan');
-            if (btn) {
-                btn.innerHTML = `<span>Scanning...</span>`;
-                btn.disabled = true;
-            }
-            isManualScanning = true;
-
-            try {
-                const url = fresh ? `/api/scan?limit=10&fresh=1` : `/api/scan?limit=10`;
-                const res = await fetch(url);
-                const data = await res.json();
-                renderScannerTable(data.opportunities, data.total_scanned, data.cached_at);
-                if (fresh) {
-                    const updateEl = document.getElementById('scanner-last-update');
-                    if (updateEl) updateEl.textContent = 'Whole-market scan queued: results appear here within ~2 minutes';
-                }
-            } catch (err) {
-                console.error("Scan error:", err);
-            } finally {
-                if (btn) {
-                    btn.innerHTML = `<svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><span>Scan Market</span>`;
-                    btn.disabled = false;
-                }
-                isManualScanning = false;
-            }
-        }
-
-        async function executeRadarTrade(symbol, direction, btnEl = null) {
-            const live = engineMode === 'live';
-            const warning = live ? '\n\nLIVE MODE: this places a REAL order with REAL money.' : '';
-            if (!(await Notify.confirm({ title: `Place ${direction} ${symbol}?`, message: `${engineMode.toUpperCase()} mode. Risk is capped at the strategy's per-trade limit and the stop-loss is placed with the order.${warning}`, okText: `Place ${direction}`, danger: live }))) {
-                return;
-            }
-            const originalHtml = btnEl ? btnEl.innerHTML : null;
-            if (btnEl) {
-                btnEl.innerHTML = `<span class="inline-block animate-spin mr-1">⌛</span> Placing...`;
-                btnEl.disabled = true;
-            }
-
-            try {
-                const res = await fetch('/api/execute-radar-trade', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-CSRF-TOKEN': '{{ csrf_token() }}'
-                    },
-                    body: JSON.stringify({
-                        symbol: symbol,
-                        direction: direction,
-                        mode: currentMode
-                    })
-                });
-
-                const data = await res.json();
-                if (data.success) {
-                    Notify.success(data.message);
-                    liveSync();
-                } else {
-                    Notify.error(data.message, { title: 'Trade failed' });
-                }
-            } catch (err) {
-                console.error("Execute radar trade error:", err);
-                Notify.error(`Execution error: ${err.message}`);
-            } finally {
-                if (btnEl && originalHtml) {
-                    btnEl.innerHTML = originalHtml;
-                    btnEl.disabled = false;
-                }
-            }
         }
 
         async function editStopLoss(tradeId) {
@@ -2419,7 +2227,7 @@
         initBinanceWebSocket();
         liveSync();
 
-        // Real-time dynamic sync every 3 seconds (updates balance, margin, positions, signals, history & daemon without page refresh)
+        // Real-time dynamic sync every 3 seconds (updates balance, margin, positions, history & daemon without page refresh)
         setInterval(() => {
             liveSync();
             runAutoTickFallback();

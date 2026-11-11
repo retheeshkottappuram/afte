@@ -5,11 +5,8 @@ namespace App\Services\Trading;
 use App\Models\SystemLog;
 use App\Models\Trade;
 use App\Models\TradingAccount;
-use App\Models\TradingSignal;
 use App\Services\Binance\BinanceFuturesClient;
 use App\Services\Notifications\TelegramNotifier;
-use App\Services\Strategy\ExitPlan;
-use App\Services\Strategy\StrategyEngine;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -47,20 +44,10 @@ class OrderExecutor
         }
 
         $slPct = abs($referencePrice - $structuralSl) / $referencePrice * 100;
-        $minSlPct = (float) config('trading.strategy.min_sl_pct', 0.6);
         $setup = isset($signal['setup']) ? (string) $signal['setup'] : null;
-        $isSar = $setup === SwingSarTrader::SETUP;
-        $maxSlPct = match (true) {
-            $isSar => (float) config('trading.swing_sar.max_order_sl_pct', 6.0),
-            $setup === LabTrader::SETUP => (float) config('trading.lab.max_sl_pct', 15.0), // 4h ATR stops, sized by risk
-            $setup === DayRangeTrader::SETUP => (float) config('trading.day_range.max_sl_pct', 10.0), // 0.8 x daily range, sized by risk
-            default => StrategyEngine::configuredMaxSlPct($setup),
-        };
+        $maxSlPct = (float) config('trading.near_vgb.max_sl_pct', 8.0);
         if ($slPct > $maxSlPct + 0.0001) {
             return $this->rejected(sprintf('Stop-loss %.2f%% is wider than the %.2f%% limit. Trade skipped instead of widening risk.', $slPct, $maxSlPct));
-        }
-        if ($slPct < $minSlPct) {
-            $structuralSl = $this->riskManager->calculateAssetProtectionStopLoss($direction, $referencePrice, $structuralSl, isset($signal['setup']) ? (string) $signal['setup'] : null);
         }
 
         $lock = Cache::lock("trade-entry:{$mode}:{$symbol}", 30);
@@ -154,9 +141,7 @@ class OrderExecutor
             $sizing['margin'] = round($filledQty * $fillPrice / max(1, (int) $sizing['leverage']), 4);
         }
 
-        $exitPlan = ExitPlan::fromConfig();
         $stopLoss = $direction === 'LONG' ? $fillPrice - $riskDistance : $fillPrice + $riskDistance;
-        $targets = $exitPlan->targets($direction, $fillPrice, $stopLoss);
 
         // Exchange-side stop is mandatory: no stop, no position.
         try {
@@ -165,26 +150,11 @@ class OrderExecutor
             return $this->emergencyExit($symbol, $direction, (float) $sizing['quantity'], $e->getMessage());
         }
 
-        $tpRef = null;
-        // Swing SAR books TP1 only when swing_sar.take_profit is on; otherwise it exits on the flip or the trailing stop.
-        if (! in_array($signal['setup'] ?? null, [LabTrader::SETUP, DayRangeTrader::SETUP], true) && (($signal['setup'] ?? null) !== SwingSarTrader::SETUP || config('trading.swing_sar.take_profit', true))) {
-            try {
-                $tpQty = $client->formatQuantity($symbol, (float) $sizing['quantity'] * $exitPlan->tp1CloseRatio());
-                if ($tpQty > 0) {
-                    $tpRef = $this->exchangeOrders->placeTakeProfit($symbol, $direction, $targets['tp1'], $tpQty);
-                }
-            } catch (Throwable $e) {
-                Log::warning("[OrderExecutor] TP1 order not placed for {$symbol}; software will book TP1 instead: {$e->getMessage()}");
-            }
-        }
-
         $client->clearAccountCache();
 
         $trade = $this->recordTrade($signal, $symbol, $direction, $fillPrice, $riskDistance, $sizing, 'live', isset($order['orderId']) ? (string) $order['orderId'] : null, [
             'sl_order' => $slRef,
-            'tp_order' => $tpRef,
             'binance_sl_algo_id' => $slRef['id'],
-            'binance_tp_algo_id' => $tpRef['id'] ?? null,
         ], $isManual);
 
         return ['status' => 'opened', 'trade' => $trade, 'message' => $this->openedMessage($trade, $sizing)];
@@ -232,7 +202,6 @@ class OrderExecutor
     protected function recordTrade(array $signal, string $symbol, string $direction, float $fillPrice, float $riskDistance, array $sizing, string $mode, ?string $orderId, array $exchangeMeta, bool $isManual): Trade
     {
         $stopLoss = $direction === 'LONG' ? $fillPrice - $riskDistance : $fillPrice + $riskDistance;
-        $targets = ExitPlan::fromConfig()->targets($direction, $fillPrice, $stopLoss);
         $setup = (string) ($signal['setup'] ?? $signal['setup_type'] ?? 'SIGNAL');
         $grade = (string) ($signal['grade'] ?? 'B');
         $score = (int) ($signal['score'] ?? 0);
@@ -241,7 +210,6 @@ class OrderExecutor
         $trade = Trade::create([
             'symbol' => $symbol,
             'setup_tag' => $setup,
-            'btc_trend_1h' => $indicators['btc_regime'] ?? null,
             'side' => $direction,
             'mode' => $mode,
             'status' => 'OPEN',
@@ -254,8 +222,8 @@ class OrderExecutor
             'initial_sl' => $stopLoss,
             'current_sl' => $stopLoss,
             'stop_distance' => $riskDistance,
-            'tp1_price' => $targets['tp1'],
-            'tp2_price' => $targets['tp2'],
+            'tp1_price' => 0, // no take-profit: the strategy exits on the EMA or the trail
+            'tp2_price' => 0,
             'be_locked' => false,
             'tp1_hit' => false,
             'tp2_hit' => false,
@@ -265,34 +233,18 @@ class OrderExecutor
             'meta' => array_merge([
                 'setup' => $setup,
                 'setup_label' => $signal['setup_label'] ?? $setup,
-                'interval' => $signal['interval'] ?? config('trading.strategy.base_interval', '1h'),
+                'interval' => $signal['interval'] ?? '1h',
                 'grade' => $grade,
                 'score' => $score,
                 'ai_probability' => $signal['ai_probability'] ?? null,
                 'atr' => $indicators['atr'] ?? null,
+                'ema' => $indicators['ema'] ?? null,
                 'risk_usd' => $sizing['risk_usd'] ?? null,
                 'risk_pct' => $sizing['risk_pct'] ?? null,
                 'signal_id' => $signal['signal_id'] ?? null,
-                'breakout_box' => $signal['breakout_box'] ?? null,
                 'source' => $isManual ? 'manual' : 'auto',
             ], $exchangeMeta),
             'opened_at' => Carbon::now(),
-        ]);
-
-        TradingSignal::create([
-            'symbol' => $symbol,
-            'direction' => $direction,
-            'score' => $score,
-            'grade' => $grade,
-            'price' => $fillPrice,
-            'timeframe' => (string) ($signal['interval'] ?? config('trading.strategy.base_interval', '1h')),
-            'indicators' => $indicators,
-            'ai_status' => 'APPROVED',
-            'ai_confidence' => (int) round(((float) ($signal['ai_probability'] ?? 0)) * 100),
-            'ai_regime' => $setup,
-            'ai_reason' => (string) ($signal['setup_label'] ?? $setup),
-            'executed' => true,
-            'trade_id' => $trade->id,
         ]);
 
         $this->notifier->notifyTradeOpened($trade, $score, (string) ($signal['setup_label'] ?? $setup));
@@ -306,13 +258,12 @@ class OrderExecutor
     protected function openedMessage(Trade $trade, array $sizing): string
     {
         return sprintf(
-            '%s %s opened [%s] at %s. Stop %s, TP1 %s. Risk $%s (%s%%), margin $%s at %dx.',
+            '%s %s opened [%s] at %s. Stop %s. Risk $%s (%s%%), margin $%s at %dx.',
             $trade->side,
             $trade->symbol,
             strtoupper($trade->mode),
             $this->fmt($trade->entry_price),
             $this->fmt($trade->initial_sl),
-            $this->fmt($trade->tp1_price),
             $sizing['risk_usd'],
             $sizing['risk_pct'],
             $trade->margin_used,

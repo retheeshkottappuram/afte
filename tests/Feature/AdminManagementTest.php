@@ -75,8 +75,8 @@ class AdminManagementTest extends TestCase
         // Revoke all permissions from 'user' role
         DB::table('role_permissions')->where('role', 'user')->delete();
 
-        // User no longer has 'view_signals' permission
-        $response = $this->actingAs($user)->get('/signals');
+        // User no longer has the 'manage_trading' permission
+        $response = $this->actingAs($user)->postJson('/api/kill-switch', ['mode' => 'paper']);
         $response->assertStatus(403);
     }
 }

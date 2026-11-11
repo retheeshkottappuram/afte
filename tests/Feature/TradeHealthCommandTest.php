@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\TradingAccount;
-use App\Services\Strategy\Watchlist;
+use App\Services\Trading\BotSwitches;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -24,10 +24,9 @@ class TradeHealthCommandTest extends TestCase
             'trading.telegram.bot_token' => '123:SECRET',
             'trading.telegram.chat_id' => '999',
         ]);
-        Watchlist::reset();
         Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 55]])]);
         TradingAccount::getForMode('paper')->update(['balance' => 24.0, 'equity' => 24.0, 'peak_equity' => 24.0, 'is_running' => true]);
-        app(TradingModeManager::class)->recordHeartbeat(['last_scan_at' => now()->toIso8601String(), 'last_scan_summary' => 'Scanned 50 symbols, 0 fresh signals.']);
+        app(TradingModeManager::class)->recordHeartbeat(['last_scan_at' => now()->toIso8601String(), 'last_scan_summary' => 'NEAR 1h: No entry: not green candle.']);
     }
 
     protected function health(string $args = ''): string
@@ -37,12 +36,12 @@ class TradeHealthCommandTest extends TestCase
         return Artisan::output();
     }
 
-    public function test_all_clear_says_no_setup_qualified_yet_and_never_prints_the_token(): void
+    public function test_all_clear_says_no_near_breakout_qualified_and_never_prints_the_token(): void
     {
         $out = $this->health();
 
         $this->assertStringContainsString('Heartbeat: running', $out);
-        $this->assertStringContainsString('No setup qualified yet', $out);
+        $this->assertStringContainsString('No NEAR breakout qualified', $out);
         $this->assertStringNotContainsString('SECRET', $out);
     }
 
@@ -62,14 +61,14 @@ class TradeHealthCommandTest extends TestCase
         $this->assertStringContainsString('3 losses in a row', $this->health());
     }
 
-    public function test_telegram_off_or_alerts_switched_off_is_named(): void
+    public function test_telegram_off_or_the_near_switch_off_is_named(): void
     {
         config(['trading.telegram.enabled' => false]);
         $this->assertStringContainsString('Telegram is OFF', $this->health());
 
         config(['trading.telegram.enabled' => true]);
-        Watchlist::setAlertsEnabled(false);
-        $this->assertStringContainsString('switched OFF on the dashboard', $this->health());
+        BotSwitches::set('near', false);
+        $this->assertStringContainsString('NEAR bot switch is OFF', $this->health());
     }
 
     public function test_send_test_delivers_a_message(): void

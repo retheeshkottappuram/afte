@@ -5,7 +5,6 @@ namespace App\Console\Commands;
 use App\Models\EquitySnapshot;
 use App\Models\Trade;
 use App\Models\TradingAccount;
-use App\Models\TradingSignal;
 use Illuminate\Console\Command;
 
 class ResetPaperCommand extends Command
@@ -47,7 +46,6 @@ class ResetPaperCommand extends Command
 
         Trade::where('mode', 'paper')->delete();
         EquitySnapshot::where('mode', 'paper')->delete();
-        TradingSignal::truncate();
 
         EquitySnapshot::create([
             'mode' => 'paper',

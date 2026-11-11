@@ -2,22 +2,17 @@
 
 namespace App\Console\Commands;
 
-use App\Models\CryptoSignal;
-use App\Models\Setting;
 use App\Models\Trade;
 use App\Models\TradingAccount;
-use App\Services\Breakout\BreakoutStrategyService;
 use App\Services\Notifications\TelegramGateway;
-use App\Services\Strategy\BreakoutWatcher;
-use App\Services\Strategy\MarketScanService;
-use App\Services\Strategy\Watchlist;
-use App\Services\Trading\SwingSarTrader;
+use App\Services\Trading\NearBreakoutTrader;
 use App\Services\Trading\TradingModeManager;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Read-only check of why no trades or Telegram messages are arriving: cron heartbeat, mode, pauses and
- * circuit breakers, the last scan, the Telegram setup and the last 24h of signals. Never prints secrets.
+ * circuit breakers, the last NEAR candle decision, the Telegram setup and the last 24h. Never prints secrets.
  */
 class TradeHealthCommand extends Command
 {
@@ -31,7 +26,7 @@ class TradeHealthCommand extends Command
      */
     protected $description = 'Show why the bot is or is not trading and sending Telegram alerts';
 
-    public function handle(TradingModeManager $modeManager, MarketScanService $scanner, TelegramGateway $telegram): int
+    public function handle(TradingModeManager $modeManager, TelegramGateway $telegram): int
     {
         $causes = [];
 
@@ -42,8 +37,8 @@ class TradeHealthCommand extends Command
         $this->info('Engine');
         $this->line('  Heartbeat: '.$beat['state'].($beat['seconds_ago'] === null ? '' : " ({$beat['seconds_ago']}s ago)"));
         $this->line('  Mode: '.strtoupper($mode));
-        $this->line('  Last scan: '.($details['last_scan_at'] ?? 'never').' · '.($details['last_scan_summary'] ?? '-'));
-        $this->line('  Next scan: '.($details['next_scan_at'] ?? '-'));
+        $this->line('  Last candle: '.($details['last_scan_at'] ?? 'never').' · '.($details['last_scan_summary'] ?? '-'));
+        $this->line('  Next candle: '.($details['next_scan_at'] ?? '-'));
         if (! empty($details['last_error'])) {
             $this->line("  Last error ({$details['last_error_at']}): {$details['last_error']}");
         }
@@ -85,27 +80,17 @@ class TradeHealthCommand extends Command
             };
         }
 
-        // 3. Last base-timeframe scan
-        $results = $scanner->latestResults();
+        // 3. NEAR breakout: the last closed 1h candle
+        $last = (array) Cache::get(NearBreakoutTrader::LAST_KEY, []);
         $this->newLine();
-        $this->info('Last scan results');
-        $this->line(sprintf('  At %s · %d coins · %d fresh signals · %d swing turns · watching %d',
-            $results['scanned_at'] ?? 'never', (int) ($results['symbols_scanned'] ?? 0), (int) ($results['fresh_signals'] ?? 0),
-            count((array) ($results['reversals'] ?? [])), (int) ($results['watching'] ?? 0)));
-
-        // 3b. EBD v1 breakout scanner (breakout:scan, every minute)
-        $ebd = (array) Setting::getValue(BreakoutStrategyService::LAST_RUN_KEY, []);
-        $this->newLine();
-        $this->info('Early Breakout Detection (EBD v1, alerts only)');
-        if (! BreakoutStrategyService::enabled()) {
-            $this->line('  Disabled (BREAKOUT_EBD_ENABLED / STRATEGY_BREAKOUT_ENGINE).');
-        } else {
-            $this->line(sprintf('  Last run %s · %d coins · %d evaluated · %d active setups · %d errors · mode %s',
-                $ebd['started_at'] ?? 'never', (int) ($ebd['symbols'] ?? 0), (int) ($ebd['evaluated'] ?? 0),
-                (int) ($ebd['active_setups'] ?? 0), count((array) ($ebd['errors'] ?? [])), (string) config('breakout.mode')));
-            foreach ((array) ($ebd['errors'] ?? []) as $error) {
-                $this->line('  ! '.$error);
-            }
+        $this->info('NEAR 1h breakout ('.NearBreakoutTrader::symbol().')');
+        $this->line('  Switch: '.(NearBreakoutTrader::enabled() ? 'ON' : 'OFF (dashboard)'));
+        $this->line(sprintf('  Last candle %s · close %s · EMA50 %s · ATR %s%% · volatility rank %s · size %s',
+            isset($last['candle_close']) ? now()->setTimestamp(intdiv((int) $last['candle_close'] + 1, 1000))->toDateTimeString().' UTC' : 'never',
+            $last['close'] ?? '-', $last['ema'] ?? '-', $last['atr_pct'] ?? '-', $last['rank'] ?? '-', isset($last['size']) ? round((float) $last['size'] * 100).'%' : '-'));
+        $this->line('  Decision: '.($last['message'] ?? '-'));
+        if (! NearBreakoutTrader::enabled()) {
+            $causes[] = 'The NEAR bot switch is OFF on the dashboard.';
         }
 
         // 4. Telegram
@@ -113,14 +98,9 @@ class TradeHealthCommand extends Command
         $this->newLine();
         $this->info('Telegram');
         $this->line('  Configured and enabled: '.($health['enabled'] ? 'yes' : 'NO'));
-        $this->line('  Alerts switch (dashboard): '.(Watchlist::alertsEnabled() ? 'ON' : 'OFF'));
-        $this->line('  Swing turn alerts: '.(config('trading.strategy.topbottom_alerts', true) ? 'on' : 'off').' · breakout alerts: '.(BreakoutStrategyService::enabled() ? 'EBD v1 ('.config('breakout.mode').')' : (BreakoutWatcher::alertsEnabled() ? 'on (legacy)' : 'off')));
         $this->line('  Last sent OK: '.($health['last_ok_at'] ?? 'never').' · last error: '.($health['last_error'] ?? 'none').($health['last_error_at'] ? " ({$health['last_error_at']})" : ''));
         if ($health['problem'] !== null) {
             $causes[] = $health['problem'];
-        }
-        if (! Watchlist::alertsEnabled()) {
-            $causes[] = 'Telegram alerts are switched OFF on the dashboard.';
         }
         if ($this->option('send-test')) {
             $id = $telegram->send('✅ <b>AFTE test</b>: the bot can reach this chat ('.now()->toDateTimeString().' UTC).', priority: true);
@@ -131,41 +111,22 @@ class TradeHealthCommand extends Command
         $this->newLine();
         $this->info('Settings in effect');
         $this->line('  Config cached: '.(app()->configurationIsCached() ? 'yes (run php artisan config:clear after editing .env)' : 'no'));
-        $this->line('  Scan: '.implode(',', MarketScanService::scanIntervals()).' · trade: '.implode(',', (array) config('trading.strategy.trade_intervals', ['1h'])));
-        $this->line(sprintf('  Risk %.1f%% per trade · seed $%.2f · early-breakout trading %s',
-            (float) config('trading.sizing.risk_per_trade_pct', 2.0), (float) config('trading.seed_capital', 24.0),
-            config('trading.strategy.intrabar_breakouts', false) ? 'ON' : 'off (alerts only)'));
-        $this->line(sprintf('  Swing SAR: %s · %s · %s · TP1 %s · %s · coins %s · %d%% of the fund: $%.2f margin x %dx · open %d (details: php artisan trade:sar-check)',
-            SwingSarTrader::enabled() ? 'ON' : 'off (SWING_SAR_ENABLED=false)', SwingSarTrader::interval(),
-            config('trading.swing_sar.confirmed_only', true) ? 'confirmed flips only' : 'every flip incl. "?"',
-            config('trading.swing_sar.take_profit', false) ? 'on' : 'off',
-            'book '.implode(', ', array_map(fn (array $p): string => round($p[1] * 100).'% at +'.$p[0].'R', (array) config('trading.swing_sar.partials', [])))
-                .' · stop '.implode(', ', array_map(fn (array $l): string => '+'.$l[0].'R→'.($l[1] == 0 ? 'BE' : $l[1].'R'), (array) config('trading.swing_sar.ladder', [])))
-                .' · trail '.(float) config('trading.swing_sar.trail_atr', 1.5).' ATR from +'.(float) config('trading.swing_sar.trail_from_r', 1.5).'R',
-            implode(',', SwingSarTrader::symbols()) ?: '-', (int) round(100 * (float) config('trading.swing_sar.fund_share', 0.5)),
-            SwingSarTrader::marginPerTrade(TradingAccount::getForMode($mode)), (int) config('trading.swing_sar.leverage', 5),
-            Trade::where('mode', $mode)->where('status', 'OPEN')->where('setup_tag', SwingSarTrader::SETUP)->count()));
+        $this->line(sprintf('  NEAR: trail %s ATR · safety stop %s ATR (max %s%%) · min ATR %s%% · rank gates %s / %s',
+            (float) config('trading.near_vgb.trail_mult'), (float) config('trading.near_vgb.safety_atr'), (float) config('trading.near_vgb.max_sl_pct'),
+            (float) config('trading.near_vgb.min_atr_pct'), (float) config('trading.near_vgb.low_gate'), (float) config('trading.near_vgb.high_gate')));
 
         // 6. Last 24 hours
-        $signals = CryptoSignal::where('source', '!=', 'backtest')->where('sent_at', '>=', now()->subDay())
-            ->get(['passed_filters', 'auto_trade_status', 'telegram_sent']);
         $opened = Trade::where('opened_at', '>=', now()->subDay())->count();
+        $closed = Trade::where('closed_at', '>=', now()->subDay())->get();
         $this->newLine();
         $this->info('Last 24 hours');
-        $this->line(sprintf('  Signals %d · passed filters %d · sent to Telegram %d · trades opened %d',
-            $signals->count(), $signals->where('passed_filters', true)->count(), $signals->where('telegram_sent', true)->count(), $opened));
-        $skips = $signals->where('passed_filters', true)
-            ->groupBy(fn (CryptoSignal $s): string => DiagnoseTradingCommand::decision($s->auto_trade_status, true))
-            ->map->count()->sortDesc()->take(3);
-        foreach ($skips as $decision => $count) {
-            $this->line("  {$count} × {$decision}");
-        }
+        $this->line(sprintf('  Trades opened %d · closed %d · net $%.2f', $opened, $closed->count(), (float) $closed->sum('net_pnl')));
 
         $this->newLine();
         $this->info('LIKELY CAUSE');
         $allClear = $opened > 0
-            ? "Nothing is blocked. The bot is working: {$opened} trade(s) opened in the last 24 hours (php artisan trade:review --days=1 lists them)."
-            : 'Nothing is blocked. No setup qualified yet: about 1-2 trades and ~5 swing alerts a day are normal, and some days have none.';
+            ? "Nothing is blocked. The bot is working: {$opened} trade(s) opened in the last 24 hours."
+            : 'Nothing is blocked. No NEAR breakout qualified in the last 24 hours (about one a day on average; some days have none).';
         foreach ($causes ?: [$allClear] as $cause) {
             $this->line('  • '.$cause);
         }

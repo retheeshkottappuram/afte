@@ -18,45 +18,21 @@ Artisan::command('inspire', function () {
 | start/stop switch from the database every cycle.
 */
 
-// 1. Trading engine: manages open trades every 5s for ~50s, scans + trades after each candle close
+// 1. Trading engine: manages open trades every 5s for ~50s, runs the NEAR 1h breakout after each 1h close
 Schedule::command('trade:engine')
     ->everyMinute()
     ->runInBackground();
 
-// 1b. On-demand whole-market scan requested from the dashboard (does nothing unless queued).
-// No withoutOverlapping: its cache mutex can get stuck on shared hosting and silently skip every scan.
-// The scan state in the settings table already stops a second run (a running scan is skipped).
-Schedule::command('crypto:scan --manual')
-    ->everyMinute()
-    ->runInBackground();
-
-// 1c. Early Breakout Detection (EBD v1): live early checks every minute, closed-candle pass after each 5m close.
-// Alerts only, never orders. Its own cache lock replaces withoutOverlapping (see the note above).
-Schedule::command('breakout:scan')
-    ->everyMinute()
-    ->runInBackground();
-
-// 2. Signal outcome tracking (feeds the measured win rates and the AI model)
-Schedule::command('crypto:resolve-signals')
-    ->everyFiveMinutes()
-    ->withoutOverlapping(10)
-    ->runInBackground();
-
-// 3. Nightly AI model retraining (activated only if it beats the current model)
-Schedule::command('ai:train-signal-model')
-    ->dailyAt('00:20')
-    ->withoutOverlapping(60);
-
-// 4. Daily Telegram summary (00:05 IST = 18:35 UTC)
+// 2. Daily Telegram summary (00:05 IST = 18:35 UTC)
 Schedule::command('trade:daily-summary')
     ->dailyAt('18:35');
 
-// 5. Daily ledger reconciliation against Binance fills
+// 3. Daily ledger reconciliation against Binance fills
 Schedule::command('trade:daily-reconcile')
     ->dailyAt('00:40')
     ->withoutOverlapping(30);
 
-// 6. Queued jobs (database queue driver on shared hosting)
+// 4. Queued jobs (database queue driver on shared hosting)
 Schedule::command('queue:work --stop-when-empty --max-time=50')
     ->everyMinute()
     ->withoutOverlapping(1)

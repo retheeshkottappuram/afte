@@ -6,7 +6,7 @@ use App\Models\Trade;
 use App\Models\TradingAccount;
 use App\Models\User;
 use App\Services\Trading\DynamicTradeManager;
-use App\Services\Trading\SwingSarTrader;
+use App\Services\Trading\NearBreakoutTrader;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -19,7 +19,7 @@ class EditStopLossTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['trading.mode' => 'paper', 'trading.telegram.enabled' => false, 'trading.swing_sar.profit_lock' => []]);
+        config(['trading.mode' => 'paper', 'trading.telegram.enabled' => false]);
         Http::fake(['*premiumIndex*' => Http::response(['markPrice' => '5.0']), '*' => Http::response([])]);
         TradingAccount::create(['mode' => 'paper', 'balance' => 24.0, 'initial_balance' => 24.0, 'equity' => 24.0, 'peak_equity' => 24.0, 'is_running' => true]);
     }
@@ -27,7 +27,7 @@ class EditStopLossTest extends TestCase
     protected function trade(array $overrides = []): Trade
     {
         return Trade::create(array_merge([
-            'symbol' => 'NEARUSDT', 'setup_tag' => SwingSarTrader::SETUP, 'side' => 'LONG', 'mode' => 'paper', 'status' => 'OPEN', 'stage' => 'ENTRY',
+            'symbol' => 'NEARUSDT', 'setup_tag' => NearBreakoutTrader::SETUP, 'side' => 'LONG', 'mode' => 'paper', 'status' => 'OPEN', 'stage' => 'ENTRY',
             'entry_price' => 5.0, 'quantity' => 10.0, 'remaining_quantity' => 10.0, 'margin_used' => 10.0, 'leverage' => 5,
             'initial_sl' => 4.85, 'current_sl' => 4.85, 'tp1_price' => 5.2, 'tp2_price' => 5.4,
             'highest_price' => 5.0, 'lowest_price' => 5.0, 'meta' => ['interval' => '15m', 'atr' => 0.06, 'sar_trail' => 4.80], 'opened_at' => Carbon::now()->subHour(),
@@ -39,7 +39,7 @@ class EditStopLossTest extends TestCase
         return User::factory()->create(['role' => 'admin']);
     }
 
-    public function test_the_user_sets_the_stop_and_the_dynamic_rules_continue_from_it(): void
+    public function test_the_user_sets_the_stop_and_the_bot_keeps_it(): void
     {
         $trade = $this->trade();
 
@@ -51,13 +51,12 @@ class EditStopLossTest extends TestCase
         $this->assertEqualsWithDelta(4.90, (float) $trade->meta['manual_sl']['price'], 1e-9);
         $this->assertEqualsWithDelta(4.85, (float) $trade->initial_sl, 1e-9, 'R is unchanged');
 
-        // A pullback never loosens the user's stop; at +1R the runner exit still moves it to breakeven.
+        // The bot keeps the user's stop and closes the trade there.
         $manager = app(DynamicTradeManager::class);
         $manager->manageTrade($trade->fresh(), 4.95);
         $this->assertEqualsWithDelta(4.90, (float) $trade->fresh()->current_sl, 1e-9);
-        $manager->manageTrade($trade->fresh(), 5.16);
-        $this->assertGreaterThanOrEqual(5.0, (float) $trade->fresh()->current_sl);
-        $this->assertEqualsWithDelta(10.0, (float) $trade->fresh()->remaining_quantity, 1e-9, 'No partials: the winner runs');
+        $manager->manageTrade($trade->fresh(), 4.89);
+        $this->assertSame('STOP_LOSS', $trade->fresh()->exit_reason);
     }
 
     public function test_the_stop_may_be_loosened_within_the_limit(): void
@@ -82,7 +81,7 @@ class EditStopLossTest extends TestCase
         $this->assertEqualsWithDelta(4.85, (float) $trade->fresh()->current_sl, 1e-9);
     }
 
-    public function test_an_auto_breakout_trade_can_be_edited_too(): void
+    public function test_a_trade_from_a_removed_strategy_can_be_edited_too(): void
     {
         $trade = $this->trade(['setup_tag' => 'breakout', 'side' => 'SHORT', 'initial_sl' => 5.15, 'current_sl' => 5.15, 'tp1_price' => 4.8, 'tp2_price' => 4.6]);
 

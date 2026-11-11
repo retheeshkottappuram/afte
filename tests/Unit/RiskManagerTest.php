@@ -191,16 +191,6 @@ class RiskManagerTest extends TestCase
         $this->assertTrue($risk->canOpenTrade($stopped, 'SOLUSDT', 'LONG', isManual: true)['allowed'], 'Manual trades do not need auto-trading to be running');
     }
 
-    public function test_fallback_stop_is_clamped_into_the_allowed_band(): void
-    {
-        $risk = app(RiskManager::class);
-
-        $this->assertEqualsWithDelta(98.2, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 97.0), 1e-9);
-        $this->assertEqualsWithDelta(99.4, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 99.8), 1e-9);
-        $this->assertEqualsWithDelta(101.8, $risk->calculateAssetProtectionStopLoss('SHORT', 100.0, 104.0), 1e-9);
-        $this->assertEqualsWithDelta(98.75, $risk->calculateAssetProtectionStopLoss('LONG', 100.0, 101.0), 1e-9, 'Wrong-side stop falls back to the default distance');
-    }
-
     public function test_fixed_margin_rounds_a_whole_coin_lot_up_to_the_binance_minimum(): void
     {
         // NEAR trades in whole coins: $1.67 x 5x = $8.35 = 1.87 NEAR floors to 1 NEAR ($4.45), under the $5 minimum.

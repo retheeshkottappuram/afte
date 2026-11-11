@@ -87,51 +87,6 @@
             </div>
         </div>
 
-        <!-- GROUP 2: CRYPTOLENS INTELLIGENCE -->
-        <div>
-            <div class="px-3 mb-2 text-[10px] font-bold font-mono uppercase tracking-wider text-slate-400 flex items-center justify-between">
-                <span>CryptoLens SignalAlgo</span>
-                <span class="text-[9px] text-emerald-400/80">PRO™</span>
-            </div>
-            <div class="space-y-1">
-                <!-- Signals & Sentinel Cockpit -->
-                <a href="{{ route('signals.dashboard') }}"
-                   class="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition {{ request()->routeIs('signals.*') ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]' : 'text-slate-300 hover:text-white hover:bg-cyber-700/50 border border-transparent' }}">
-                    <div class="flex items-center space-x-3">
-                        <svg class="w-4 h-4 {{ request()->routeIs('signals.*') ? 'text-emerald-400' : 'text-slate-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                        </svg>
-                        <span>Signals &amp; Charts</span>
-                    </div>
-                    <span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">PRO</span>
-                </a>
-
-                <!-- Whole-Market Scanner -->
-                <a href="{{ route('scanner.index') }}"
-                   class="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition {{ request()->routeIs('scanner.*') ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]' : 'text-slate-300 hover:text-white hover:bg-cyber-700/50 border border-transparent' }}">
-                    <div class="flex items-center space-x-3">
-                        <svg class="w-4 h-4 {{ request()->routeIs('scanner.*') ? 'text-emerald-400' : 'text-slate-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"></path>
-                        </svg>
-                        <span>Market Scanner</span>
-                    </div>
-                    <span class="text-[10px] font-mono text-slate-400">All coins</span>
-                </a>
-
-                <!-- Telegram Alert Log -->
-                <a href="{{ route('alerts.index') }}"
-                   class="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition {{ request()->routeIs('alerts.*') ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]' : 'text-slate-300 hover:text-white hover:bg-cyber-700/50 border border-transparent' }}">
-                    <div class="flex items-center space-x-3">
-                        <svg class="w-4 h-4 {{ request()->routeIs('alerts.*') ? 'text-emerald-400' : 'text-slate-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
-                        </svg>
-                        <span>Telegram Alerts</span>
-                    </div>
-                    <span class="text-[10px] font-mono text-slate-400">Audit</span>
-                </a>
-            </div>
-        </div>
-
         <!-- GROUP 3: ADMINISTRATION & SECURITY -->
         @if (Auth::user()?->isAdmin() || Auth::user()?->hasPermission('manage_users') || Auth::user()?->hasPermission('manage_roles'))
         <div>
@@ -224,10 +179,10 @@
         }
     }
 
-    // Poller for Sentinel Daemon status on sidebar
+    // Poller for the trading engine status on the sidebar
     (function() {
         function checkSidebarSentinel() {
-            fetch('{{ route('daemon.status') }}', {
+            fetch('{{ route('api.trading_daemon.status') }}', {
                 headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             })
             .then(res => res.json())
@@ -236,7 +191,7 @@
                 const status = document.getElementById('sidebarSentinelStatus');
                 if (!dot || !status) return;
 
-                const state = (data.stats && data.stats.engine_state) || 'never_ran';
+                const state = data.engine_state || (data.stats && data.stats.engine_state) || 'never_ran';
                 if (data.is_running) {
                     dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
                     status.className = 'font-mono text-[10px] text-emerald-400 font-bold';
